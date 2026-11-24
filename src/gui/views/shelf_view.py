@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..resource_path import resource_path
 from ..style import accent_color
@@ -306,7 +307,7 @@ class ShelfView(QWidget):
 
     def import_local(self) -> None:
         """导入本地 TXT/EPUB 到书架。"""
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择本地小说", "", "小说文件 (*.txt *.epub);;所有文件 (*.*)"
         )
         if not paths:
