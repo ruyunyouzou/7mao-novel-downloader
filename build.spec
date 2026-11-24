@@ -30,7 +30,11 @@ datas = [
 datas += collect_data_files("ebooklib")
 
 # 隐藏导入（动态加载或 hook 未覆盖的模块）
+# 关键：gui / SLQimao 是 src 下的本地包，入口脚本靠运行时 sys.path.insert 加载，
+# PyInstaller 静态分析看不到，必须显式声明，否则打包后闪退报 No module named 'gui'。
 hiddenimports = [
+    # 本地包（src 下，运行时动态加入 sys.path）——必须显式收集其全部子模块
+    "gui", "SLQimao",
     "ebooklib", "ebooklib.epub", "ebooklib.plugins", "ebooklib.plugins.standard",
     "bs4", "lxml", "Crypto", "Crypto.Cipher", "Crypto.Util.Padding",
     "yaml", "requests", "packaging", "rich", "colorama",
@@ -40,9 +44,20 @@ hiddenimports = [
     "PySide6.QtMultimedia", "PySide6.QtTextToSpeech", "PySide6.QtNetwork",
 ]
 
+# 递归收集 gui / SLQimao 的所有子模块（views、plugin、weread_core 等），
+# 避免只收顶层包、子模块仍缺失。
+import sys as _sys
+_sys.path.insert(0, "src")  # 让 collect_submodules 能定位到 src 下的本地包
+from PyInstaller.utils.hooks import collect_submodules
+hiddenimports += collect_submodules("gui")
+hiddenimports += collect_submodules("SLQimao")
+hiddenimports = list(dict.fromkeys(hiddenimports))  # 去重并保序
+
 a = Analysis(
     ["启动GUI.py"],
-    pathex=["."],
+    # 必须把 src 加入 pathex：入口用 sys.path.insert(..., "src") 动态定位 gui/SLQimao，
+    # 静态分析阶段看不到，需在这里补上，打包器才能解析到这两个包。
+    pathex=[".", "src"],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
