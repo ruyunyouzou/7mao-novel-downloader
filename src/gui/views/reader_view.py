@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..dialogue_highlight import highlight_text
 from ..i18n import tr
 from ..style import ACCENT
@@ -673,7 +674,7 @@ class ReaderView(QWidget):
     # ------------------------------------------------------------------ 打开与解析
 
     def open_local(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, "选择本地小说", "", "小说文件 (*.txt *.epub);;所有文件 (*.*)"
         )
         if path:
@@ -1027,7 +1028,7 @@ class ReaderView(QWidget):
 
     def _import_audio(self) -> None:
         """通过音频导入接口播放本地音频文件（复用倍速/停止/音量控制）。"""
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, tr("voice.import_audio"), "", TTSEngine.audio_filter())
         if not path:
             return
