@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "version": "4.1.0",
-  "min_version": "4.0.2",
+  "version": "4.1.1",
+  "min_version": "4.1.0",
   "force": false,
   "published_at": "2026-11-24",
-  "notes": "4.1.0：新增微信读书扫码登录、听书 16 音色与 0.5~5 倍速、本地音频导入、EPUB 智能选题、阅读页布局重排、抗锯齿与渐变主题；重写更新自检（manifest + Release 双源）。",
+  "notes": "4.1.1：新增一键升级（自动下载安装并重启）；修复打包漏收 gui 模块导致的启动闪退；修复 wztxw 分享链接与 6 位书 ID 直达识别；修复 Qt6 下滚轮事件枚举错误导致的 eventFilter 报错。\n4.1.0：微信读书扫码登录、听书 16 音色与 0.5~5 倍速、本地音频导入、EPUB 智能选题、阅读页布局重排、抗锯齿与渐变主题；重写更新自检（manifest + Release 双源）。",
   "channels": [
     {
       "name": "GitHub 下载",
