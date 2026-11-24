@@ -5,6 +5,7 @@
 支持：
 - 纯数字 ID：  "12345678"
 - 分享链接：  "https://m.qimao.com/shares/12345678?..."
+- APP 分享短链："https://app.share.wztxw.com/app-h5/freebook/article_detail/214789"
 - 带参数：    "https://www.qimao.com/book/12345678" / "?id=12345678" / "?bookId=..."
 - 手机号/口令文本里嵌入的 ID
 
@@ -20,10 +21,16 @@ from urllib.parse import parse_qs, urlparse
 _KEY_PATTERNS = [
     r"[?&](?:id|book[_-]?id|bookId|bid)=(\d{4,})",
 ]
-# URL 路径里的数字段
-_PATH_PATTERN = r"qimao\.com/(?:book|shares?|chapter)/(\d{4,})"
-# 兜底：任意独立长数字（7-12 位）
-_BARE_PATTERN = r"(?<!\d)(\d{7,12})(?!\d)"
+# URL 路径里的数字段。七猫系域名不止 qimao.com，APP 分享常用 wztxw.com 短链，
+# 路径形态也有 book/shares/chapter/article_detail 等多种，统一宽松匹配。
+_PATH_PATTERN = (
+    r"(?:qimao\.com|wztxw\.com)"          # 已知七猫系域名
+    r"/(?:[^/]+/)*?"                       # 允许中间任意层级（如 app-h5/freebook/）
+    r"(?:book|shares?|chapter|article_detail)/(\d{4,})"
+)
+# 兜底：任意独立数字（6-12 位）。七猫存在 6 位书 ID（如 APP 分享的 214789），
+# 原先下限 7 位会漏掉，故下调到 6。
+_BARE_PATTERN = r"(?<!\d)(\d{6,12})(?!\d)"
 
 
 def extract_book_id(text: str) -> str:
