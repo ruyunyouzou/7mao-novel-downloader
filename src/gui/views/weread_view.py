@@ -23,6 +23,7 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QFileDialog, QScrollArea, QGroupBox, QProgressBar
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from .. import render_quality
 from ..style import accent_color
@@ -1612,7 +1613,7 @@ class WereadView(QWidget):
                 self, "缺少凭据", tr("weread.qr_login.need_cred"),
             )
             return
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择要导入微信读书的书",
             os.path.expanduser("~/七猫小说"),
             "支持的格式 (*.epub *.txt *.pdf *.mobi *.azw3);;所有文件 (*.*)",
