@@ -1,0 +1,240 @@
+{
+  "_source": "通用渐变精选自 uiGradients (https://github.com/ghosh/uiGradients, MIT License)；八国主题色依据原神七元素官方色 + 挪德卡莱月光色设定",
+  "nation": {
+    "mondstadt": {
+      "name_zh": "蒙德·风",
+      "base": "#359697",
+      "gradient": [
+        "#2E8B8C",
+        "#52C4BE"
+      ]
+    },
+    "liyue": {
+      "name_zh": "璃月·岩",
+      "base": "#DEBD6C",
+      "gradient": [
+        "#C9A227",
+        "#F2D98C"
+      ]
+    },
+    "inazuma": {
+      "name_zh": "稻妻·雷",
+      "base": "#945DC4",
+      "gradient": [
+        "#6A3FA0",
+        "#C08BE8"
+      ]
+    },
+    "sumeru": {
+      "name_zh": "须弥·草",
+      "base": "#66AD16",
+      "gradient": [
+        "#4A8A0E",
+        "#9ADB3E"
+      ]
+    },
+    "fontaine": {
+      "name_zh": "枫丹·水",
+      "base": "#00BFFF",
+      "gradient": [
+        "#0076C4",
+        "#4FD2FF"
+      ]
+    },
+    "natlan": {
+      "name_zh": "纳塔·火",
+      "base": "#EC4923",
+      "gradient": [
+        "#C22E10",
+        "#FF8A4C"
+      ]
+    },
+    "nodkrai": {
+      "name_zh": "挪德卡莱·月",
+      "base": "#A99BE8",
+      "gradient": [
+        "#6E63B8",
+        "#D6CFFF"
+      ]
+    },
+    "snezhnaya": {
+      "name_zh": "至冬·冰",
+      "base": "#4682B4",
+      "gradient": [
+        "#2E5A8A",
+        "#8FC4E8"
+      ]
+    }
+  },
+  "presets": [
+    {
+      "name": "Omolon",
+      "colors": [
+        "#091E3A",
+        "#2F80ED",
+        "#2D9EE0"
+      ]
+    },
+    {
+      "name": "Farhan",
+      "colors": [
+        "#9400D3",
+        "#4B0082"
+      ]
+    },
+    {
+      "name": "Purple",
+      "colors": [
+        "#c84e89",
+        "#F15F79"
+      ]
+    },
+    {
+      "name": "Ibtesam",
+      "colors": [
+        "#00F5A0",
+        "#00D9F5"
+      ]
+    },
+    {
+      "name": "Sky&Sea",
+      "colors": [
+        "#F7941E",
+        "#004E8F"
+      ]
+    },
+    {
+      "name": "Ice&Fire",
+      "colors": [
+        "#72C6EF",
+        "#004E8F"
+      ]
+    },
+    {
+      "name": "Aqua Marine",
+      "colors": [
+        "#1A2980",
+        "#26D0CE"
+      ]
+    },
+    {
+      "name": "Mojito",
+      "colors": [
+        "#1D976C",
+        "#93F9B9"
+      ]
+    },
+    {
+      "name": "Sweet Morning",
+      "colors": [
+        "#FF5F6D",
+        "#FFC371"
+      ]
+    },
+    {
+      "name": "Moon Purple",
+      "colors": [
+        "#4e54c8",
+        "#8f94fb"
+      ]
+    },
+    {
+      "name": "Flare",
+      "colors": [
+        "#f12711",
+        "#f5af19"
+      ]
+    },
+    {
+      "name": "Sunset",
+      "colors": [
+        "#0B486B",
+        "#F56217"
+      ]
+    },
+    {
+      "name": "Aubergine",
+      "colors": [
+        "#AA076B",
+        "#61045F"
+      ]
+    },
+    {
+      "name": "Winter",
+      "colors": [
+        "#E6DADA",
+        "#274046"
+      ]
+    },
+    {
+      "name": "Neon Life",
+      "colors": [
+        "#B3FFAB",
+        "#12FFF7"
+      ]
+    },
+    {
+      "name": "Blush",
+      "colors": [
+        "#B24592",
+        "#F15F79"
+      ]
+    },
+    {
+      "name": "Royal",
+      "colors": [
+        "#141E30",
+        "#243B55"
+      ]
+    },
+    {
+      "name": "Mirage",
+      "colors": [
+        "#16222A",
+        "#3A6073"
+      ]
+    },
+    {
+      "name": "Blue&Orange",
+      "colors": [
+        "#FD8112",
+        "#0085CA"
+      ]
+    },
+    {
+      "name": "Purple Dream",
+      "colors": [
+        "#bf5ae0",
+        "#a811da"
+      ]
+    },
+    {
+      "name": "Blu",
+      "colors": [
+        "#00416A",
+        "#E4E5E6"
+      ]
+    },
+    {
+      "name": "Summer Breeze",
+      "colors": [
+        "#fbed96",
+        "#abecd6"
+      ]
+    },
+    {
+      "name": "Ver",
+      "colors": [
+        "#FFE000",
+        "#799F0C"
+      ]
+    },
+    {
+      "name": "Olive",
+      "colors": [
+        "#F7F8F8",
+        "#ACBB78"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,74 @@
+name: 构建并发布 Windows 安装包
+
+# 完整发布闭环：打 v* tag → Windows 环境 PyInstaller 打包 → 创建 GitHub Release → 附带 zip。
+# 发布后，软件内的更新自检（update_core.py）即可在该仓库的 /releases/latest 查到新版。
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本号（如 v4.1.0）'
+        required: true
+        type: string
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # 创建 Release 需要写权限
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      # 统一目标版本号：tag 推送用 ref_name，手动触发用输入
+      TARGET_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 校验 tag 与源码版本号一致
+        shell: pwsh
+        run: |
+          $tag = "$env:TARGET_TAG"
+          $ver = (Select-String -Path 'src\gui\version.py' -Pattern 'APP_VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          Write-Host "tag=$tag  APP_VERSION=$ver"
+          if ("v$ver" -ne $tag) {
+            Write-Error "版本号不一致：tag 是 $tag，但 src/gui/version.py 的 APP_VERSION 是 $ver。请先统一版本号再打 tag。"
+            exit 1
+          }
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install PySide6 pyinstaller
+
+      - name: PyInstaller 打包 GUI
+        run: python -m PyInstaller build.spec --clean --noconfirm
+
+      - name: 生成绿色版压缩包
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\星隅小说下载器\*" -DestinationPath "星隅小说下载器_Windows_$env:TARGET_TAG.zip" -Force
+
+      - name: 创建 GitHub Release 并上传安装包
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TARGET_TAG }}
+          name: ${{ env.TARGET_TAG }}
+          generate_release_notes: true
+          body: |
+            ## 星隅小说下载器 ${{ env.TARGET_TAG }}
+
+            从源码自动构建的 Windows 绿色版，解压后运行「星隅小说下载器.exe」即可。
+
+            ### 本次更新
+            详见更新说明；安装后软件内「设置 → 检查更新」也会展示本 Release 说明。
+
+            > 仅供个人学习研究使用，请遵守当地法律法规。
+          files: |
+            星隅小说下载器_Windows_${{ env.TARGET_TAG }}.zip

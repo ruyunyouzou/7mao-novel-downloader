@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "version": "4.1.0",
+  "min_version": "4.0.2",
+  "force": false,
+  "published_at": "2026-11-24",
+  "notes": "4.1.0：新增微信读书扫码登录、听书 16 音色与 0.5~5 倍速、本地音频导入、EPUB 智能选题、阅读页布局重排、抗锯齿与渐变主题；重写更新自检（manifest + Release 双源）。",
+  "channels": [
+    {
+      "name": "GitHub 下载",
+      "url": "https://github.com/ruyunyouzou/7mao-novel-downloader/releases/latest"
+    }
+  ]
+}

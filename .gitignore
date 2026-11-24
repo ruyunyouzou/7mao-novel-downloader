@@ -1,0 +1,38 @@
+# 忽略IDE文件
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# 忽略日志文件
+logs/
+*.log
+
+# PyInstaller 构建产物（但保留 build.spec 打包配置）
+dist/
+build/
+*.spec
+!build.spec
+
+# 打包/缓存
+.egg-info/
+.eggs/
+.cache/
+.pytest_cache/
+.mypy_cache/
+src/setup.py
+
+# Qt 崩溃转储（体积巨大，禁止入库）
+core
+core.*
+core.*.*
+
+# 开发期视觉验证产物（预览截图、样书）
+preview_*.png
+*.epub
+
+# 系统文件
+.DS_Store
+Thumbs.db
