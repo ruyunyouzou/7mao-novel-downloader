@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QFileDialog, QMessageBox,
 )
 
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..style import accent_color
 from ..widgets import nation_icon
@@ -571,7 +572,7 @@ class PluginsView(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _on_add_plugin(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, tr("plugins.add"), "", "Python 插件 (*.py)")
         if path:
             self.install_plugin(path)
