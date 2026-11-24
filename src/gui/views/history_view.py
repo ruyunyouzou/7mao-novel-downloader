@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..style import ACCENT, TEXT_DIM
 from ..widgets import apply_nation_icon, nation_icon
@@ -208,7 +209,7 @@ class HistoryView(QWidget):
         })
 
     def export_csv(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
+        path = _fd.save_file(
             self, "导出历史记录", "下载历史.csv", "CSV 文件 (*.csv)"
         )
         if not path:
