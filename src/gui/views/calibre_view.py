@@ -335,7 +335,10 @@ class CalibreView(QWidget):
         from PySide6.QtWidgets import QGroupBox
         self.path_box = QGroupBox(tr("cb.advanced"))
         self.path_box.setCheckable(True)
-        self.path_box.setChecked(False)
+        # 默认勾选：未勾选时 Qt 会禁用 GroupBox 内全部子控件，导致
+        # Bin/书库输入框与「浏览…/保存并重新检测」按钮全部点不动。
+        # 自动探测失败时用户必须能手动指定路径，故默认展开且可用。
+        self.path_box.setChecked(True)
         form = QVBoxLayout(self.path_box)
         form.setContentsMargins(12, 10, 12, 10)
         r1 = QHBoxLayout()
@@ -600,6 +603,8 @@ class CalibreView(QWidget):
         QMessageBox.information(self, "已保存", "Calibre 路径已保存到本机。")
 
     def _detect(self) -> None:
+        # 每次检测都写日志，让用户明确知道按钮生效了（否则界面看似“没反应”）
+        self.log(tr("cb.detecting"))
         self.install = detect_calibre(self.bin_edit.text().strip())
         lib = self.lib_edit.text().strip() or detect_library()
         if lib:
@@ -612,6 +617,7 @@ class CalibreView(QWidget):
                 f"color:{p['warn']};font-size:11px;font-weight:bold;background:transparent;border:none;")
             self.conn_path.setText(tr("cb.conn_hint"))
             self._set_buttons(False)
+            self.log(tr("cb.detect_fail_bin"))
         elif not lib or not os.path.isfile(os.path.join(lib, "metadata.db")):
             self.conn_title.setText(self.install.summary())
             self.conn_state.setText("● " + tr("cb.conn_lib_missing"))
@@ -619,6 +625,7 @@ class CalibreView(QWidget):
                 f"color:{p['warn']};font-size:11px;font-weight:bold;background:transparent;border:none;")
             self.conn_path.setText(tr("cb.lib_ph"))
             self._set_buttons(False)
+            self.log(tr("cb.detect_fail_lib"))
         else:
             self.conn_title.setText(self.install.summary())
             self.conn_state.setText("● " + tr("cb.connected"))
