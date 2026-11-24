@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..style import accent_color, BG as _BG_DARK, BG_CARD as _CARD_DARK, BORDER as _LINE_DARK, TEXT as _TEXT_DARK, TEXT_DIM as _DIM_DARK, BG_INPUT as _INPUT_DARK
 from ..widgets import apply_nation_icon, nation_icon
@@ -583,12 +584,12 @@ class CalibreView(QWidget):
         self.lib_edit.setText(str(self.store.settings_get("calibre_library", "")))
 
     def _choose_bin(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择 Calibre 安装目录（含 ebook-edit）")
+        d = _fd.select_directory(self, "选择 Calibre 安装目录（含 ebook-edit）")
         if d:
             self.bin_edit.setText(d)
 
     def _choose_lib(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择 Calibre 书库目录（含 metadata.db）")
+        d = _fd.select_directory(self, "选择 Calibre 书库目录（含 metadata.db）")
         if d:
             self.lib_edit.setText(d)
 
@@ -777,7 +778,7 @@ class CalibreView(QWidget):
         if not lib or not os.path.isfile(os.path.join(lib, "metadata.db")):
             QMessageBox.warning(self, "书库无效", "请先设置有效的 Calibre 书库目录")
             return
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择要加入 Calibre 书库的电子书",
             os.path.expanduser("~/七猫小说"),
             "电子书 (*.epub *.mobi *.azw3 *.pdf *.txt *.fb2);;所有文件 (*.*)",
@@ -801,7 +802,7 @@ class CalibreView(QWidget):
             QMessageBox.information(self, "提示", "请先选择一本书")
             return
         lib = self.lib_edit.text().strip()
-        out_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        out_dir = _fd.select_directory(self, "选择导出目录", lib)
         if not out_dir:
             return
         try:
