@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, QObject, QPoint, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, Qt
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QApplication, QGraphicsOpacityEffect, QProgressBar, QWidget,
 )
@@ -216,7 +216,7 @@ class SmoothWheelFilter(QObject):
         self._anim: Optional[QPropertyAnimation] = None
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
-        if event.type() != Qt.Wheel or not enabled():
+        if event.type() != QEvent.Wheel or not enabled():
             return False
         area = self._area
         try:
