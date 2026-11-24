@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QS
 
 from .plugin import PluginManager, Hook, DownloadResult
 from .workers import SearchWorker, DownloadWorker, DetailWorker
+from . import filedialogs as _fd
 from .datastore import DataStore
 from .i18n import tr, manager as i18n_manager, LANGUAGES
 from .views import ShelfView, QueueView, HistoryView, ReaderView, StatsView
@@ -74,7 +75,6 @@ class MainWindow(QMainWindow):
         self.search_worker: Optional[SearchWorker] = None
         self.download_worker: Optional[DownloadWorker] = None
         self.detail_worker: Optional[DetailWorker] = None
-        self.default_save_dir = os.path.join(os.path.expanduser("~"), "七猫小说")
         self._dark_theme = True
         self._dynamic_bg = None  # 当前动态背景 widget（若背景为动态）
         self._system_scheme_connected = False  # 是否已监听系统深浅色变化
@@ -84,6 +84,10 @@ class MainWindow(QMainWindow):
         self._last_search_tag = ""       # 最近一次搜索来源：search / recommend
 
         self.store = DataStore()
+        # 下载保存目录：优先读用户持久化设置，缺省为 ~/七猫小说
+        _saved_dir = str(self.store.settings_get("default_save_dir", "") or "").strip()
+        self.default_save_dir = _saved_dir if _saved_dir and os.path.isdir(_saved_dir) \
+            else os.path.join(os.path.expanduser("~"), "七猫小说")
         # 动效模块读取设置：ui_motion / ui_motion_level / ui_low_power
         motion.bind_settings(lambda k, d: self.store.settings_get(k, d))
         # 通知/提示音模块读取设置
@@ -1548,7 +1552,7 @@ class MainWindow(QMainWindow):
 
     def _pick_font_file(self, which: str) -> None:
         """选择字体文件（ttf/otf/woff/woff2），持久化到章节或分卷字体。"""
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, tr("set.font_file_title"), "",
             "字体文件 (*.ttf *.otf *.woff *.woff2);;所有文件 (*)")
         if not path:
@@ -2501,7 +2505,7 @@ class MainWindow(QMainWindow):
             os.path.expanduser("~"),
             f"qimao_backup_{datetime.now():%Y%m%d_%H%M%S}.zip",
         )
-        path, _ = QFileDialog.getSaveFileName(self, "备份数据", default, "ZIP 文件 (*.zip)")
+        path = _fd.save_file(self, "备份数据", default, "ZIP 文件 (*.zip)")
         if not path:
             return
         try:
@@ -2518,7 +2522,7 @@ class MainWindow(QMainWindow):
     def _restore_data(self) -> None:
         """从 zip 备份恢复数据（覆盖前需确认）。"""
         import zipfile
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", "", "ZIP 文件 (*.zip)")
+        path = _fd.open_file(self, "选择备份文件", "", "ZIP 文件 (*.zip)")
         if not path:
             return
         if QMessageBox.question(
@@ -2545,9 +2549,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "恢复失败", str(exc))
 
     def _choose_save_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "选择保存目录", self.default_save_dir)
+        directory = _fd.select_directory(self, "选择保存目录", self.default_save_dir)
         if directory:
             self.default_save_dir = directory
+            # 持久化：否则重启后又会回到硬编码默认值
+            self.store.settings_set("default_save_dir", directory)
             if hasattr(self, "settings_path"):
                 self.settings_path.setText(directory)
             self.log(f"保存目录已设为：{directory}")
