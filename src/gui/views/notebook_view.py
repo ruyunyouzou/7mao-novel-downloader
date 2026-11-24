@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from .. import render_quality
 from ..widgets import GroupTitleLabel, apply_nation_icon
@@ -881,7 +882,7 @@ class NotebookView(QWidget):
         if not key:
             QMessageBox.information(self, "提示", "请先填写微信读书 API Key")
             return
-        path, _ = QFileDialog.getSaveFileName(
+        path = _fd.save_file(
             self, "导出笔记", os.path.expanduser("~/微信读书笔记.md"),
             "Markdown 文件 (*.md);;文本文件 (*.txt)",
         )
