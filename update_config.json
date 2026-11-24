@@ -1,0 +1,5 @@
+{
+  "repo": "ruyunyouzou/7mao-novel-downloader",
+  "branch": "main",
+  "_comment": "改为你自己的 GitHub 仓库（格式：用户名/仓库名）。软件启动时会读取 exe 同目录的这个文件中的 repo 作为更新源；不填则用内置默认值。"
+}
