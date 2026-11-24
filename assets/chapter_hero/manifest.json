@@ -1,0 +1,421 @@
+{
+  "_source": "enka.network UI_Gacha_AvatarImg (原神祈愿立绘)",
+  "_note": "非商用个人使用；版权归版权方。透明PNG，底部渐隐由 chapter_hero.py 烘焙进 alpha。",
+  "count": 69,
+  "heroes": [
+    {
+      "key": "Venti",
+      "zh": "温迪",
+      "group": "archon",
+      "file": "Venti.png"
+    },
+    {
+      "key": "Zhongli",
+      "zh": "钟离",
+      "group": "archon",
+      "file": "Zhongli.png"
+    },
+    {
+      "key": "Shougun",
+      "zh": "雷电将军",
+      "group": "archon",
+      "file": "Shougun.png"
+    },
+    {
+      "key": "Nahida",
+      "zh": "纳西妲",
+      "group": "archon",
+      "file": "Nahida.png"
+    },
+    {
+      "key": "Furina",
+      "zh": "芙宁娜",
+      "group": "archon",
+      "file": "Furina.png"
+    },
+    {
+      "key": "Mavuika",
+      "zh": "玛薇卡",
+      "group": "archon",
+      "file": "Mavuika.png"
+    },
+    {
+      "key": "Columbina",
+      "zh": "哥伦比娅·月神",
+      "group": "moon",
+      "file": "Columbina.png"
+    },
+    {
+      "key": "Albedo",
+      "zh": "阿贝多",
+      "group": "five",
+      "file": "Albedo.png"
+    },
+    {
+      "key": "Arlecchino",
+      "zh": "阿蕾奇诺",
+      "group": "five",
+      "file": "Arlecchino.png"
+    },
+    {
+      "key": "Ayaka",
+      "zh": "神里绫华",
+      "group": "five",
+      "file": "Ayaka.png"
+    },
+    {
+      "key": "Ayato",
+      "zh": "神里绫人",
+      "group": "five",
+      "file": "Ayato.png"
+    },
+    {
+      "key": "Barbara",
+      "zh": "芭芭拉",
+      "group": "four",
+      "file": "Barbara.png"
+    },
+    {
+      "key": "Beidou",
+      "zh": "北斗",
+      "group": "four",
+      "file": "Beidou.png"
+    },
+    {
+      "key": "Bennett",
+      "zh": "班尼特",
+      "group": "four",
+      "file": "Bennett.png"
+    },
+    {
+      "key": "Candace",
+      "zh": "坎蒂丝",
+      "group": "four",
+      "file": "Candace.png"
+    },
+    {
+      "key": "Charlotte",
+      "zh": "夏洛蒂",
+      "group": "four",
+      "file": "Charlotte.png"
+    },
+    {
+      "key": "Chasca",
+      "zh": "恰斯卡",
+      "group": "five",
+      "file": "Chasca.png"
+    },
+    {
+      "key": "Chevreuse",
+      "zh": "夏沃蕾",
+      "group": "four",
+      "file": "Chevreuse.png"
+    },
+    {
+      "key": "Chiori",
+      "zh": "千织",
+      "group": "five",
+      "file": "Chiori.png"
+    },
+    {
+      "key": "Chongyun",
+      "zh": "重云",
+      "group": "four",
+      "file": "Chongyun.png"
+    },
+    {
+      "key": "Citlali",
+      "zh": "茜特菈莉",
+      "group": "five",
+      "file": "Citlali.png"
+    },
+    {
+      "key": "Clorinde",
+      "zh": "克洛琳德",
+      "group": "five",
+      "file": "Clorinde.png"
+    },
+    {
+      "key": "Collei",
+      "zh": "柯莱",
+      "group": "four",
+      "file": "Collei.png"
+    },
+    {
+      "key": "Cyno",
+      "zh": "赛诺",
+      "group": "five",
+      "file": "Cyno.png"
+    },
+    {
+      "key": "Dehya",
+      "zh": "迪希雅",
+      "group": "five",
+      "file": "Dehya.png"
+    },
+    {
+      "key": "Diluc",
+      "zh": "迪卢克",
+      "group": "five",
+      "file": "Diluc.png"
+    },
+    {
+      "key": "Diona",
+      "zh": "迪奥娜",
+      "group": "four",
+      "file": "Diona.png"
+    },
+    {
+      "key": "Dori",
+      "zh": "多莉",
+      "group": "four",
+      "file": "Dori.png"
+    },
+    {
+      "key": "Emilie",
+      "zh": "艾梅莉埃",
+      "group": "five",
+      "file": "Emilie.png"
+    },
+    {
+      "key": "Eula",
+      "zh": "优菈",
+      "group": "five",
+      "file": "Eula.png"
+    },
+    {
+      "key": "Faruzan",
+      "zh": "法露珊",
+      "group": "four",
+      "file": "Faruzan.png"
+    },
+    {
+      "key": "Fischl",
+      "zh": "菲谢尔",
+      "group": "four",
+      "file": "Fischl.png"
+    },
+    {
+      "key": "Freminet",
+      "zh": "菲米尼",
+      "group": "four",
+      "file": "Freminet.png"
+    },
+    {
+      "key": "Ganyu",
+      "zh": "甘雨",
+      "group": "five",
+      "file": "Ganyu.png"
+    },
+    {
+      "key": "Hutao",
+      "zh": "胡桃",
+      "group": "five",
+      "file": "Hutao.png"
+    },
+    {
+      "key": "Itto",
+      "zh": "荒泷一斗",
+      "group": "five",
+      "file": "Itto.png"
+    },
+    {
+      "key": "Kaeya",
+      "zh": "凯亚",
+      "group": "four",
+      "file": "Kaeya.png"
+    },
+    {
+      "key": "Kaveh",
+      "zh": "卡维",
+      "group": "four",
+      "file": "Kaveh.png"
+    },
+    {
+      "key": "Kazuha",
+      "zh": "枫原万叶",
+      "group": "five",
+      "file": "Kazuha.png"
+    },
+    {
+      "key": "Keqing",
+      "zh": "刻晴",
+      "group": "five",
+      "file": "Keqing.png"
+    },
+    {
+      "key": "Kinich",
+      "zh": "基尼奇",
+      "group": "five",
+      "file": "Kinich.png"
+    },
+    {
+      "key": "Kokomi",
+      "zh": "珊瑚宫心海",
+      "group": "five",
+      "file": "Kokomi.png"
+    },
+    {
+      "key": "Lisa",
+      "zh": "丽莎",
+      "group": "four",
+      "file": "Lisa.png"
+    },
+    {
+      "key": "Mona",
+      "zh": "莫娜",
+      "group": "five",
+      "file": "Mona.png"
+    },
+    {
+      "key": "Mualani",
+      "zh": "玛拉妮",
+      "group": "five",
+      "file": "Mualani.png"
+    },
+    {
+      "key": "Navia",
+      "zh": "娜维娅",
+      "group": "five",
+      "file": "Navia.png"
+    },
+    {
+      "key": "Neuvillette",
+      "zh": "那维莱特",
+      "group": "five",
+      "file": "Neuvillette.png"
+    },
+    {
+      "key": "Nilou",
+      "zh": "妮露",
+      "group": "five",
+      "file": "Nilou.png"
+    },
+    {
+      "key": "Ningguang",
+      "zh": "凝光",
+      "group": "four",
+      "file": "Ningguang.png"
+    },
+    {
+      "key": "Qiqi",
+      "zh": "七七",
+      "group": "five",
+      "file": "Qiqi.png"
+    },
+    {
+      "key": "Razor",
+      "zh": "雷泽",
+      "group": "four",
+      "file": "Razor.png"
+    },
+    {
+      "key": "Rosaria",
+      "zh": "罗莎莉亚",
+      "group": "four",
+      "file": "Rosaria.png"
+    },
+    {
+      "key": "Sara",
+      "zh": "九条裟罗",
+      "group": "four",
+      "file": "Sara.png"
+    },
+    {
+      "key": "Sayu",
+      "zh": "早柚",
+      "group": "four",
+      "file": "Sayu.png"
+    },
+    {
+      "key": "Shenhe",
+      "zh": "申鹤",
+      "group": "five",
+      "file": "Shenhe.png"
+    },
+    {
+      "key": "Sigewinne",
+      "zh": "希格雯",
+      "group": "four",
+      "file": "Sigewinne.png"
+    },
+    {
+      "key": "Sucrose",
+      "zh": "砂糖",
+      "group": "four",
+      "file": "Sucrose.png"
+    },
+    {
+      "key": "Tartaglia",
+      "zh": "达达利亚",
+      "group": "five",
+      "file": "Tartaglia.png"
+    },
+    {
+      "key": "Tighnari",
+      "zh": "提纳里",
+      "group": "five",
+      "file": "Tighnari.png"
+    },
+    {
+      "key": "Wanderer",
+      "zh": "流浪者",
+      "group": "five",
+      "file": "Wanderer.png"
+    },
+    {
+      "key": "Wriothesley",
+      "zh": "莱欧斯利",
+      "group": "five",
+      "file": "Wriothesley.png"
+    },
+    {
+      "key": "Xiangling",
+      "zh": "香菱",
+      "group": "four",
+      "file": "Xiangling.png"
+    },
+    {
+      "key": "Xiao",
+      "zh": "魈",
+      "group": "five",
+      "file": "Xiao.png"
+    },
+    {
+      "key": "Xilonen",
+      "zh": "希诺宁",
+      "group": "five",
+      "file": "Xilonen.png"
+    },
+    {
+      "key": "Xingqiu",
+      "zh": "行秋",
+      "group": "four",
+      "file": "Xingqiu.png"
+    },
+    {
+      "key": "Xinyan",
+      "zh": "辛焱",
+      "group": "four",
+      "file": "Xinyan.png"
+    },
+    {
+      "key": "Yae",
+      "zh": "八重神子",
+      "group": "five",
+      "file": "Yae.png"
+    },
+    {
+      "key": "Yaoyao",
+      "zh": "瑶瑶",
+      "group": "four",
+      "file": "Yaoyao.png"
+    },
+    {
+      "key": "Yoimiya",
+      "zh": "宵宫",
+      "group": "five",
+      "file": "Yoimiya.png"
+    }
+  ]
+}
