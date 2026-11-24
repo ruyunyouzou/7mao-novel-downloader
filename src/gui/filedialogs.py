@@ -82,13 +82,20 @@ def save_file(parent: Optional[QWidget] = None,
     父目录存在即可。
     """
     initial = start or ""
-    if initial and not os.path.isdir(initial):
-        # 可能是"目录 + 文件名"：只要父目录存在就原样保留（预填文件名）
+    base = _safe_dir(None)  # 存在的兜底目录（通常是主目录）
+    if not initial:
+        initial = base
+    elif not os.path.isdir(initial):
         parent_dir = os.path.dirname(initial)
-        if not (parent_dir and os.path.isdir(parent_dir)):
-            initial = _safe_dir(start)
-    elif not initial:
-        initial = _safe_dir(start)
+        if parent_dir and os.path.isdir(parent_dir):
+            # "目录 + 文件名"完整路径：原样保留以预填文件名
+            pass
+        elif not parent_dir:
+            # 纯文件名（如 "下载历史.csv"）：拼到兜底目录，保留文件名
+            initial = os.path.join(base, initial)
+        else:
+            # 父目录不存在：回退到兜底目录
+            initial = base
     path, _ = QFileDialog.getSaveFileName(
         parent, caption, initial, filter, "", _NATIVE_OFF,
     )
