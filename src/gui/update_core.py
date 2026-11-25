@@ -126,6 +126,31 @@ def _save_cache(result: Dict[str, Any]) -> None:
         logger.warning("写入更新缓存失败", exc=exc, tag="update")
 
 
+# 镜像下载渠道前缀（均为实测可用的 GitHub 加速，逐个包裹原始下载直链）
+_MIRROR_PREFIXES = (
+    ("ghfast 镜像", "https://ghfast.top/"),
+    ("gh-proxy 镜像", "https://gh-proxy.com/"),
+    ("ghproxy.net 镜像", "https://ghproxy.net/"),
+)
+
+
+def mirror_channels(download_url: str, official_page: str) -> list:
+    """由安装包直链生成「官方 + 多镜像」下载渠道列表（不涉及版本号拼装）。
+
+    ``download_url`` 取 Release asset 的 ``browser_download_url``，因此不受
+    Windows runner 中文文件名被吞的影响，也不必在代码里写死版本号。
+    """
+    channels: list = []
+    official_page = str(official_page or "")
+    if official_page:
+        channels.append({"name": "GitHub 官方下载", "url": official_page})
+    raw = str(download_url or "")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        for name, prefix in _MIRROR_PREFIXES:
+            channels.append({"name": name, "url": prefix + raw.lstrip("/")})
+    return channels[:8]
+
+
 def _blank_result(current: str) -> Dict[str, Any]:
     return {
         "ok": False,
@@ -227,14 +252,24 @@ def _fetch_release(current: str, timeout: int) -> Dict[str, Any] | None:
         tag = str(data.get("tag_name") or "")
         if not tag:
             return None
+        page = str(data.get("html_url") or f"https://github.com/{_load_repo()}/releases")
+        # 从 asset 里找最大的 zip 直链，生成「官方 + 镜像」多渠道
+        assets = data.get("assets") or []
+        zips = [a for a in assets
+                if str(a.get("name", "")).lower().endswith(".zip")
+                and "source" not in str(a.get("name", "")).lower()]
+        asset_url = ""
+        if zips:
+            biggest = max(zips, key=lambda a: int(a.get("size") or 0))
+            asset_url = str(biggest.get("browser_download_url") or "")
+        channels = mirror_channels(asset_url, page)
         result = _blank_result(current)
         result.update({
             "ok": True,
             "latest": tag,
             "notes": str(data.get("body") or "")[:2000],
-            "url": str(data.get("html_url") or f"https://github.com/{_load_repo()}/releases"),
-            "channels": [{"name": "GitHub 下载",
-                          "url": str(data.get("html_url") or f"https://github.com/{_load_repo()}/releases")}],
+            "url": page,
+            "channels": channels,
             "source": "release",
         })
         return result

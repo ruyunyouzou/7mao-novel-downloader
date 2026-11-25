@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v5.0.0（已发布，2026-11-25，Windows 安装包已上传 GitHub Release）
-- **已修未发版**：**1 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
+- **已修未发版**：**2 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
 - **下一个待发布版本**：v5.0.1（满 10 条或用户明确发版指令才启用）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -68,6 +68,8 @@
 | 26 | **（用户追加项，不计入本轮 10 条）** 全项目全面体检：覆盖 93 文件 / 3.3 万行 / 全部功能 / 全部代码 / 全部接口。①静态检查全绿——compileall 通过、pyflakes 0 告警、三语 725/725/725 对齐无空值、90 模块逐个导入（仅上游 `request_handler.py` 直导报错属预期，须经隔离包装加载）、隔离包装正常、`collect_submodules` 19 模块含 10 番茄子模块。②GUI 实测——主窗口构造 OK、14 页全切换 OK、深浅主题切换 OK、三语切换 OK。③插件内核——8 插件全加载 0 错误、内核自动选择矩阵正确、`DownloadCancelled` 真源可导入。④接口实测（真实网络）——七猫搜索 11 本/详情/目录 712 章/TXT 19126 字节/EPUB 有效；番茄搜索 10 本/详情/目录 276 章/正文解密可读/TXT 26190 字节/EPUB 有效/章节 ID 归一化正确/追更 276/2→新增 274。⑤数据存储——书架/历史/书签/追更四类 source 透传全验证正确。⑥辅助——CSV 导出、build_stats 九项指标、normalize_notebook_book 嵌套提升、协议自检双路均衡、filedialogs 原生+目录记忆、sync_upstream 就位、取消链路 raise+2 捕获+2 内核 re-raise 严谨。⑦边界——空/坏输入、空结果、超页码均不崩。⑧收尾——清理 6 core 转储（529MB）+175 .pyc+12 __pycache__、清除测试脏数据保留真实数据、回归 4/4 通过。**结论：无遗留缺陷，版本仍 4.1.6，未打 tag、未上传、未发版** | `（全项目体检，无功能改动）` | 2026-11-25 |
 
 | 27 | **（用户追加项，不计入本轮 10 条）** 修复启动时的终端黑框 / 两个一闪而过的空白框：用户从桌面快捷方式打开软件、且本机装了 Calibre，启动瞬间先弹黑框与两个空白框再进主界面。根因是 Windows 下 `subprocess` 调控制台程序未传 `CREATE_NO_WINDOW`——启动时 `CalibreView.__init__` 同步 `_detect()` → `detect_calibre()` → `subprocess.run([calibredb, "--version"])` 必然弹控制台窗口。修复：`calibre_core.py` 新增 `_no_window_flags()`（Windows 返回 `CREATE_NO_WINDOW=0x08000000`，带硬编码兜底；非 Windows 返回 0），应用到全部 3 处子进程调用（--version / `_run` / `open_editor`）；`epub_check.py` 的 java epubcheck 调用同样加 `creationflags`。主程序 `build.spec` 本就 `console=False`，弹框纯来自子进程。验证：模拟 Windows 返回 0x08000000、非 Windows 返回 0，pyflakes + compileall 通过。**版本仍 5.0.0，未打 tag、未上传、未发版** | `calibre_core.py`、`epub_check.py` | 2026-11-25 |
+
+| 29 | **（v5.0.0 后新周期第 2 条，用户要求先不发版）** 新增多个下载镜像渠道（不改变功能，仅增加手动下载入口）：①`update-manifest.json` 的 `channels` 由单一「GitHub 下载」扩为 4 个——GitHub 官方 + ghfast / gh-proxy / ghproxy.net 三个镜像直链，均为实测 HTTP 206 可用（Gitee 仓库不存在故未加入）；②`update_core.py` 新增 `mirror_channels()`，Release 回退路径从 asset 的 `browser_download_url` 自动生成「官方 + 3 镜像」渠道，不写死版本号、不受 Windows runner 中文名被吞影响；③manifest 走文件内渠道（实时读取，现有 exe 无需重装即可看到多渠道）；④更新对话框原有渠道按钮渲染逻辑不变。**验证**：渠道生成 4 个、GUI 离屏 4 个渠道按钮渲染通过、compileall + pyflakes 0 告警、真实网络 check_update 正常（当前远端 manifest 未更新故仍读到旧单渠道，推送后生效）。**版本仍 5.0.0，未打 tag、未发版** | `update-manifest.json`、`update_core.py` | 2026-11-25 |
 
 | 28 | **（v5.0.0 后新周期第 1 条，用户要求先不发版）** 修复内置「检查更新/一键升级」在国内代理环境下报 `SSL: CERTIFICATE_VERIFY_FAILED` / 连不上服务器：根因是 `update_installer.find_asset()` 与 `update_core._fetch_manifest/_fetch_release()` 直连 `api.github.com`/`raw.githubusercontent.com`，网络经代理/加速器/安全软件做 HTTPS 拦截后证书链不被 Python 信任，且无镜像回退。新增通用 `gui/netutil.py::safe_get()`（逐个通道尝试，先严格校验证书、证书失败同通道 `verify=False` 降级、403/429 匿名限流自动换镜像，静音 InsecureRequestWarning）；`find_asset` 的 API 查询加 gh-proxy/ghfast 镜像回退；`download_asset` 改用 safe_get 带证书容错并用 `_brief()` 压缩异常提示；manifest 加 jsDelivr/gh-proxy 回退，Release 加 gh-proxy/ghfast 回退；错误文案改为友好的「无法连接到更新服务器，请稍后重试或手动下载」不再弹 SSL 原文。**验证**：netutil 降级/回退/全失败 4 条单测通过、403 限流回退通过、真实网络 `check_update` 识别 5.0.0、`find_asset` 拿到 `_Windows_v5.0.0.zip`（205 MB）、全量 compileall + pyflakes 0 告警 + 相关模块离屏导入通过。注：此修复需随下一个版本打包才在用户 exe 生效；当前 v5.0.0 用户须手动下载安装包升级 | `netutil.py`（新增）、`update_core.py`、`update_installer.py` | 2026-11-25 |
 
