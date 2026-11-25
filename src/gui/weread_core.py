@@ -144,6 +144,35 @@ def cos_authorization(
     return auth, start, end
 
 
+# ---------------------------------------------------------------- 笔记本字段归一化
+
+def normalize_notebook_book(b: Dict[str, Any]) -> Dict[str, Any]:
+    """把 ``/user/notebooks`` 的单条书目归一化成卡片/统计所需字段。
+
+    官方 Agent Gateway 的实际结构里，``bookId`` / ``noteCount`` /
+    ``reviewCount`` / ``bookmarkCount`` 在条目顶层，而 ``title`` / ``author`` /
+    ``cover`` 嵌在 ``book`` 子对象里。旧代码直接读顶层 ``title``，导致书名显示
+    「未命名」、封面退回首字占位，但划线数量正常。这里统一把嵌套字段提升到
+    顶层；顶层已有非空值时保留（兼容接口未来平铺字段的情况）。
+    """
+    if not isinstance(b, dict):
+        return {}
+    item: Dict[str, Any] = dict(b)
+    nested = item.get("book") or item.get("bookInfo") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+    for key in ("title", "author", "cover"):
+        if not str(item.get(key) or "").strip():
+            val = nested.get(key)
+            if val is not None:
+                item[key] = val
+    if not str(item.get("bookId") or "").strip():
+        nested_id = str(nested.get("bookId") or "").strip()
+        if nested_id:
+            item["bookId"] = nested_id
+    return item
+
+
 # ---------------------------------------------------------------- 只读同步客户端
 
 class WeReadClient:
@@ -225,7 +254,7 @@ class WeReadClient:
     def get_notebooks(self) -> Dict[str, Any]:
         """笔记本概览（所有有笔记的书）。noteCount=划线数，reviewCount=想法数。"""
         data = self.call("/user/notebooks")
-        books = data.get("books") or []
+        books = [normalize_notebook_book(b) for b in (data.get("books") or [])]
         total = int(data.get("totalNoteCount") or 0)
         if not total:
             total = sum(
