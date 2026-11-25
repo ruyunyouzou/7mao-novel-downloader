@@ -21,7 +21,7 @@ from typing import List
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QPointF
 from PySide6.QtGui import (
-    QPainter, QColor, QBrush, QLinearGradient, QRadialGradient, QPen,
+    QPainter, QColor, QBrush, QLinearGradient, QPen,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -37,7 +37,7 @@ class AnimatedBackground(QWidget):
     default_dark: List[str] = []
     default_light: List[str] = []
 
-    def __init__(self, parent=None, dark: bool = True, interval: int = 60) -> None:
+    def __init__(self, parent=None, dark: bool = True, interval: int = 50) -> None:
         super().__init__(parent)
         self._dark = bool(dark)
         self._paused = False
@@ -106,7 +106,8 @@ class AnimatedBackground(QWidget):
         self._timer.stop()
 
     def _on_tick(self) -> None:
-        self._t += 0.016
+        # 每帧推进幅度：60ms 一帧、+0.022/帧，约 1.5 秒一个完整相位，肉眼可见但柔和
+        self._t += 0.022
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -133,12 +134,12 @@ class AuroraWaveBackground(AnimatedBackground):
     def draw(self, painter, w, h):
         cols = self.colors
         n = len(cols) or 1
-        alpha = 70 if self._dark else 60
+        alpha = 105 if self._dark else 88
         for band in range(n):
             color = QColor(cols[band])
-            phase = self._t * (0.35 + band * 0.08) + band * 1.7
+            phase = self._t * (0.55 + band * 0.12) + band * 1.7
             band_y = h * (0.30 + 0.42 * (band / max(1, n - 1)))
-            amp = min(h, w) * (0.10 + 0.03 * (band % 2))
+            amp = min(h, w) * (0.12 + 0.04 * (band % 2))
             # 用多边形近似正弦波带
             steps = 40
             top = []
@@ -169,27 +170,80 @@ class StarfieldBackground(AnimatedBackground):
     default_dark = ["#ffffff", "#b8c6ff", "#ffd6e8"]
     default_light = ["#7a6fa8", "#6f8fc8", "#c88fae"]
 
-    def __init__(self, parent=None, dark=True, interval=60):
+    def __init__(self, parent=None, dark=True, interval=50):
         super().__init__(parent, dark, interval)
         rng = random.Random(20261124)
+        # 星点更大、速度差更大；另加 3 团缓慢漂移的星云光晕，整体动感明显
         self._stars = [
-            (rng.random(), rng.random(), rng.uniform(0.6, 2.2),
-             rng.uniform(0, math.tau), rng.uniform(0.4, 1.4), rng.uniform(0.2, 0.9))
-            for _ in range(90)
+            (rng.random(), rng.random(), rng.uniform(1.8, 4.0),
+             rng.uniform(0, math.tau), rng.uniform(0.8, 2.4), rng.uniform(0.55, 1.0))
+            for _ in range(150)
         ]
+        self._nebula = [
+            (rng.random(), rng.random(), rng.uniform(0.18, 0.34),
+             rng.uniform(0, math.tau), rng.uniform(0.3, 0.7))
+            for _ in range(3)
+        ]
+        self._nebula_cache = {}
+        self._pix_cache = {}
+
+    def _ensure_pixmaps(self, cols) -> None:
+        """预渲染柔光贴图（星云团 + 星点），避免高频循环里构造 QBrush 崩溃。"""
+        from PySide6.QtGui import QPixmap, QRadialGradient
+        from PySide6.QtCore import QPointF
+
+        def make(color_hex: str, size: int, peak: int) -> QPixmap:
+            pm = QPixmap(size, size)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            grad = QRadialGradient(QPointF(size / 2, size / 2), size / 2)
+            inner = QColor(color_hex); inner.setAlpha(peak)
+            outer = QColor(color_hex); outer.setAlpha(0)
+            grad.setColorAt(0.0, inner)
+            grad.setColorAt(1.0, outer)
+            p.setBrush(QBrush(grad)); p.setPen(Qt.NoPen)
+            p.drawEllipse(QRectF(0, 0, size, size))
+            p.end()
+            return pm
+
+        for c in cols:
+            if c not in self._pix_cache:
+                self._pix_cache[c] = make(c, 32, 235)       # 星点贴图
+            if c not in self._nebula_cache:
+                self._nebula_cache[c] = make(c, 256, 95)    # 星云贴图
+
+    def set_colors(self, colors) -> None:
+        super().set_colors(colors)
+        self._pix_cache.clear()
+        self._nebula_cache.clear()
 
     def draw(self, painter, w, h):
         cols = self.colors
+        n = len(cols) or 1
+        self._ensure_pixmaps(cols)
+        painter.setOpacity(1.0)
+        # 1) 漂移星云底色：给纯色底加明显的流动光晕
+        for nx, ny, scale, phase, speed in self._nebula:
+            cx = ((nx + self._t * 0.012 * speed) % 1.0) * w
+            cy = (ny + 0.05 * math.sin(self._t * speed + phase)) * h
+            d = int(min(w, h) * scale * 2)
+            c = cols[int((nx + ny) * n * 3) % n]
+            painter.setOpacity(0.55 if self._dark else 0.4)
+            target = QRectF(cx - d / 2, cy - d / 2, d, d)
+            src = QRectF(0, 0, self._nebula_cache[c].width(), self._nebula_cache[c].height())
+            painter.drawPixmap(target, self._nebula_cache[c], src)
+        # 2) 闪烁漂移星点
         for sx, sy, size, phase, speed, base_a in self._stars:
-            x = ((sx + self._t * 0.006 * speed) % 1.0) * w
+            x = ((sx + self._t * 0.045 * speed) % 1.0) * w
             y = sy * h
-            twinkle = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(self._t * speed + phase))
-            color = QColor(cols[int((sx * 7 + sy * 3) * len(cols)) % len(cols)])
-            color.setAlpha(int((150 if self._dark else 110) * base_a * twinkle))
-            painter.setBrush(QBrush(color))
-            painter.setPen(Qt.NoPen)
-            r = size
-            painter.drawEllipse(QRectF(x - r, y - r, r * 2, r * 2))
+            twinkle = 0.35 + 0.65 * (0.5 + 0.5 * math.sin(self._t * speed * 2.2 + phase))
+            c = cols[int((sx * 7 + sy * 3) * n) % n]
+            d = int(size * 3)
+            painter.setOpacity(max(0.05, base_a * twinkle))
+            target = QRectF(x - d / 2, y - d / 2, d, d)
+            src = QRectF(0, 0, self._pix_cache[c].width(), self._pix_cache[c].height())
+            painter.drawPixmap(target, self._pix_cache[c], src)
+        painter.setOpacity(1.0)
 
 
 class RippleBackground(AnimatedBackground):
@@ -199,22 +253,23 @@ class RippleBackground(AnimatedBackground):
     default_dark = ["#4a6fa5", "#6a4a9e", "#3a8a83"]
     default_light = ["#bcd2f0", "#d0bcee", "#bce6de"]
 
-    def __init__(self, parent=None, dark=True, interval=60):
+    def __init__(self, parent=None, dark=True, interval=50):
         super().__init__(parent, dark, interval)
         self._centers = [(0.30, 0.35), (0.72, 0.62), (0.50, 0.20)]
 
     def draw(self, painter, w, h):
         cols = self.colors
+        n = len(cols) or 1
         unit = min(w, h)
         max_r = unit * 0.85
         rings = 5
         for ci, (cx, cy) in enumerate(self._centers):
             for k in range(rings):
-                prog = ((self._t * 0.12 + k / rings + ci * 0.21) % 1.0)
+                prog = ((self._t * 0.20 + k / rings + ci * 0.21) % 1.0)
                 r = max_r * prog
-                color = QColor(cols[ci % len(cols)])
-                color.setAlpha(int((90 if self._dark else 70) * (1.0 - prog)))
-                pen = QPen(color, 2.2, Qt.SolidLine)
+                color = QColor(cols[ci % n])
+                color.setAlpha(int((125 if self._dark else 100) * (1.0 - prog)))
+                pen = QPen(color, 2.6, Qt.SolidLine)
                 painter.setPen(pen)
                 painter.setBrush(Qt.NoBrush)
                 x, y = cx * w, cy * h
@@ -222,39 +277,74 @@ class RippleBackground(AnimatedBackground):
 
 
 class ParticleBackground(AnimatedBackground):
-    """浮光粒子：光点缓慢上升并轻微横向摆动，循环再生。"""
+    """浮光粒子：光点缓慢上升并轻微横向摆动，循环再生。
+
+    实现说明：本环境的 PySide6 在 paintEvent 高频循环里反复构造
+    ``QBrush(QColor)`` / ``QRadialGradient`` 会触发 shiboken 引用计数崩溃
+    （``none_dealloc``）。因此改为「预渲染柔光粒子贴图 + drawPixmap」：
+    每种颜色只在初始化时生成一次贴图，绘制帧里只做 drawPixmap，既保留
+    柔光晕外观，又彻底避开该崩溃，且帧率更稳。
+    """
 
     effect_key = "particle"
     default_dark = ["#8ec5ff", "#d0b0ff", "#9affe0", "#ffd0b0"]
     default_light = ["#7ba6d8", "#a98fd0", "#6fbfae", "#d8a878"]
+    _PIX_SIZE = 24  # 贴图尺寸（含柔光晕）
 
-    def __init__(self, parent=None, dark=True, interval=60):
+    def __init__(self, parent=None, dark=True, interval=50):
         super().__init__(parent, dark, interval)
         rng = random.Random(861230)
         self._parts = [
-            (rng.random(), rng.random(), rng.uniform(1.5, 4.0),
-             rng.uniform(0.3, 1.0), rng.uniform(0, math.tau))
-            for _ in range(55)
+            (rng.random(), rng.random(), rng.uniform(2.0, 4.6),
+             rng.uniform(0.5, 1.3), rng.uniform(0, math.tau))
+            for _ in range(60)
         ]
+        self._pix_cache = {}  # color_hex -> QPixmap，按当前 colors 惰性生成
+
+    def _ensure_pixmaps(self, cols) -> None:
+        """为每种粒子颜色预渲染一张柔光贴图（只做一次）。"""
+        from PySide6.QtGui import QPixmap, QRadialGradient
+        from PySide6.QtCore import QPointF
+        for c in cols:
+            if c in self._pix_cache:
+                continue
+            s = self._PIX_SIZE
+            pm = QPixmap(s, s)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            grad = QRadialGradient(QPointF(s / 2, s / 2), s / 2)
+            inner = QColor(c); inner.setAlpha(235)
+            outer = QColor(c); outer.setAlpha(0)
+            grad.setColorAt(0.0, inner)
+            grad.setColorAt(1.0, outer)
+            p.setBrush(QBrush(grad))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QRectF(0, 0, s, s))
+            p.end()
+            self._pix_cache[c] = pm
+
+    def set_colors(self, colors) -> None:
+        super().set_colors(colors)
+        self._pix_cache.clear()  # 配色变了，贴图需重建
 
     def draw(self, painter, w, h):
         cols = self.colors
+        n = len(cols) or 1
+        self._ensure_pixmaps(cols)
+        painter.setOpacity(1.0)
         for px, py, size, speed, phase in self._parts:
-            prog = (py - self._t * 0.035 * speed) % 1.0
+            prog = (py - self._t * 0.05 * speed) % 1.0
             y = prog * h
-            x = ((px + 0.02 * math.sin(self._t * speed * 0.7 + phase)) % 1.0) * w
-            color = QColor(cols[int((px + py) * len(cols)) % len(cols)])
-            fade = math.sin(prog * math.pi)  # 两端淡出
-            color.setAlpha(int((150 if self._dark else 110) * fade))
-            r = size
-            grad = QRadialGradient(QPointF(x, y), r * 2)
-            inner = QColor(color); inner.setAlpha(color.alpha())
-            outer = QColor(color); outer.setAlpha(0)
-            grad.setColorAt(0.0, inner)
-            grad.setColorAt(1.0, outer)
-            painter.setBrush(QBrush(grad))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QRectF(x - r * 2, y - r * 2, r * 4, r * 4))
+            x = ((px + 0.025 * math.sin(self._t * speed * 0.9 + phase)) % 1.0) * w
+            color_hex = cols[int((px + py) * n) % n]
+            d = int(size * 6)  # 光点直径（含柔光晕）
+            # 两端淡出：用 painter 透明度，避免新建任何 brush
+            painter.setOpacity(max(0.04, math.sin(prog * math.pi)))
+            target = QRectF(x - d / 2, y - d / 2, d, d)
+            src = QRectF(0, 0, self._pix_cache[color_hex].width(),
+                         self._pix_cache[color_hex].height())
+            painter.drawPixmap(target, self._pix_cache[color_hex], src)
+        painter.setOpacity(1.0)
 
 
 # 效果注册表：key -> 类（供插件与设置页使用）

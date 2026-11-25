@@ -17,8 +17,11 @@ import os
 from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal, QTimer, QSize, QSettings
-from PySide6.QtGui import QColor, QIcon, QPixmap
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QStackedWidget, QFrame, QStackedLayout, QSizePolicy
+from PySide6.QtGui import QColor, QIcon, QPixmap, QPalette, QBrush
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QStackedWidget,
+    QFrame, QStackedLayout, QSizePolicy, QAbstractScrollArea,
+)
 
 from .style import BG_TOP, BORDER, TEXT, ACCENT, nav_font_family
 from .version import VERSION_LABEL
@@ -503,6 +506,11 @@ class SideNavWidget(QWidget):
 
         动态背景（如流光渐变）由此挂载。无论传入什么 widget，都不会影响
         上层 _stack 中的任何页面或控件。旧 widget 会被安全释放。
+
+        挂载动态背景时，页面里的 QScrollArea 视口、表格等「裸容器」默认会
+        用不透明 palette 画满背景（QSS 的 transparent 对 viewport 不生效），
+        把底层动画完全盖住。这里主动把这些视口改成真正透明，让动画透出；
+        卸载时恢复原状。只动视口/裸容器，不碰 Card、按钮、输入框等实体控件。
         """
         target = widget if widget is not None else self._placeholder
         if target is self._active_backdrop:
@@ -515,6 +523,55 @@ class SideNavWidget(QWidget):
         self._content_layer.insertWidget(0, target)
         self._content_layer.setCurrentWidget(self._stack)
         self._active_backdrop = target
+        # 动态背景需要上层裸容器透明；静态/默认则恢复
+        self._set_content_transparent(widget is not None)
+
+    def _set_content_transparent(self, on: bool) -> None:
+        """让/恢复内容区各页 QScrollArea 视口与表格视口真正透明。
+
+        Qt 中 viewport 的默认 palette(window) 常为不透明色，且
+        ``WA_StyledBackground`` 下 QSS 的 ``background: transparent``
+        往往不生效。这里直接把 palette 的 Window 画刷设为透明并关掉
+        autoFillBackground，动画才能从最底层透上来。
+        """
+        stacks = getattr(self, "_stack", None)
+        if stacks is None:
+            return
+
+        def apply(w) -> None:
+            if w is None:
+                return
+            if on:
+                if not hasattr(w, "_bg_orig_palette"):
+                    w._bg_orig_palette = QPalette(w.palette())
+                    w._bg_orig_wa_styled = bool(w.testAttribute(Qt.WA_StyledBackground))
+                    w._bg_orig_autofill = bool(w.autoFillBackground())
+                pal = QPalette(w.palette())
+                transparent = QBrush(Qt.transparent)
+                pal.setBrush(QPalette.Window, transparent)
+                pal.setBrush(QPalette.Base, transparent)
+                pal.setBrush(QPalette.AlternateBase, transparent)
+                w.setPalette(pal)
+                w.setAutoFillBackground(False)
+                w.setAttribute(Qt.WA_StyledBackground, False)
+            else:
+                orig = getattr(w, "_bg_orig_palette", None)
+                if orig is not None:
+                    w.setPalette(orig)
+                    w.setAttribute(Qt.WA_StyledBackground, getattr(w, "_bg_orig_wa_styled", True))
+                    w.setAutoFillBackground(getattr(w, "_bg_orig_autofill", False))
+                    delattr(w, "_bg_orig_palette")
+
+        for i in range(stacks.count()):
+            page = stacks.widget(i)
+            if page is None:
+                continue
+            # 页面根容器本身
+            apply(page)
+            # 每个滚动区：控件自身 + 视口（QTableWidget 等自身也会画不透明底）
+            for area in page.findChildren(QAbstractScrollArea):
+                apply(area)
+                apply(area.viewport())
 
     def backdrop_widget(self) -> Optional[QWidget]:
         """返回当前动态背景 widget（占位返回 None）。"""
@@ -669,6 +726,14 @@ class SideNavWidget(QWidget):
                 motion.clear_page_effect(old_widget)
                 motion.fade_in_page(new_widget)
             self.currentChanged.emit(index)
+            # 动态背景下，新页（常为切到时才构建）的视口也需透明，动画才能透出。
+            # 延迟到事件循环后执行，确保延迟创建的控件已就位。
+            if self._active_backdrop is not self._placeholder:
+                QTimer.singleShot(0, self, self._reapply_content_transparent)
+
+    def _reapply_content_transparent(self) -> None:
+        """页面切换后对当前页重新应用透明化（供 QTimer 调用）。"""
+        self._set_content_transparent(True)
 
     def _place_indicator_idle(self) -> None:
         """首帧空闲时定位指示条（bound method，作为 QTimer context 安全）。"""

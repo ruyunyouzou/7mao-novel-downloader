@@ -113,7 +113,8 @@ class FlowGradientWidget(QWidget):
         self._timer.stop()
 
     def _on_tick(self) -> None:
-        self._t += 0.01
+        # 60ms 一帧、+0.022/帧，约 1.5 秒一个完整漂移相位，肉眼可见
+        self._t += 0.022
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -141,7 +142,7 @@ class FlowGradientWidget(QWidget):
             gradient = QRadialGradient(QRectF(cx - radius, cy - radius,
                                               radius * 2, radius * 2).center(), radius)
             inner = QColor(color_obj)
-            inner.setAlpha(150 if self._dark else 130)
+            inner.setAlpha(175 if self._dark else 150)
             outer = QColor(color_obj)
             outer.setAlpha(0)
             gradient.setColorAt(0.0, inner)

@@ -1436,16 +1436,25 @@ class MainWindow(QMainWindow):
         self.log(f"背景已切换为：{name}")
 
     def _refresh_bg_swatches(self) -> None:
-        """主题切换后，刷新设置页背景色块的预览色为当前主题对应的一套。"""
+        """主题切换后，刷新设置页背景色块的预览色为当前主题对应的一套。
+
+        同时按持久化的 background_key 重新同步选中白框：主题切换、配色编辑
+        重入、语言切换重建等路径都可能让色块状态漂移，这里统一校正，保证
+        高亮白框始终落在当前真正生效的背景上。
+        """
         from . import ui_background_theme as ub
         swatches = getattr(self, "_bg_swatches", None)
         if not swatches:
             return
+        current = str(self.store.settings_get("background_key", "") or "")
         for key, sw in swatches.items():
             if key == "__default__":
                 continue
             if key in ub.PRESET_DEFAULTS or key == ub.CUSTOM_KEY:
                 sw.set_colors(ub.resolved_value(key, self._dark_theme))
+            # 同步选中态：默认项 sw.key 为 __default__，对应持久化的空串
+            selected = (sw.key == "__default__" and not current) or (sw.key == current)
+            sw.set_selected(selected)
 
     def _on_theme_toggled(self, dark: bool) -> None:
         self._dark_theme = dark
