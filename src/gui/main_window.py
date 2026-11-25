@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QTextCursor, QIcon, QKeySequence, QShortcut, QColor
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QFileDialog, QMessageBox, QComboBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QMessageBox, QComboBox, QSpinBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
 
 try:
     from shiboken6 import isValid as _qt_is_valid
@@ -526,17 +526,14 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
-        # 带"换一批"的标题行
+        # 标题行（已移除"换一批"，改为结果下方的分页条）
         title_row = QHBoxLayout()
         self.result_title = section_title(tr("search.recommend_title"))
         title_row.addWidget(self.result_title)
         title_row.addStretch()
+        # 兼容保留对象但不再显示：旧逻辑仍会 setEnabled，避免引用报错
         self.refresh_btn = QPushButton(tr("search.refresh"))
-        self.refresh_btn.setMaximumWidth(110)
-        from .widgets import apply_nation_icon
-        apply_nation_icon(self.refresh_btn, "liyue", ACCENT, 16)
-        self.refresh_btn.clicked.connect(self._refresh_recommend)
-        title_row.addWidget(self.refresh_btn)
+        self.refresh_btn.hide()
         left_layout.addLayout(title_row)
         self.result_hint = hint_label(tr("search.recommend_hint"))
         left_layout.addWidget(self.result_hint)
@@ -544,6 +541,42 @@ class MainWindow(QMainWindow):
         self.card_list = BookCardList()
         self.card_list.book_selected.connect(self._on_card_selected)
         left_layout.addWidget(self.card_list)
+
+        # ---- 分页条：上一页 / 当前页 / 页码输入跳转 / 下一页 ----
+        # 接口不返回总页数（可无限翻页），故用「当前页 + 页码输入」形态。
+        self._search_keyword = ""
+        self._search_tab = "0"
+        self._search_page = 1
+        self._search_tag = "search"
+        pager = QHBoxLayout()
+        pager.setContentsMargins(0, 0, 0, 0)
+        self.page_prev_btn = QPushButton(tr("search.page_prev"))
+        self.page_prev_btn.setMaximumWidth(90)
+        self.page_prev_btn.clicked.connect(
+            lambda: self._goto_page(max(1, self._search_page - 1)))
+        self.page_label = QLabel(tr("search.page_label", n=self._search_page))
+        self.page_spin = QSpinBox()
+        self.page_spin.setRange(1, 9999)
+        self.page_spin.setValue(1)
+        self.page_spin.setMaximumWidth(70)
+        self.page_jump_btn = QPushButton(tr("search.page_jump"))
+        self.page_jump_btn.setMaximumWidth(70)
+        self.page_jump_btn.clicked.connect(self._on_page_jump)
+        self.page_next_btn = QPushButton(tr("search.page_next"))
+        self.page_next_btn.setMaximumWidth(90)
+        self.page_next_btn.clicked.connect(
+            lambda: self._goto_page(self._search_page + 1))
+        self.page_spin.setToolTip(tr("search.page_jump_tip"))
+        self.page_jump_btn.setToolTip(tr("search.page_jump_tip"))
+        pager.addWidget(self.page_prev_btn)
+        pager.addWidget(self.page_label)
+        pager.addSpacing(12)
+        pager.addWidget(self.page_spin)
+        pager.addWidget(self.page_jump_btn)
+        pager.addWidget(self.page_next_btn)
+        pager.addStretch()
+        left_layout.addLayout(pager)
+        self._update_pager_ui(True)
 
         # 隐藏的兼容表格（保留数据供详情/选择逻辑使用，不显示）
         self.result_table = QTableWidget()
@@ -1752,6 +1785,16 @@ class MainWindow(QMainWindow):
         self.hot_prefix_label.setText(tr("search.hot_prefix"))
         self.result_title.setText(tr("search.recommend_title"))
         self.refresh_btn.setText(tr("search.refresh"))
+        if hasattr(self, "page_prev_btn"):
+            self.page_prev_btn.setText(tr("search.page_prev"))
+            self.page_next_btn.setText(tr("search.page_next"))
+            self.page_jump_btn.setText(tr("search.page_jump"))
+            self.page_spin.setToolTip(tr("search.page_jump_tip"))
+            self.page_jump_btn.setToolTip(tr("search.page_jump_tip"))
+            _busy = (getattr(self, "search_worker", None) is not None
+                     and self._is_alive(self.search_worker)
+                     and self.search_worker.isRunning())
+            self._update_pager_ui(not _busy)
         self.result_hint.setText(tr("search.recommend_hint"))
         self.result_table.setHorizontalHeaderLabels([
             tr("search.col_title"), tr("search.col_author"),
@@ -2030,9 +2073,15 @@ class MainWindow(QMainWindow):
         self._last_search_tag = tag
         self._search_gen = getattr(self, "_search_gen", 0) + 1
         gen = self._search_gen
+        # 记录本次搜索上下文，供分页（上一页/下一页/跳页）原样复用
+        self._search_keyword = keyword
+        self._search_tab = tab
+        self._search_page = page
+        self._search_tag = tag
+        self._update_pager_ui(False)
         self.search_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
-        self.log(f"正在搜索：{keyword} …")
+        self.log(f"正在搜索：{keyword} …" + (f"（第 {page} 页）" if page > 1 else ""))
         self.pm.emit(Hook.ON_SEARCH, keyword, [])
         self.search_worker = SearchWorker(keyword, self, tab=tab, page=page, tag=tag)
 
@@ -2082,10 +2131,39 @@ class MainWindow(QMainWindow):
         self._start_search(keyword, tab="0", page=1, tag="recommend")
 
     def _refresh_recommend(self) -> None:
-        """换一批：换一个热门关键词重新加载推荐卡片。"""
+        """换一批：换一个热门关键词重新加载推荐卡片（UI 已隐藏，保留兼容）。"""
         keyword = self._next_recommend_keyword()
         self.result_hint.setText(f"根据「{keyword}」的热门结果推荐 · 点击卡片查看详情")
         self._start_search(keyword, tab="0", page=1, tag="recommend")
+
+    # ---------------------------------------------------------------- 分页
+    def _update_pager_ui(self, enabled: bool) -> None:
+        """刷新分页条状态：页码标签跟随当前页，搜索中禁用交互。"""
+        if not hasattr(self, "page_prev_btn"):
+            return
+        page = getattr(self, "_search_page", 1)
+        self.page_label.setText(tr("search.page_label", n=page))
+        self.page_spin.setValue(page)
+        self.page_prev_btn.setEnabled(enabled and page > 1)
+        self.page_next_btn.setEnabled(enabled)
+        self.page_jump_btn.setEnabled(enabled)
+        self.page_spin.setEnabled(enabled)
+
+    def _goto_page(self, page: int) -> None:
+        """翻到指定页：复用最近一次搜索的关键词/类型/标签，不重复记历史。"""
+        page = max(1, int(page))
+        keyword = getattr(self, "_search_keyword", "").strip()
+        if not keyword:
+            # 首屏推荐场景：用当前推荐关键词兜底
+            keyword = getattr(self, "_current_recommend_kw", "") or RECOMMEND_KEYWORDS[0]
+        tab = getattr(self, "_search_tab", "0")
+        tag = getattr(self, "_search_tag", "search")
+        self.result_hint.setText(f"关键词「{keyword}」· 第 {page} 页 · 点击卡片查看详情")
+        self._start_search(keyword, tab=tab, page=page, tag=tag)
+
+    def _on_page_jump(self) -> None:
+        """页码输入跳转。"""
+        self._goto_page(self.page_spin.value())
 
     def _on_card_selected(self, book: Dict[str, Any]) -> None:
         """点击卡片：同步选中态、触发插件钩子并加载详情。"""
@@ -2102,7 +2180,9 @@ class MainWindow(QMainWindow):
             return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
-        keyword = self.search_edit.text().strip()
+        self._update_pager_ui(True)
+        # 用本次实际发起搜索的关键词（翻页时输入框可能为空或已改），而非输入框当前文本
+        keyword = getattr(self, "_search_keyword", "") or self.search_edit.text().strip()
         self.pm.emit(Hook.ON_SEARCH, keyword, results)
         self.search_results = results
 
@@ -2128,7 +2208,9 @@ class MainWindow(QMainWindow):
             self.detail_text.setPlainText("请选择一本书，查看详情并加入下载队列")
         else:
             self.result_title.setText(f"搜索结果（{len(results)}）")
-            self.result_hint.setText(f"关键词「{keyword}」· 点击卡片查看详情")
+            page = getattr(self, "_search_page", 1)
+            self.result_hint.setText(
+                f"关键词「{keyword}」· 第 {page} 页 · 点击卡片查看详情")
             if results:
                 self.card_list.setCurrentRow(0)
                 self._load_detail(results[0])
@@ -2141,6 +2223,7 @@ class MainWindow(QMainWindow):
             return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
+        self._update_pager_ui(True)
         self.log(f"搜索失败：{message}")
         QMessageBox.critical(self, "搜索失败", message)
 

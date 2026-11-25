@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt, QUrl, QEvent
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QScrollArea, QFileDialog, QMessageBox,
+    QScrollArea, QMessageBox,
 )
 
 from .. import filedialogs as _fd

@@ -23,7 +23,7 @@ Windows 版本、DPI、主题设置相关，难以逐一适配。
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from PySide6.QtWidgets import QFileDialog, QWidget
 

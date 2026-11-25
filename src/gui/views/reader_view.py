@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextBrowser, QListWidget, QPushButton,
-    QComboBox, QSlider, QLabel, QSplitter, QMessageBox, QFileDialog, QMenu,
+    QComboBox, QSlider, QLabel, QSplitter, QMessageBox, QMenu,
     QFrame, QScrollArea, QWidgetAction,
 )
 

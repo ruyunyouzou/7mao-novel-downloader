@@ -33,7 +33,7 @@ class SearchWorker(QThread):
         self.keyword = keyword
         self.tab = tab
         self.page = page
-        self.tag = tag  # 标记请求来源：""=用户搜索 / "recommend"=推荐换一批
+        self.tag = tag  # 请求来源：search=用户搜索 / recommend=推荐（翻页会原样复用）
 
     def run(self) -> None:
         try:

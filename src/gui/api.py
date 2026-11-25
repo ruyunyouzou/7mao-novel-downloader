@@ -28,7 +28,7 @@ def search_books(keyword: str, timeout: int = 10, tab: str = "0",
     :param keyword: 搜索关键词
     :param timeout: 请求超时秒数
     :param tab: 搜索类型，0=搜书，1=搜作者
-    :param page: 页码，用于"换一批"翻页
+    :param page: 页码，搜索结果分页（接口无总页数，可递增翻页）
     :return: 书籍字典列表，每项含 id / title / author / words_num / score / cover 等
     """
     params = {
@@ -61,6 +61,13 @@ def search_books(keyword: str, timeout: int = 10, tab: str = "0",
     books = (data.get("data") or {}).get("books") or []
     results: List[Dict[str, Any]] = []
     for b in books:
+        # 过滤非书籍项：接口会混入 show_type="4" 的「大家还在搜」标签项，
+        # 这类项没有 id / 书名，旧代码把它当书渲染成「未知书名/未知作者」空卡片。
+        # show_type="0" 才是真实书籍（核心库也只认这类）。
+        if str(b.get("show_type", "0")) != "0":
+            continue
+        if not str(b.get("id", "")).strip():
+            continue
         # sub_title 形如 "影视・影视原著・完结・536万字"，可提取字数/状态
         sub = _clean(b.get("sub_title"))
         item = {

@@ -178,6 +178,17 @@ class UpdateDialog(QDialog):
             QApplication.instance().quit()
             return
 
+        # 失败：恢复按钮，给出提示，引导手动下载
+        self.btn_upgrade.setEnabled(True)
+        self.btn_upgrade.setText(f"⚡ {self._tr('update.upgrade_now')}")
+        self.upgrade_progress.hide()
+        err = r.get("error") or self._tr("update.upgrade_failed")
+        self.upgrade_status.setText(err)
+        QMessageBox.warning(
+            self, self._tr("update.upgrade_failed"),
+            f"{err}\n\n{self._tr('update.upgrade_fallback')}",
+        )
+
     def _find_main_window(self):
         """沿 parent 链找主窗口（带 _force_quit 属性的那个）。"""
         w = self.parent()
@@ -191,17 +202,6 @@ class UpdateDialog(QDialog):
             if hasattr(top, "_force_quit"):
                 return top
         return None
-
-        # 失败：恢复按钮，给出提示，引导手动下载
-        self.btn_upgrade.setEnabled(True)
-        self.btn_upgrade.setText(f"⚡ {self._tr('update.upgrade_now')}")
-        self.upgrade_progress.hide()
-        err = r.get("error") or self._tr("update.upgrade_failed")
-        self.upgrade_status.setText(err)
-        QMessageBox.warning(
-            self, self._tr("update.upgrade_failed"),
-            f"{err}\n\n{self._tr('update.upgrade_fallback')}",
-        )
 
     # ---------------------------------------------------------------- 静态工具
     @staticmethod

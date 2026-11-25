@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QLinearGradient
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel,
-    QPushButton, QLineEdit, QScrollArea, QMessageBox, QFileDialog, QDialog,
+    QPushButton, QLineEdit, QScrollArea, QMessageBox, QDialog,
     QTabWidget, QSizePolicy,
 )
 

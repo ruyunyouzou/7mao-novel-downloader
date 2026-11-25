@@ -22,7 +22,7 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QLinearGradient, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QMessageBox, QFileDialog, QProgressBar, QFrame, QStackedWidget,
+    QMessageBox, QProgressBar, QFrame, QStackedWidget,
 )
 
 from ..datastore import DataStore

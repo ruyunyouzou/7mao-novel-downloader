@@ -11,7 +11,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLineEdit, QPushButton, QComboBox, QAbstractItemView,
-    QMenu, QMessageBox, QLabel, QFileDialog, QStackedWidget,
+    QMenu, QMessageBox, QLabel, QStackedWidget,
 )
 
 from ..datastore import DataStore

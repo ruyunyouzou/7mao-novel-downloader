@@ -13,7 +13,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLineEdit, QPushButton, QComboBox, QAbstractItemView,
-    QMenu, QMessageBox, QLabel, QFileDialog, QFrame,
+    QMenu, QMessageBox, QLabel, QFrame,
 )
 
 from ..datastore import DataStore

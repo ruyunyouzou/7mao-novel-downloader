@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from PySide6.QtCore import Qt, QThread, Signal, QRectF, QTimer, QUrl
 from PySide6.QtGui import QPainter, QColor, QFont, QPixmap, QLinearGradient
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
-from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QFileDialog, QScrollArea, QGroupBox, QProgressBar
+from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QScrollArea, QGroupBox, QProgressBar
 
 from ..datastore import DataStore
 from .. import filedialogs as _fd
