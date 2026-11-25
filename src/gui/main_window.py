@@ -2339,11 +2339,22 @@ class MainWindow(QMainWindow):
             # 这里统一归一化为真实 bookId，保证章节链接/口令/纯 ID 全通过。
             real_id = resolve_book_id(str(book_id))
             name, author, intro = RequestHandler().get_book_info(real_id)
+            # 详情区初始渲染会取 words_num / cover / tags，番茄上游只给三元组，
+            # 这里必须补齐同构字段，否则 book['words_num'] 直接 KeyError。
+            try:
+                from gui.fanqie_core.fanqie_reader import fetch_cover
+                cover = fetch_cover(real_id)
+            except Exception:  # noqa: BLE001
+                cover = ""
             return {
                 "id": real_id,
                 "title": str(name or f"书 {real_id}"),
                 "author": str(author or ""),
                 "intro": str(intro or ""),
+                "words_num": "",
+                "cover": str(cover or ""),
+                "tags": "",
+                "score": "",
                 "source": "fanqie",
             }
         from .api import get_book_info
@@ -2367,7 +2378,7 @@ class MainWindow(QMainWindow):
             book = self._book_from_id(book_id, source)
             self.current_book = book
             self._load_detail(book)
-            self.log(f"已直达：《{book['title']}》(ID {book_id})")
+            self.log(f"已直达：《{book.get('title') or book_id}》(ID {book_id})")
         except Exception as exc:  # noqa: BLE001
             from .logutil import log_error
             log_error(f"书 ID 直达失败 {book_id}", exc, tag="link")
@@ -2426,11 +2437,12 @@ class MainWindow(QMainWindow):
         self.current_book = book
         self.detail_download_btn.setEnabled(True)
         main_c, dim_c, warn_c, border_c = self._detail_colors()
+        # 字段统一用 get 兜底：番茄直达只有三元组元数据，硬取键会 KeyError
         self.detail_text.setHtml(
-            f"<h2 style='color:{main_c}'>{book['title']}</h2>"
-            f"<p style='color:{dim_c}'><b>作者：</b>{book['author']}<br>"
-            f"<b>字数：</b>{book['words_num']}<br>"
-            f"<b>ID：</b>{book['id']}</p>"
+            f"<h2 style='color:{main_c}'>{book.get('title') or '—'}</h2>"
+            f"<p style='color:{dim_c}'><b>作者：</b>{book.get('author') or '—'}<br>"
+            f"<b>字数：</b>{book.get('words_num') or '—'}<br>"
+            f"<b>ID：</b>{book.get('id') or '—'}</p>"
             f"<p style='color:{dim_c}'>正在加载详情…</p>"
         )
         # 重建前先取消上一次的详情请求：断开信号避免回调串台，协作式取消
@@ -2472,9 +2484,9 @@ class MainWindow(QMainWindow):
             return
         main_c, dim_c, warn_c, border_c = self._detail_colors()
         html = (
-            f"<h2 style='color:{main_c}'>{info['title']}</h2>"
-            f"<p style='color:{dim_c}'><b>作者：</b>{info['author']}<br>"
-            f"<b>字数：</b>{info['words_num']}<br>"
+            f"<h2 style='color:{main_c}'>{info.get('title') or '—'}</h2>"
+            f"<p style='color:{dim_c}'><b>作者：</b>{info.get('author') or '—'}<br>"
+            f"<b>字数：</b>{info.get('words_num') or '—'}<br>"
             f"<b>标签：</b>{info.get('tags') or '—'}<br>"
             f"<b>ID：</b>{info['id']}</p>"
             f"<p style='color:{main_c}'><b>简介：</b><br>{info['intro']}</p>"
@@ -2565,7 +2577,7 @@ class MainWindow(QMainWindow):
         scope = ""
         if options.get("start_chapter"):
             scope = f"（第{options['start_chapter']}-{options['end_chapter']}章）"
-        self.log(f"已加入下载队列：《{book['title']}》（{fmt}）{scope}")
+        self.log(f"已加入下载队列：《{book.get('title') or book.get('id') or '未知'}》（{fmt}）{scope}")
         self.tabs.setCurrentWidget(self.queue_view)
 
     def _on_queue_task_finished(self, task: Dict[str, Any]) -> None:
