@@ -20,7 +20,7 @@ from typing import Optional
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, Qt
 from PySide6.QtWidgets import (
-    QAbstractScrollArea, QApplication, QGraphicsOpacityEffect, QProgressBar, QWidget,
+    QAbstractScrollArea, QApplication, QComboBox, QGraphicsOpacityEffect, QProgressBar, QWidget,
 )
 
 # ---- 时长档位（毫秒）----
@@ -269,6 +269,84 @@ def install_smooth_scrolling(root: Optional[QWidget]) -> None:
             area.setProperty("_smooth_wheel_installed", True)
     except Exception:  # noqa: BLE001
         pass
+
+
+# ------------------------------------------------------------------ 下拉框滚轮守卫
+
+class ComboWheelGuard(QObject):
+    """全局守卫：滚轮悬停在 QComboBox 上时不再切换选项，改为滚动所在页面。
+
+    QComboBox 默认会消费滚轮事件来切换当前项，导致：滚轮划到下拉框上时
+    选项被无意改动，同时页面又不滚动。这里在 QApplication 层拦截 combo 自身
+    的滚轮，吞掉切换，并把滚轮转发给它祖先里最近的滚动区，从而既能正常滚
+    页面、又不误改选择；点击右侧箭头弹窗、在弹窗列表里滚轮选项均不受影响。
+
+    守卫装在 QApplication 上（以 app 为 QObject 父），全局覆盖所有页面与弹窗，
+    生命周期随应用，避免解释器退出时的销毁顺序问题。
+    """
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() != QEvent.Wheel or not isinstance(obj, QComboBox):
+            return False
+        try:
+            # 组合键（Ctrl 缩放等）交给原生处理，不改变既有语义
+            if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
+                return False
+            area = self._nearest_scroll_area(obj)
+            if area is None:
+                # 不在滚动区里：仍吞掉滚轮以避免误切换选项
+                return True
+            # 转发给滚动区 viewport，让页面照常滚动（含已安装的平滑滚动）
+            target = area.viewport() if hasattr(area, "viewport") else area
+            try:
+                QApplication.sendEvent(target, event)
+            except Exception:  # noqa: BLE001
+                # 某些 Qt 版本事件不可重发：退化为直接驱动滚动条
+                self._fallback_scroll(area, event)
+            return True
+        except Exception:  # noqa: BLE001
+            return True
+
+    @staticmethod
+    def _nearest_scroll_area(widget) -> Optional[QAbstractScrollArea]:
+        parent = widget.parentWidget() if widget is not None else None
+        while parent is not None:
+            if isinstance(parent, QAbstractScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    @staticmethod
+    def _fallback_scroll(area: QAbstractScrollArea, event) -> None:
+        delta = event.angleDelta()
+        if delta.isNull():
+            return
+        vbar = area.verticalScrollBar()
+        hbar = area.horizontalScrollBar()
+        bar = vbar if abs(delta.y()) >= abs(delta.x()) and vbar is not None else hbar
+        if bar is None or bar.maximum() <= bar.minimum():
+            return
+        step = -(delta.y() if bar is vbar else delta.x())
+        bar.setValue(max(bar.minimum(), min(bar.maximum(), bar.value() + int(step))))
+
+
+_combo_guard: Optional[ComboWheelGuard] = None
+
+
+def install_combo_wheel_guard() -> None:
+    """在应用级安装下拉框滚轮守卫（幂等，不依赖动效开关）。"""
+    global _combo_guard
+    app = QApplication.instance()
+    if app is None:
+        return
+    if _combo_guard is not None:
+        try:
+            if _combo_guard.parent() is app:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+    _combo_guard = ComboWheelGuard(app)
+    app.installEventFilter(_combo_guard)
 
 
 def fade_in_window(window: Optional[QWidget]) -> None:

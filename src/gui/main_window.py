@@ -400,6 +400,8 @@ class MainWindow(QMainWindow):
         self._update_bg_pause_visibility()
         # 给所有滚动区域装平滑滚动（表格/文本域/滚动页）
         motion.install_smooth_scrolling(self)
+        # 应用级守卫：滚轮划过下拉框时滚页面而非切换选项（点击弹窗选择不受影响）
+        motion.install_combo_wheel_guard()
 
     def _build_search_page(self) -> None:
         """搜索页：搜索栏（含搜书/搜作者、热搜词）+ 卡片结果列表 + 右侧详情。"""
