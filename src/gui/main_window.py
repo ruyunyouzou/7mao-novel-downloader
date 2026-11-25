@@ -926,6 +926,31 @@ class MainWindow(QMainWindow):
         row_hero.addWidget(self.epub_hero_fixed_combo, 1)
         l_epub.addLayout(row_hero)
         self._sync_hero_mode_ui()
+
+        # ---- 章末尾图（原神地理志横屏风景，正文之后，顶部渐隐） ----
+        self.epub_tail_check = QCheckBox(tr("set.epub_tail"))
+        self.epub_tail_check.setChecked(bool(self.store.settings_get("epub_chapter_tail", False)))
+        self.epub_tail_check.setToolTip(tr("set.epub_tail_tip"))
+        self.epub_tail_check.stateChanged.connect(self._on_epub_tail_changed)
+        l_epub.addWidget(self.epub_tail_check)
+
+        row_tail = QHBoxLayout()
+        self.set_tail_mode_label = QLabel(tr("set.epub_tail_mode"))
+        self.epub_tail_mode_combo = QComboBox()
+        self.epub_tail_mode_combo.addItem(tr("set.epub_tail_rotate"), "rotate")
+        self.epub_tail_mode_combo.addItem(tr("set.epub_tail_fixed"), "fixed")
+        tail_mode_cfg = str(self.store.settings_get("epub_tail_mode", "rotate") or "rotate")
+        ti = self.epub_tail_mode_combo.findData(tail_mode_cfg)
+        self.epub_tail_mode_combo.setCurrentIndex(max(0, ti))
+        self.epub_tail_mode_combo.currentIndexChanged.connect(self._on_epub_tail_mode_changed)
+        self.epub_tail_fixed_combo = QComboBox()
+        self._refresh_hero_fixed_combo("genshin_geo")
+        self.epub_tail_fixed_combo.currentIndexChanged.connect(self._on_epub_tail_fixed_changed)
+        row_tail.addWidget(self.set_tail_mode_label)
+        row_tail.addWidget(self.epub_tail_mode_combo)
+        row_tail.addWidget(self.epub_tail_fixed_combo, 1)
+        l_epub.addLayout(row_tail)
+        self._sync_tail_mode_ui()
         layout.addWidget(card_epub)
 
         # 扩展功能卡片（预设/自动动作/阅读/WebDAV/维护）
@@ -1608,11 +1633,16 @@ class MainWindow(QMainWindow):
         self.log("EPUB 章首题图已" + ("开启" if state else "关闭") + "（下次下载生效）")
 
     def _refresh_hero_fixed_combo(self, library: str = "genshin") -> None:
-        """重建章首题图「固定图」下拉（仅原神祈愿立绘库）。"""
-        combo = getattr(self, "epub_hero_fixed_combo", None)
+        """按图库重建「固定图」下拉。
+
+        library=genshin 刷新题图下拉；genshin_geo 刷新地理志尾图下拉。
+        """
+        is_tail = library == "genshin_geo"
+        combo = getattr(self, "epub_tail_fixed_combo", None) if is_tail \
+            else getattr(self, "epub_hero_fixed_combo", None)
         if combo is None:
             return
-        fixed_key = "epub_hero_fixed"
+        fixed_key = "epub_tail_fixed" if is_tail else "epub_hero_fixed"
         combo.blockSignals(True)
         combo.clear()
         try:
@@ -1649,6 +1679,34 @@ class MainWindow(QMainWindow):
             self.epub_hero_fixed_combo.setEnabled(enabled and is_fixed)
         if hasattr(self, "epub_hero_mode_combo"):
             self.epub_hero_mode_combo.setEnabled(enabled)
+
+    def _on_epub_tail_changed(self, state: int) -> None:
+        """章末尾图开关变更，持久化。"""
+        self.store.settings_set("epub_chapter_tail", bool(state))
+        self._sync_tail_mode_ui()
+        self.log("EPUB 章末尾图（地理志）已" + ("开启" if state else "关闭") + "（下次下载生效）")
+
+    def _on_epub_tail_mode_changed(self, _idx: int = 0) -> None:
+        """尾图分配方式变更。"""
+        self.store.settings_set("epub_tail_mode", self.epub_tail_mode_combo.currentData() or "rotate")
+        if self.epub_tail_mode_combo.currentData() == "fixed" and \
+                not self.store.settings_get("epub_tail_fixed", "") and \
+                self.epub_tail_fixed_combo.count() > 0:
+            self.store.settings_set("epub_tail_fixed", self.epub_tail_fixed_combo.itemData(0) or "")
+        self._sync_tail_mode_ui()
+
+    def _on_epub_tail_fixed_changed(self, _idx: int = 0) -> None:
+        """固定尾图选择变更。"""
+        self.store.settings_set("epub_tail_fixed", self.epub_tail_fixed_combo.currentData() or "")
+
+    def _sync_tail_mode_ui(self) -> None:
+        """尾图开启且方式为固定时，才启用固定图下拉。"""
+        enabled = bool(self.store.settings_get("epub_chapter_tail", False))
+        is_fixed = (self.epub_tail_mode_combo.currentData() == "fixed") if hasattr(self, "epub_tail_mode_combo") else False
+        if hasattr(self, "epub_tail_fixed_combo"):
+            self.epub_tail_fixed_combo.setEnabled(enabled and is_fixed)
+        if hasattr(self, "epub_tail_mode_combo"):
+            self.epub_tail_mode_combo.setEnabled(enabled)
 
     def _retranslate(self, code: str = "") -> None:
         """语言切换后刷新主窗口可翻译文案（由 i18n 信号触发）。"""
@@ -1745,6 +1803,18 @@ class MainWindow(QMainWindow):
                 self.epub_hero_mode_combo.setCurrentIndex(max(0, self.epub_hero_mode_combo.findData(cur_mode)))
                 self.epub_hero_mode_combo.blockSignals(False)
                 self._refresh_hero_fixed_combo("genshin")
+            if hasattr(self, "epub_tail_check"):
+                self.epub_tail_check.setText(tr("set.epub_tail"))
+                self.epub_tail_check.setToolTip(tr("set.epub_tail_tip"))
+                self.set_tail_mode_label.setText(tr("set.epub_tail_mode"))
+                cur_mode = self.epub_tail_mode_combo.currentData()
+                self.epub_tail_mode_combo.blockSignals(True)
+                self.epub_tail_mode_combo.clear()
+                self.epub_tail_mode_combo.addItem(tr("set.epub_tail_rotate"), "rotate")
+                self.epub_tail_mode_combo.addItem(tr("set.epub_tail_fixed"), "fixed")
+                self.epub_tail_mode_combo.setCurrentIndex(max(0, self.epub_tail_mode_combo.findData(cur_mode)))
+                self.epub_tail_mode_combo.blockSignals(False)
+                self._refresh_hero_fixed_combo("genshin_geo")
             # 两个字体下拉框：保留当前配置值，重建为当前语言的标签
             from .qimao_core import font_combo_items
             cur_chapter = str(self.settings_font_combo.currentData() or "song")

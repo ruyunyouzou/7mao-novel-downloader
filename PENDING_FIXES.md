@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v4.1.4（已发布，2026-11-25）
-- **已修未发版**：**1 / 5**
+- **已修未发版**：**2 / 5**
 - **下一个待发布版本**：v4.1.5（满 5 条时启用）
 
 ## 待发版条目（修一个记一条）
@@ -19,6 +19,7 @@
 -->
 
 | 1 | 资源瘦身：删除原神四星题图 27 张 + 火影尾图库 378 个文件，并清理相关代码、文案与文档 | `assets/chapter_hero/`、`assets/chapter_tail_naruto*/`、`chapter_hero.py`、`qimao_core.py`、`main_window.py`、`i18n.py`、`qimao_downloader_plugin.py`、两份说明文档 | 2026-11-25 |
+| 2 | 章末尾图改用原神「地理志」风景库：按米游社 V7.2 口径建库共 275 张横屏风景图（26 MB，含补齐全的纳塔 42 + 挪德卡莱 41），恢复尾图功能并改为地理志库（题图/尾图双图库） | `assets/chapter_tail_genshin/`、`chapter_hero.py`、`qimao_core.py`、`main_window.py`、`i18n.py`、`qimao_downloader_plugin.py`、两份说明文档 | 2026-11-25 |
 
 ## 发布记录
 

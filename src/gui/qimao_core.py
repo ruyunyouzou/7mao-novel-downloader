@@ -509,8 +509,6 @@ def build_txt(book_id: str, save_path: str, fmt: str,
               hero_fixed: str = "", hero_library: str = "genshin",
               chapter_tail: Optional[bool] = None, tail_mode: Optional[str] = None,
               tail_fixed: str = "", smart_art: Optional[bool] = None) -> Dict:
-    # 注：chapter_tail/tail_mode/tail_fixed 为兼容旧调用方保留，火影库已移除，
-    # 这些参数被忽略，不再注入章末尾图。
     """
     完整下载一本书并写出文件。
 
@@ -537,9 +535,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     :param hero_mode: 题图分配方式：rotate=按章轮换 / fixed=固定一张 / none=不用。
     :param hero_fixed: hero_mode=fixed 时指定的题图 key（如 Columbina）。
     :param hero_library: 题图图库 key（保留兼容，题图固定用 genshin 原神库）。
-    :param chapter_tail: （已废弃，保留兼容）火影尾图库已移除，此参数被忽略。
-    :param tail_mode: （已废弃，保留兼容）被忽略。
-    :param tail_fixed: （已废弃，保留兼容）被忽略。
+    :param chapter_tail: 仅 EPUB 生效——每章正文之后插入章末尾图（原神地理志
+        风景图，顶部渐隐已烘焙进 PNG）。默认 False（关闭）。
+    :param tail_mode: 尾图分配方式：rotate=按章轮换 / fixed=固定一张 / none=不用。
+    :param tail_fixed: tail_mode=fixed 时指定的尾图 key。
     :param smart_art: 智能选题预设：题图每本随机 30 张（必含 7 张神明）。
         True=启用 / False=关闭 / None=读取全局设置。
         缺省（如追更重建未传参）时，题图参数自动回退到全局设置。
@@ -559,11 +558,13 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         hero_mode = str(_g("epub_hero_mode", "rotate") or "rotate")
     if smart_art is None:
         smart_art = bool(_g("epub_smart_art", True))
+    # 尾图参数缺省时同样回退到全局设置（与题图一致，追更重建不丢图）
+    if chapter_tail is None:
+        chapter_tail = bool(_g("epub_chapter_tail", False))
+    if tail_mode is None:
+        tail_mode = str(_g("epub_tail_mode", "rotate") or "rotate")
     hero_mode = str(hero_mode or "rotate")
-    # 尾图相关参数虽保留兼容，但火影库已删除，强制不启用
-    chapter_tail = False
-    tail_mode = "rotate"
-    tail_fixed = ""
+    tail_mode = str(tail_mode or "rotate")
     book_seed = f"{book_id}|{title_hint}"
 
     # 节流：全本书上千章时，进度只在整数百分比变化时回调，避免 UI 高频刷新
@@ -705,15 +706,18 @@ def build_txt(book_id: str, save_path: str, fmt: str,
 
             def _prepare_art(enabled: bool, library: str, mode: str, fixed: str,
                              uid_prefix: str, smart: bool = False) -> tuple:
-                """准备章首题图的 (item_map, pick_fn, order, css)。失败不影响下载。"""
+                """准备题图/尾图的 (item_map, pick_fn, order, css)。失败不影响下载。"""
                 item_map: dict = {}
                 if not enabled:
                     return item_map, None, [], "", "rotate", ""
-                css = _ch.hero_css()
+                is_tail = (library == _ch.TAIL_LIBRARY)
+                css = _ch.tail_css() if is_tail else _ch.hero_css()
                 try:
                     all_arts = _ch.available_heroes(library)
                     if smart:
-                        arts = _ch.smart_hero_pool(book_seed, all_arts)
+                        # 题图=7神明智能池；尾图=地理志按地区均衡池
+                        arts = (_ch.smart_tail_pool(book_seed, all_arts) if is_tail
+                                else _ch.smart_hero_pool(book_seed, all_arts))
                         pick_mode, pick_fixed = "rotate", ""  # 在智能池内按章轮换
                     else:
                         arts = all_arts
@@ -751,6 +755,13 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 chapter_hero, _ch.HERO_LIBRARY, hero_mode, hero_fixed, "hero",
                 smart=bool(smart_art))
             style_css += "\n" + _hero_css
+
+            # ---- 章末尾图：准备原神地理志图库（横屏风景，顶部渐隐） ----
+            (tail_item_map, _pick_tail, _tail_order, _tail_css,
+             tail_pick_mode, tail_pick_fixed) = _prepare_art(
+                chapter_tail, _ch.TAIL_LIBRARY, tail_mode, tail_fixed, "tail",
+                smart=bool(smart_art))
+            style_css += "\n" + _tail_css
 
             css_item = epub.EpubItem(
                 uid="layout_style", file_name="style.css",
@@ -795,10 +806,22 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             '</div>'
                         )
 
+                # 章末尾图：在正文之后插入地理志风景图（顶部渐隐已烘焙进 PNG）
+                tail_html = ""
+                if tail_item_map and _pick_tail is not None:
+                    picked_t = _pick_tail(i, _tail_order, mode=tail_pick_mode, fixed=tail_pick_fixed)
+                    if picked_t and picked_t["key"] in tail_item_map:
+                        img_t = tail_item_map[picked_t["key"]]
+                        tail_html = (
+                            '<div class="chapter-tail">'
+                            f'<img src="{img_t.file_name}" alt=""/>'
+                            '</div>'
+                        )
+
                 c = epub.EpubHtml(title=ch["title"], file_name=f"ch_{i + 1:05d}.xhtml", lang="zh-CN")
                 c.add_item(css_item)  # 让本章引用排版 CSS
                 c.content = (
-                    f"{hero_html}{title_html}<p>{body_html}</p>"
+                    f"{hero_html}{title_html}<p>{body_html}</p>{tail_html}"
                 )
                 book.add_item(c)
                 epub_chapters.append(c)
