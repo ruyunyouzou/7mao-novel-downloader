@@ -431,6 +431,8 @@ class ShelfView(QWidget):
             "format": fmt,
             "words_num": words_num,
             "file_path": file_path,
+            # 封面 URL 随书落库：本地文件被删时仍能显示封面
+            "cover": book_info.get("cover", ""),
             # 书源随书落库：书架重新下载 / 追更要靠它选对内核
             "source": book_info.get("source", ""),
         })

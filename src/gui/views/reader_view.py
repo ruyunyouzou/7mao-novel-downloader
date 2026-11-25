@@ -655,7 +655,15 @@ class ReaderView(QWidget):
         cover.setAlignment(Qt.AlignCenter)
         cover.setStyleSheet("border-radius:5px;")
         loaded = False
-        if cover_url:
+        # 优先从本地书籍文件提取封面（EPUB 内嵌 / 同名图片），离线可用且无网络延迟
+        if path:
+            from ..cover_helper import local_cover, scaled_pixmap
+            img = local_cover(path)
+            if img is not None and not img.isNull():
+                cover.setPixmap(scaled_pixmap(img, 72, 100))
+                loaded = True
+        # 本地无封面时，再用记录里的 cover URL 兜底
+        if not loaded and cover_url:
             try:
                 import requests
                 resp = requests.get(cover_url, timeout=6)

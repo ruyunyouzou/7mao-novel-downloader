@@ -274,7 +274,12 @@ class TaskCard(_CardBase):
     def update_data(self, task: Dict[str, Any], selected: bool = False) -> None:
         self.item_id = task.get("id", "")
         status = task.get("status", "waiting")
-        self._set_title(task.get("book", {}).get("title", "未知"))
+        book = task.get("book", {}) or {}
+        title = book.get("title", "未知")
+        self._set_title(title)
+        # 队列任务的书可能还没下载完，file_path 为空；此时优先用 book 里的 cover URL
+        self._set_cover(title, str(task.get("file_path", "") or ""),
+                        str(book.get("cover", "") or ""))
 
         self.fmt.set_icon(self.nations["fmt"])
         self.fmt.set_text(str(task.get("format", "txt")).upper())

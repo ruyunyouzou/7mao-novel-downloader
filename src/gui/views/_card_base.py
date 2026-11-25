@@ -169,8 +169,52 @@ class _CardBase(QFrame):
     def _set_title(self, title: str) -> None:
         self.title.setText(title)
         self.title.setToolTip(title)
-        self.cover.setText(title[:1] or "书")
         self.cover.setToolTip(title)
+
+    def _set_cover(self, title: str, path: str = "", cover_url: str = "") -> None:
+        """设置封面位：本地 EPUB/同名图优先 → cover URL 异步补图 → 渐变首字兜底。
+
+        - 本地提取离线可用、不阻塞，覆盖绝大多数已下载的书；
+        - 仅当本地无封面且记录带 cover_url 时才异步联网，避免卡顿；
+        - 卡片销毁时安全断开加载线程，杜绝 QThread 崩溃。
+        """
+        from ..cover_helper import AsyncCover, fallback_pixmap, scaled_pixmap
+
+        self._cover_loader = None  # type: ignore[attr-defined]
+        img = None
+        if path:
+            from ..cover_helper import local_cover
+            img = local_cover(path)
+        if img is not None and not img.isNull():
+            self.cover.setPixmap(scaled_pixmap(
+                img, self.cover.width(), self.cover.height()))
+            return
+        # 先放兜底图，避免异步加载期间空白
+        self.cover.setPixmap(fallback_pixmap(
+            title, self.cover.width(), self.cover.height()))
+        if not cover_url:
+            return
+        try:
+            loader = AsyncCover(cover_url)
+
+            def done(url: str, got, _self=self) -> None:
+                # 卡片可能已被销毁，校验有效性后再设置
+                if got is None or got.isNull():
+                    return
+                try:
+                    from shiboken6 import isValid
+                    if not isValid(_self) or not isValid(_self.cover):
+                        return
+                except Exception:  # noqa: BLE001
+                    pass
+                _self.cover.setPixmap(scaled_pixmap(
+                    got, _self.cover.width(), _self.cover.height()))
+
+            loader.loaded.connect(done)
+            loader.start()
+            self._cover_loader = loader  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
 
     def _apply_status(self, text: str, dot_color: str, text_color: str,
                       nation: str | None = None) -> None:

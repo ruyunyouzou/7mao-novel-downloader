@@ -78,7 +78,10 @@ class HistoryCard(_CardBase):
     def update_data(self, rec: Dict[str, Any], selected: bool = False) -> None:
         self.item_id = rec.get("id", "")
         ok = bool(rec.get("success"))
-        self._set_title(rec.get("title", ""))
+        title = rec.get("title", "")
+        self._set_title(title)
+        self._set_cover(title, str(rec.get("file_path", "") or ""),
+                        str(rec.get("cover", "") or ""))
 
         self.author.set_icon(self.nations["author"])
         self.author.set_text(str(rec.get("author", "") or "—"))
@@ -348,6 +351,8 @@ class HistoryView(QWidget):
             "message": message,
             "elapsed": elapsed,
             "file_path": file_path,
+            # 封面 URL 随记录落库：本地文件被删时仍能显示封面
+            "cover": book_info.get("cover", ""),
             # 书源随记录落库：失败重试要靠它选对内核
             "source": book_info.get("source", ""),
         })
