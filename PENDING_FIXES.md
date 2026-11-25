@@ -6,9 +6,9 @@
 
 ## 当前状态
 
-- **基线版本**：v4.1.6（已发布，2026-11-25）
-- **已修未发版**：**10 / 10**（新周期已满；用户要求先不发版，等明确指令）
-- **下一个待发布版本**：v4.1.7（满 10 条，待用户发版指令才启用）
+- **基线版本**：v5.0.0（已发布，2026-11-25，Windows 安装包已上传 GitHub Release）
+- **已修未发版**：**1 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
+- **下一个待发布版本**：v5.0.1（满 10 条或用户明确发版指令才启用）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
 - **阅读器补充**：阅读器专注模式退出入口 + EPUB 章节名 + 字号即时生效修复为用户追加项，另行登记于下方第 15 条，不计入本轮 10 条
@@ -69,6 +69,8 @@
 
 | 27 | **（用户追加项，不计入本轮 10 条）** 修复启动时的终端黑框 / 两个一闪而过的空白框：用户从桌面快捷方式打开软件、且本机装了 Calibre，启动瞬间先弹黑框与两个空白框再进主界面。根因是 Windows 下 `subprocess` 调控制台程序未传 `CREATE_NO_WINDOW`——启动时 `CalibreView.__init__` 同步 `_detect()` → `detect_calibre()` → `subprocess.run([calibredb, "--version"])` 必然弹控制台窗口。修复：`calibre_core.py` 新增 `_no_window_flags()`（Windows 返回 `CREATE_NO_WINDOW=0x08000000`，带硬编码兜底；非 Windows 返回 0），应用到全部 3 处子进程调用（--version / `_run` / `open_editor`）；`epub_check.py` 的 java epubcheck 调用同样加 `creationflags`。主程序 `build.spec` 本就 `console=False`，弹框纯来自子进程。验证：模拟 Windows 返回 0x08000000、非 Windows 返回 0，pyflakes + compileall 通过。**版本仍 5.0.0，未打 tag、未上传、未发版** | `calibre_core.py`、`epub_check.py` | 2026-11-25 |
 
+| 28 | **（v5.0.0 后新周期第 1 条，用户要求先不发版）** 修复内置「检查更新/一键升级」在国内代理环境下报 `SSL: CERTIFICATE_VERIFY_FAILED` / 连不上服务器：根因是 `update_installer.find_asset()` 与 `update_core._fetch_manifest/_fetch_release()` 直连 `api.github.com`/`raw.githubusercontent.com`，网络经代理/加速器/安全软件做 HTTPS 拦截后证书链不被 Python 信任，且无镜像回退。新增通用 `gui/netutil.py::safe_get()`（逐个通道尝试，先严格校验证书、证书失败同通道 `verify=False` 降级、403/429 匿名限流自动换镜像，静音 InsecureRequestWarning）；`find_asset` 的 API 查询加 gh-proxy/ghfast 镜像回退；`download_asset` 改用 safe_get 带证书容错并用 `_brief()` 压缩异常提示；manifest 加 jsDelivr/gh-proxy 回退，Release 加 gh-proxy/ghfast 回退；错误文案改为友好的「无法连接到更新服务器，请稍后重试或手动下载」不再弹 SSL 原文。**验证**：netutil 降级/回退/全失败 4 条单测通过、403 限流回退通过、真实网络 `check_update` 识别 5.0.0、`find_asset` 拿到 `_Windows_v5.0.0.zip`（205 MB）、全量 compileall + pyflakes 0 告警 + 相关模块离屏导入通过。注：此修复需随下一个版本打包才在用户 exe 生效；当前 v5.0.0 用户须手动下载安装包升级 | `netutil.py`（新增）、`update_core.py`、`update_installer.py` | 2026-11-25 |
+
 <!-- ===== 以下 5 条已随 v4.1.6 发布，归档保留 ===== -->
 | 1 | 修复所有下拉框（QComboBox）鼠标滚轮悬停时会切换选项、并导致页面滚不动的问题：在 QApplication 层新增全局滚轮守卫 `ComboWheelGuard`，拦截 combo 本体滚轮、吞掉切换并转发给最近的祖先滚动区；点击右侧箭头弹窗、弹窗列表内滚轮选择均不受影响 | `motion.py`、`main_window.py` | 2026-11-25 |
 | 2 | 修复界面间歇性卡顿/未响应，提升流畅度：①动态背景引擎与流光背景在窗口最小化/无可见窗口时暂停重绘、还原时恢复（新增 `changeEvent`）；②统一降低重绘频率（50/60ms→80ms）；③流光背景 4 个大半径渐变改为预渲染柔光贴图缓存，每帧只 drawPixmap（实测 4.71→3.08ms/帧）；④切页透明化由全量遍历改为只处理当前页 | `dynamic_backgrounds.py`、`flow_background.py`、`side_nav.py`、`main_window.py` | 2026-11-25 |
@@ -87,7 +89,7 @@
 
 | 版本 | 发布日期 | 包含的 bug 数 | 备注 |
 |------|----------|---------------|------|
-| v5.0.0 | 2026-11-25 | 大版本（追加项 21–26：番茄内核接入 + 全功能对照 + 自研搜索 + 四轮复查 + 番茄全链接解析 + 全面体检） | **大版本更新**：七猫+番茄双书源下载能力，为三书源架构奠基。版本真源 `APP_VERSION` 与 manifest 均升 5.0.0；已用系统 Python 3.12 打出 Linux 版 `星隅小说下载器_Linux_v5.0.0.zip`（可运行、番茄/七猫内核齐全）；Windows .exe 仍需在 Windows 机打包（跨平台限制） |
+| v5.0.0 | 2026-11-25 | 大版本（追加项 21–26：番茄内核接入 + 全功能对照 + 自研搜索 + 四轮复查 + 番茄全链接解析 + 全面体检） | **大版本更新**：七猫+番茄双书源下载能力，为三书源架构奠基。版本真源 `APP_VERSION` 与 manifest 均升 5.0.0；已用系统 Python 3.12 打出 Linux 版 `星隅小说下载器_Linux_v5.0.0.zip`（可运行、番茄/七猫内核齐全）；Windows 安装包 `_Windows_v5.0.0.zip`（约 196 MB）已通过 GitHub Actions（windows-latest + PyInstaller + action-gh-release）自动打包并上传 Release v5.0.0 |
 | v4.1.6 | 2026-11-25 | 5（下拉框滚轮守卫 + 卡顿/未响应优化 + 下载对话框补全 + 微信读书刷新延迟 + 搜索分页与未知书名修复） | 按 5-bug 约定正常发布；发布前已做代码 + 打包全流程体检 |
 | v4.1.5 | 2026-11-25 | 5（资源瘦身 + 地理志尾图库 + 背景白框/动态光效 + 导航竖条 + 微信读书笔记名称） | 按 5-bug 约定正常发布 |
 | v4.1.4 | 2026-11-25 | 1（搜索 terminate 崩溃/延迟/闪烁） | 例外发布：用户当时要求修后发布 |

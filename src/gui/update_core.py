@@ -30,9 +30,8 @@ import sys
 import time
 from typing import Any, Dict
 
-import requests
-
 from .logutil import logger
+from .netutil import safe_get
 from .version import APP_VERSION, is_newer
 
 # ---- 数据源（可通过外置 update_config.json 覆盖，无需改代码重打包）----
@@ -164,7 +163,16 @@ def _fetch_manifest(current: str, timeout: int) -> Dict[str, Any] | None:
     """读取 manifest。成功返回 result 字典，失败返回 None。"""
     try:
         manifest_url, _ = _urls()
-        resp = requests.get(manifest_url, headers=_HEADERS, timeout=timeout)
+        # raw.githubusercontent.com 走 jsDelivr / gh-proxy 镜像回退（均带证书容错）
+        raw_path = manifest_url.split("raw.githubusercontent.com/", 1)[-1]
+        mirrors = [
+            f"https://cdn.jsdelivr.net/gh/{raw_path}",
+            f"https://gh-proxy.com/https://raw.githubusercontent.com/{raw_path}",
+        ]
+        resp, err = safe_get(manifest_url, headers=_HEADERS, timeout=timeout, extra_urls=mirrors)
+        if resp is None:
+            logger.warning("读取 manifest 失败（所有通道）", exc=err, tag="update")
+            return None
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -204,7 +212,15 @@ def _fetch_release(current: str, timeout: int) -> Dict[str, Any] | None:
     """读取 GitHub Release。成功返回 result 字典，失败返回 None。"""
     try:
         _, api_url = _urls()
-        resp = requests.get(api_url, headers=_HEADERS, timeout=timeout)
+        api_path = api_url.split("api.github.com/", 1)[-1]
+        mirrors = [
+            f"https://gh-proxy.com/https://api.github.com/{api_path}",
+            f"https://ghfast.top/https://api.github.com/{api_path}",
+        ]
+        resp, err = safe_get(api_url, headers=_HEADERS, timeout=timeout, extra_urls=mirrors)
+        if resp is None:
+            logger.warning("读取 Release 失败（所有通道）", exc=err, tag="update")
+            return None
         if resp.status_code != 200:
             return None
         data = resp.json()

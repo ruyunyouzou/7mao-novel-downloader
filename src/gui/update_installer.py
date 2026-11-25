@@ -29,9 +29,8 @@ import time
 import zipfile
 from typing import Any, Dict, Optional
 
-import requests
-
 from .logutil import logger
+from .netutil import safe_get
 
 # GitHub Releases API / 加速镜像前缀
 _API_LATEST = "https://api.github.com/repos/{repo}/releases/latest"
@@ -51,6 +50,16 @@ _HEADERS = {
 _CHUNK = 1024 * 512  # 512 KiB
 
 
+def _brief(exc: Any) -> str:
+    """把异常压缩成一行简短提示，避免把 SSL 证书原文整段弹给用户。"""
+    if not exc:
+        return "未知错误"
+    name = type(exc).__name__
+    text = str(exc).strip().splitlines()
+    first = text[0] if text else ""
+    return f"{name}: {first}"[:160]
+
+
 def _load_repo() -> str:
     try:
         from .update_core import _load_repo as _r
@@ -68,8 +77,17 @@ def find_asset(version: str = "", timeout: int = 10) -> Dict[str, Any]:
     """
     repo = _load_repo()
     url = _API_BY_TAG.format(repo=repo, tag=f"v{version}") if version else _API_LATEST.format(repo=repo)
+    # API 也走镜像回退：先直连，失败再试 gh-proxy / ghfast 包裹的 api.github.com
+    api_path = url.split("api.github.com/", 1)[-1]
+    mirrors = [
+        f"https://gh-proxy.com/https://api.github.com/{api_path}",
+        f"https://ghfast.top/https://api.github.com/{api_path}",
+    ]
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=timeout)
+        resp, err = safe_get(url, headers=_HEADERS, timeout=timeout, extra_urls=mirrors)
+        if resp is None:
+            logger.warning("查询更新 asset 失败（所有通道）", exc=err, tag="update")
+            return {"ok": False, "error": "查询更新失败：无法连接到更新服务器，请稍后重试或手动下载"}
         if resp.status_code != 200:
             return {"ok": False, "error": f"查询 Release 失败：HTTP {resp.status_code}"}
         data = resp.json()
@@ -91,7 +109,7 @@ def find_asset(version: str = "", timeout: int = 10) -> Dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("查询更新 asset 失败", exc=exc, tag="update")
-        return {"ok": False, "error": f"查询更新失败：{exc}"}
+        return {"ok": False, "error": "查询更新失败：无法连接到更新服务器，请稍后重试或手动下载"}
 
 
 def _with_mirror(url: str, mirror: str) -> str:
@@ -121,8 +139,12 @@ def download_asset(asset: Dict[str, Any], dest: str,
             status_cb(f"尝试下载源：{label}")
         tmp = dest + ".part"
         try:
-            with requests.get(url, stream=True, timeout=(10, timeout),
-                              headers={"User-Agent": "xingyu-novel-updater"}) as resp:
+            resp, err = safe_get(url, stream=True, timeout=(10, timeout),
+                                 headers={"User-Agent": "xingyu-novel-updater"})
+            if resp is None:
+                last_err = f"{label} 连接失败：{_brief(err)}"
+                continue
+            with resp:
                 if resp.status_code not in (200, 206):
                     last_err = f"{label} 返回 HTTP {resp.status_code}"
                     continue
