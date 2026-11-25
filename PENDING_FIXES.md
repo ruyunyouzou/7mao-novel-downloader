@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v4.1.4（已发布，2026-11-25）
-- **已修未发版**：**3 / 5**
+- **已修未发版**：**4 / 5**
 - **下一个待发布版本**：v4.1.5（满 5 条时启用）
 
 ## 待发版条目（修一个记一条）
@@ -21,6 +21,7 @@
 | 1 | 资源瘦身：删除原神四星题图 27 张 + 火影尾图库 378 个文件，并清理相关代码、文案与文档 | `assets/chapter_hero/`、`assets/chapter_tail_naruto*/`、`chapter_hero.py`、`qimao_core.py`、`main_window.py`、`i18n.py`、`qimao_downloader_plugin.py`、两份说明文档 | 2026-11-25 |
 | 2 | 章末尾图改用原神「地理志」风景库：按米游社 V7.2 口径建库共 275 张横屏风景图（26 MB，含补齐全的纳塔 42 + 挪德卡莱 41），恢复尾图功能并改为地理志库（题图/尾图双图库） | `assets/chapter_tail_genshin/`、`chapter_hero.py`、`qimao_core.py`、`main_window.py`、`i18n.py`、`qimao_downloader_plugin.py`、两份说明文档 | 2026-11-25 |
 | 3 | 修复设置页背景两大问题：①动态光效背景被页面裸容器（viewport/表格/页面根）不透明底遮挡导致"一样且无动态"——挂载时透明化、卸载时恢复；②色块高亮白框在主题切换后漂移——同步选中态并让 preview/名称/编辑按钮点击都可靠切换；顺带修复星河漂流动效过弱、浮光粒子高频绘制触发 PySide6 引用计数崩溃（none_dealloc）改为预渲染贴图 | `side_nav.py`、`dynamic_backgrounds.py`、`flow_background.py`、`ui_background_widgets.py`、`main_window.py` | 2026-11-25 |
+| 4 | 修复导航条高亮竖条偶尔不跟随切换：页面已切到设置但竖条仍停在功能说明。根因为滑动动画对象无强引用保活 + 切页/折叠/rresize 竞态时旧动画继续拉回旧位置；改为动画对象强引用保活、结束回调强制对齐最新目标、所有立即定位路径先停旧动画 | `side_nav.py`、`motion.py` | 2026-11-25 |
 
 ## 发布记录
 

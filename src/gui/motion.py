@@ -152,13 +152,13 @@ def clear_page_effect(widget: Optional[QWidget]) -> None:
 
 # ------------------------------------------------------------------ 导航指示条滑动
 
-def slide_indicator(indicator: Optional[QWidget], target_y: int) -> None:
-    """把选中指示条平滑滑动到目标 y（保持 x 不变）。"""
+def slide_indicator(indicator: Optional[QWidget], target_y: int) -> Optional[QPropertyAnimation]:
+    """把选中指示条平滑滑动到目标 y（保持 x 不变），返回动画对象供调用方保活/回调。"""
     if indicator is None:
-        return
+        return None
     if not enabled():
         indicator.move(indicator.x(), target_y)
-        return
+        return None
     try:
         anim = getattr(indicator, "_motion_anim", None)
         if isinstance(anim, QPropertyAnimation) and anim.state() == QPropertyAnimation.Running:
@@ -170,8 +170,10 @@ def slide_indicator(indicator: Optional[QWidget], target_y: int) -> None:
         anim.setEasingCurve(_curve(QEasingCurve.OutQuad))
         setattr(indicator, "_motion_anim", anim)
         anim.start()
+        return anim
     except Exception:  # noqa: BLE001
         indicator.move(indicator.x(), target_y)
+        return None
 
 
 # ------------------------------------------------------------------ 进度条

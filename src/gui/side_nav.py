@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer, QSize, QSettings
+from PySide6.QtCore import Qt, Signal, QTimer, QSize, QSettings, QPropertyAnimation
 from PySide6.QtGui import QColor, QIcon, QPixmap, QPalette, QBrush
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QStackedWidget,
@@ -678,6 +678,28 @@ class SideNavWidget(QWidget):
         # 3) 布局重算后重新定位指示条；若当前选中项被折叠则隐藏
         QTimer.singleShot(0, self._relayout_indicator)
 
+    def _stop_indicator_anim(self) -> None:
+        """停止正在运行的指示条动画并清除引用。
+
+        动画若不被显式停止，会在切页/折叠/resize 后继续把竖条拉向旧目标，
+        造成「页面已切换、竖条却停在上一项」的错位。所有需要立即可靠定位
+        的路径都会先调用它。
+        """
+        anim = getattr(self, "_indicator_anim", None)
+        if isinstance(anim, QPropertyAnimation) and \
+                anim.state() == QPropertyAnimation.Running:
+            anim.stop()
+        self._indicator_anim = None
+
+    def _indicator_pos_for(self, index: int):
+        """返回给定导航项左侧竖条应处的 (x, y)（side 坐标系）。"""
+        if not (0 <= index < len(self._buttons)):
+            return None
+        btn = self._buttons[index]
+        g = btn.geometry()
+        y = g.y() + (g.height() - self._indicator.height()) // 2
+        return g.x(), y
+
     def _relayout_indicator(self) -> None:
         idx = self.currentIndex()
         btn = self._buttons[idx] if 0 <= idx < len(self._buttons) else None
@@ -685,8 +707,10 @@ class SideNavWidget(QWidget):
             return
         # 若按钮处于折叠的分组内（不可见），隐藏指示条
         if not btn.isVisible():
+            self._stop_indicator_anim()
             self._indicator.hide()
             return
+        # 折叠/展开会改变所有按钮几何：停掉旧动画并立即按新几何归位
         self._place_indicator(idx, animate=False)
 
     def section_headers(self):
@@ -694,23 +718,63 @@ class SideNavWidget(QWidget):
         return getattr(self, "_section_headers", [])
 
     def _place_indicator(self, index: int, animate: bool = True) -> None:
-        """把选中指示条移动到目标导航项左侧。首次显示时直接就位。"""
-        if not (0 <= index < len(self._buttons)):
+        """把选中指示条移动到目标导航项左侧。
+
+        可靠性保证：无论动画是否可用，竖条的「权威位置」始终由当前选中项
+        的几何决定；动画仅作视觉过渡，结束回调会再次对齐到最新目标，避免
+        连续切页 / 折叠 / resize 时的竞态残留。
+        """
+        pos = self._indicator_pos_for(index)
+        if pos is None:
             return
+        x, y = pos
+        self._indicator_target = (x, y)  # 记录最新目标，供动画结束回调校准
         btn = self._buttons[index]
-        # btn 位于 side 的子布局中；换算到 side 坐标系
-        y = btn.geometry().y() + (btn.geometry().height() - self._indicator.height()) // 2
-        x = btn.geometry().x()
-        if not self._indicator.isVisible():
+
+        # 不可见（首次或折叠后）：停动画、直接就位、显示
+        if not btn.isVisible():
+            self._stop_indicator_anim()
             self._indicator.move(x, y)
             self._indicator.show()
             self._indicator.raise_()
-        elif animate:
-            # x 一般固定不变，仅纵向滑动
-            self._indicator.move(x, self._indicator.y())
-            motion.slide_indicator(self._indicator, y)
+            return
+
+        # 需要动画：先停旧动画，再启动新动画；动画对象强引用保活，
+        # 结束回调强制归位到「最新」目标（若期间又切页，用最新值而非旧值）
+        if animate and motion.enabled():
+            self._stop_indicator_anim()
+            anim = motion.slide_indicator(self._indicator, y)
+            if isinstance(anim, QPropertyAnimation):
+                self._indicator_anim = anim  # 保活，防止 GC 导致动画卡死
+                try:
+                    anim.finished.connect(self._on_indicator_anim_finished)
+                except Exception:  # noqa: BLE001
+                    pass
+            if not self._indicator.isVisible():
+                self._indicator.show()
+                self._indicator.raise_()
         else:
+            # 无动画：停旧动画并立即精确归位
+            self._stop_indicator_anim()
             self._indicator.move(x, y)
+            if not self._indicator.isVisible():
+                self._indicator.show()
+                self._indicator.raise_()
+
+    def _on_indicator_anim_finished(self) -> None:
+        """动画结束后强制对齐到最新目标，消除竞态残留。"""
+        anim = getattr(self, "_indicator_anim", None)
+        self._indicator_anim = None
+        target = getattr(self, "_indicator_target", None)
+        if target is None:
+            return
+        x, y = target
+        # 只有当当前位置确实偏离时才校正，避免打断后续新动画
+        cur = self._indicator.pos()
+        if (cur.x(), cur.y()) != (x, y):
+            self._indicator.move(x, y)
+        if anim is not None and anim is getattr(self, "_indicator_anim", None):
+            anim.deleteLater()
 
     def setCurrentIndex(self, index: int) -> None:
         if 0 <= index < len(self._buttons):
