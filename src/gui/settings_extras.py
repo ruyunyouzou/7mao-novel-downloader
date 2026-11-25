@@ -236,6 +236,14 @@ def build_extras(win) -> QWidget:
     win.tray_check.setToolTip(tr("extras.tray_tip"))
     win.tray_check.stateChanged.connect(lambda s: store.settings_set("tray_enabled", bool(s)))
     rl.addWidget(win.tray_check)
+    # 关闭窗口即退出程序：默认开启，避免进程常驻占用安装目录导致旧版本无法删除/覆盖。
+    # 关闭此项且启用托盘时，关闭窗口才会最小化到托盘、后台继续下载。
+    win.quit_on_close_check = QCheckBox(tr("extras.quit_on_close"))
+    win.quit_on_close_check.setChecked(bool(store.settings_get("quit_on_close", True)))
+    win.quit_on_close_check.setToolTip(tr("extras.quit_on_close_tip"))
+    win.quit_on_close_check.stateChanged.connect(
+        lambda s: store.settings_set("quit_on_close", bool(s)))
+    rl.addWidget(win.quit_on_close_check)
     # 界面动效（页面过渡 / 滑动指示条 / 平滑滚动 / 进度条缓动）
     win.motion_check = QCheckBox(tr("extras.motion_enable"))
     win.motion_check.setChecked(bool(store.settings_get("ui_motion", True)))

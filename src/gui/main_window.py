@@ -2024,6 +2024,7 @@ class MainWindow(QMainWindow):
             "autorun_weread": ("auto_weread_check", "extras.autorun_weread"),
             "autorun_verify": ("auto_verify_check", "extras.autorun_verify"),
             "tray": ("tray_check", "extras.tray"),
+            "quit_on_close": ("quit_on_close_check", "extras.quit_on_close"),
             "auto_update": ("auto_update_check", "extras.auto_update"),
             "check_update": ("btn_check_update", "extras.check_update"),
             "open_log": ("btn_open_log", "extras.open_log"),
@@ -2825,17 +2826,37 @@ class MainWindow(QMainWindow):
                     pass
 
     def closeEvent(self, event) -> None:
-        # 最小化到托盘：下载可在后台继续
+        # 关闭窗口行为：默认「真正退出程序」，确保退后台后无残留进程占用安装目录
+        # （Windows 下只要进程还在，_internal/*.dll 就会被锁定，旧版本无法删除）。
+        # 仅当用户主动关闭 quit_on_close 且启用托盘时，才保留「最小化到托盘」的后台下载。
         tray = getattr(self, "tray", None)
-        if (not self._force_quit and tray is not None
+        quit_on_close = self.store.settings_get("quit_on_close", True)
+        if (not self._force_quit and not quit_on_close and tray is not None
                 and self.store.settings_get("tray_enabled", True)):
             self.hide()
             self.log("已最小化到系统托盘，下载仍在后台进行。")
             event.ignore()
             return
         # 真正退出：清理资源
+        self._force_quit = True
         if tray is not None:
             tray.hide()
+            try:
+                tray.setParent(None)
+                tray.deleteLater()
+            except RuntimeError:
+                pass
+            self.tray = None
+        # 停止所有仍在运行的 QTimer（动态背景、队列刷新、阅读器自动翻章、
+        # 微信读书刷新、预览动画等）。任何活跃定时器都会让 Qt 事件循环保持存活，
+        # 表现为「关闭窗口后仍有后台进程」，进而占用 _internal 导致无法删除。
+        from PySide6.QtCore import QTimer as _QTimer
+        for timer in self.findChildren(_QTimer):
+            try:
+                if timer.isActive():
+                    timer.stop()
+            except RuntimeError:
+                pass
         # 停止动态背景动画定时器
         dyn = getattr(self, "_dynamic_bg", None)
         if dyn is not None and hasattr(dyn, "stop"):
@@ -2883,3 +2904,9 @@ class MainWindow(QMainWindow):
             pass
         self.pm.unload_all()
         event.accept()
+        # 兜底：主动请求事件循环退出。PyInstaller 打包后若仍有隐藏窗口/未销毁对象，
+        # Qt 可能不自动退出，导致进程常驻并占用 _internal。延迟一帧再 quit，
+        # 让 closeEvent 先走完、各对象完成清理。
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer as _QTimerQuit
+        _QTimerQuit.singleShot(0, QApplication.instance().quit)
