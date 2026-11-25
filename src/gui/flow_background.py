@@ -55,8 +55,9 @@ class FlowGradientWidget(QWidget):
         self._paused = False
         self._t = 0.0
         self._blob_override = None  # 自定义光团色（由配色中心注入）
+        self._blob_pix_cache = {}   # (color, dark) -> 预渲染柔光贴图
         self._timer = QTimer(self)
-        self._timer.setInterval(60)  # ~16fps，低占用
+        self._timer.setInterval(80)  # ~12.5fps，低占用（渐变流动缓慢，肉眼无差）
         self._timer.timeout.connect(self._on_tick)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
@@ -72,6 +73,7 @@ class FlowGradientWidget(QWidget):
                 self.set_blob_colors(ub.flow_blob_colors(dark))
             except Exception:  # noqa: BLE001
                 self._blob_override = None
+            self._blob_pix_cache.clear()  # 主题变了，柔光贴图 peak alpha 不同
             self.update()
 
     def set_paused(self, paused: bool) -> None:
@@ -88,6 +90,7 @@ class FlowGradientWidget(QWidget):
             raw = colors[i] if colors and i < len(colors) else default[3]
             c = QColor(raw)
             self._blob_override.append(c.name() if c.isValid() else default[3])
+        self._blob_pix_cache.clear()  # 颜色变了，贴图需重建
         self.update()
 
     def is_paused(self) -> bool:
@@ -99,10 +102,22 @@ class FlowGradientWidget(QWidget):
 
     # ---------------- 内部 ----------------
     def _apply_timer(self) -> None:
-        if self._paused or not self.isVisible():
+        # 最小化 / 无可见窗口时停绘，避免后台持续占用主线程
+        if self._paused or not self._window_active() or not self.isVisible():
             self._timer.stop()
         else:
             self._timer.start()
+
+    @staticmethod
+    def _window_active() -> bool:
+        try:
+            from PySide6.QtWidgets import QApplication
+            wins = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
+            if not wins:
+                return True
+            return any(not w.isMinimized() for w in wins)
+        except Exception:  # noqa: BLE001
+            return True
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -112,10 +127,48 @@ class FlowGradientWidget(QWidget):
         super().hideEvent(event)
         self._timer.stop()
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        from PySide6.QtCore import QEvent
+        if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
+            self._apply_timer()
+
     def _on_tick(self) -> None:
         # 60ms 一帧、+0.022/帧，约 1.5 秒一个完整漂移相位，肉眼可见
         self._t += 0.022
         self.update()
+
+    # 预渲染柔光贴图缓存：color -> QPixmap。渐变只生成一次，绘制帧只做 drawPixmap，
+    # 避免每帧构造 4 个大半径 QRadialGradient（实测 4.7ms/帧的主线程热点）。
+    _PIX_SIZE = 256
+
+    def _ensure_blob_pixmaps(self, colors) -> None:
+        from PySide6.QtGui import QPixmap
+        cache = self._blob_pix_cache
+        peak = 175 if self._dark else 150
+        mid_alpha = 40
+        for c in colors:
+            key = (c, self._dark)
+            if key in cache:
+                continue
+            s = self._PIX_SIZE
+            pm = QPixmap(s, s)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            color = QColor(c)
+            gradient = QRadialGradient(
+                QRectF(0, 0, s, s).center(), s / 2)
+            inner = QColor(color); inner.setAlpha(peak)
+            mid = QColor(color.red(), color.green(), color.blue(), mid_alpha)
+            outer = QColor(color); outer.setAlpha(0)
+            gradient.setColorAt(0.0, inner)
+            gradient.setColorAt(0.55, mid)
+            gradient.setColorAt(1.0, outer)
+            p.setBrush(QBrush(gradient))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QRectF(0, 0, s, s))
+            p.end()
+            cache[key] = pm
 
     def paintEvent(self, event) -> None:  # noqa: N802
         w, h = self.width(), self.height()
@@ -129,29 +182,22 @@ class FlowGradientWidget(QWidget):
         painter.fillRect(self.rect(), base)
 
         blobs = _DARK_BLOBS if self._dark else _LIGHT_BLOBS
+        colors = [
+            self._blob_override[i] if (self._blob_override and i < len(self._blob_override))
+            else b[3]
+            for i, b in enumerate(blobs)
+        ]
+        self._ensure_blob_pixmaps(colors)
         unit = float(min(w, h))
         for i, (bx, by, br, color, phase, speed) in enumerate(blobs):
-            if self._blob_override and i < len(self._blob_override):
-                color = self._blob_override[i]
-            # 让光团沿李萨如曲线缓慢漂移，幅度控制在内容区内
+            # 光团沿李萨如曲线缓慢漂移，幅度控制在内容区内
             cx = w * (0.5 + 0.32 * math.sin(self._t * speed + phase))
             cy = h * (0.5 + 0.30 * math.cos(self._t * speed * 0.83 + phase * 1.3))
             radius = unit * br
-
-            color_obj = QColor(color)
-            gradient = QRadialGradient(QRectF(cx - radius, cy - radius,
-                                              radius * 2, radius * 2).center(), radius)
-            inner = QColor(color_obj)
-            inner.setAlpha(175 if self._dark else 150)
-            outer = QColor(color_obj)
-            outer.setAlpha(0)
-            gradient.setColorAt(0.0, inner)
-            gradient.setColorAt(0.55, QColor(color_obj.red(), color_obj.green(),
-                                             color_obj.blue(), 40))
-            gradient.setColorAt(1.0, outer)
-
-            painter.setBrush(QBrush(gradient))
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QRectF(cx - radius, cy - radius, radius * 2, radius * 2))
+            pm = self._blob_pix_cache[(colors[i], self._dark)]
+            # 柔光渐变本身无锐利边缘，放大时不需平滑插值（该项开销大）
+            painter.drawPixmap(
+                QRectF(cx - radius, cy - radius, radius * 2, radius * 2),
+                pm, QRectF(0, 0, pm.width(), pm.height()))
 
         painter.end()

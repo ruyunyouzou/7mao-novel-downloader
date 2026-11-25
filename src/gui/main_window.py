@@ -2650,6 +2650,27 @@ class MainWindow(QMainWindow):
             "开源版本身不含章节下载内核，可通过插件提供。",
         )
 
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """窗口最小化 / 还原时暂停或恢复动态背景，避免后台持续重绘卡顿。"""
+        from PySide6.QtCore import QEvent
+        super().changeEvent(event)
+        if event.type() != QEvent.WindowStateChange:
+            return
+        dyn = getattr(self, "_dynamic_bg", None)
+        if dyn is None or not hasattr(dyn, "set_paused"):
+            return
+        if self.isMinimized():
+            dyn.set_paused(True)
+        else:
+            # 恢复时尊重用户手动暂停设置
+            paused = bool(self.store.settings_get("bg_anim_paused", False))
+            dyn.set_paused(paused)
+            if hasattr(dyn, "_apply_timer"):
+                try:
+                    dyn._apply_timer()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def closeEvent(self, event) -> None:
         # 最小化到托盘：下载可在后台继续
         tray = getattr(self, "tray", None)

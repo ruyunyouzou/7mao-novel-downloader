@@ -37,7 +37,7 @@ class AnimatedBackground(QWidget):
     default_dark: List[str] = []
     default_light: List[str] = []
 
-    def __init__(self, parent=None, dark: bool = True, interval: int = 50) -> None:
+    def __init__(self, parent=None, dark: bool = True, interval: int = 80) -> None:
         super().__init__(parent)
         self._dark = bool(dark)
         self._paused = False
@@ -92,10 +92,26 @@ class AnimatedBackground(QWidget):
         return QColor(_DARK_BASE if self._dark else _LIGHT_BASE)
 
     def _apply_timer(self) -> None:
-        if self._paused or not self.isVisible():
+        # 窗口最小化 / 未被激活时停止重绘，避免后台持续占用主线程导致卡顿。
+        # 仅判断 widget 自身 isVisible() 不够：它在 StackAll 里被上层页面盖住
+        # 仍算可见，窗口最小化时也可能保持可见。
+        if self._paused or not self._window_active() or not self.isVisible():
             self._timer.stop()
         else:
             self._timer.start()
+
+    @staticmethod
+    def _window_active() -> bool:
+        """是否有可见且未最小化的顶层窗口（最小化时停绘，避免后台耗 CPU）。"""
+        try:
+            from PySide6.QtWidgets import QApplication
+            wins = [w for w in QApplication.topLevelWidgets() if w.isVisible()]
+            if not wins:
+                # 尚无顶层窗口（构建期/offscreen）：放行，避免背景永远不启动
+                return True
+            return any(not w.isMinimized() for w in wins)
+        except Exception:  # noqa: BLE001
+            return True
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
@@ -104,6 +120,13 @@ class AnimatedBackground(QWidget):
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._timer.stop()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        # 窗口状态变化（最小化/还原）不是 widget 的 show/hide，需主动同步定时器
+        from PySide6.QtCore import QEvent
+        if event.type() in (QEvent.WindowStateChange, QEvent.ActivationChange):
+            self._apply_timer()
 
     def _on_tick(self) -> None:
         # 每帧推进幅度：60ms 一帧、+0.022/帧，约 1.5 秒一个完整相位，肉眼可见但柔和
@@ -170,7 +193,7 @@ class StarfieldBackground(AnimatedBackground):
     default_dark = ["#ffffff", "#b8c6ff", "#ffd6e8"]
     default_light = ["#7a6fa8", "#6f8fc8", "#c88fae"]
 
-    def __init__(self, parent=None, dark=True, interval=50):
+    def __init__(self, parent=None, dark=True, interval=80):
         super().__init__(parent, dark, interval)
         rng = random.Random(20261124)
         # 星点更大、速度差更大；另加 3 团缓慢漂移的星云光晕，整体动感明显
@@ -253,7 +276,7 @@ class RippleBackground(AnimatedBackground):
     default_dark = ["#4a6fa5", "#6a4a9e", "#3a8a83"]
     default_light = ["#bcd2f0", "#d0bcee", "#bce6de"]
 
-    def __init__(self, parent=None, dark=True, interval=50):
+    def __init__(self, parent=None, dark=True, interval=80):
         super().__init__(parent, dark, interval)
         self._centers = [(0.30, 0.35), (0.72, 0.62), (0.50, 0.20)]
 
@@ -291,7 +314,7 @@ class ParticleBackground(AnimatedBackground):
     default_light = ["#7ba6d8", "#a98fd0", "#6fbfae", "#d8a878"]
     _PIX_SIZE = 24  # 贴图尺寸（含柔光晕）
 
-    def __init__(self, parent=None, dark=True, interval=50):
+    def __init__(self, parent=None, dark=True, interval=80):
         super().__init__(parent, dark, interval)
         rng = random.Random(861230)
         self._parts = [

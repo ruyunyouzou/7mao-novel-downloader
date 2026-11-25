@@ -526,8 +526,10 @@ class SideNavWidget(QWidget):
         # 动态背景需要上层裸容器透明；静态/默认则恢复
         self._set_content_transparent(widget is not None)
 
-    def _set_content_transparent(self, on: bool) -> None:
+    def _set_content_transparent(self, on: bool, only_current: bool = False) -> None:
         """让/恢复内容区各页 QScrollArea 视口与表格视口真正透明。
+
+        only_current=True 时只处理当前可见页（切页后调用，避免全量遍历卡顿）。
 
         Qt 中 viewport 的默认 palette(window) 常为不透明色，且
         ``WA_StyledBackground`` 下 QSS 的 ``background: transparent``
@@ -562,8 +564,14 @@ class SideNavWidget(QWidget):
                     w.setAutoFillBackground(getattr(w, "_bg_orig_autofill", False))
                     delattr(w, "_bg_orig_palette")
 
-        for i in range(stacks.count()):
-            page = stacks.widget(i)
+        pages = []
+        if only_current:
+            cur = stacks.currentWidget()
+            if cur is not None:
+                pages.append(cur)
+        else:
+            pages = [stacks.widget(i) for i in range(stacks.count())]
+        for page in pages:
             if page is None:
                 continue
             # 页面根容器本身
@@ -796,8 +804,8 @@ class SideNavWidget(QWidget):
                 QTimer.singleShot(0, self, self._reapply_content_transparent)
 
     def _reapply_content_transparent(self) -> None:
-        """页面切换后对当前页重新应用透明化（供 QTimer 调用）。"""
-        self._set_content_transparent(True)
+        """页面切换后只对当前页重新应用透明化（供 QTimer 调用）。"""
+        self._set_content_transparent(True, only_current=True)
 
     def _place_indicator_idle(self) -> None:
         """首帧空闲时定位指示条（bound method，作为 QTimer context 安全）。"""
