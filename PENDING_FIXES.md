@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v4.1.5（已发布，2026-11-25）
-- **已修未发版**：**3 / 5**（新周期）
+- **已修未发版**：**4 / 5**（新周期）
 - **下一个待发布版本**：v4.1.6（满 5 条时启用）
 
 ## 待发版条目（修一个记一条）
@@ -22,6 +22,7 @@
 | 1 | 修复所有下拉框（QComboBox）鼠标滚轮悬停时会切换选项、并导致页面滚不动的问题：在 QApplication 层新增全局滚轮守卫 `ComboWheelGuard`，拦截 combo 本体滚轮、吞掉切换并转发给最近的祖先滚动区；点击右侧箭头弹窗、弹窗列表内滚轮选择均不受影响 | `motion.py`、`main_window.py` | 2026-11-25 |
 | 2 | 修复界面间歇性卡顿/未响应，提升流畅度：①动态背景引擎与流光背景在窗口最小化/无可见窗口时暂停重绘、还原时恢复（新增 `changeEvent`）；②统一降低重绘频率（50/60ms→80ms）；③流光背景 4 个大半径渐变改为预渲染柔光贴图缓存，每帧只 drawPixmap（实测 4.71→3.08ms/帧）；④切页透明化由全量遍历改为只处理当前页 | `dynamic_backgrounds.py`、`flow_background.py`、`side_nav.py`、`main_window.py` | 2026-11-25 |
 | 3 | 下载选项对话框补全所有与下载相关的 EPUB 功能（对话彩色高亮、智能选题、章首题图开关/分配/固定图、章末尾图开关/分配/固定图），并把章名/卷名颜色由按钮弹菜单改为与字体一致的下拉选择（预设色块+渐变+自定义取色器）；所有选项随 `options()` 透传至内核且仅影响本次下载、不改全局设置；内容区加滚动保证按钮常驻 | `download_dialog.py`、`main_window.py`、`i18n.py` | 2026-11-25 |
+| 4 | 修复微信读书扫码后刷新延迟特别高（要等许久数据才接入）：`build_dashboard()` 原串行执行最多 10 次网关请求（weekly/overall/shelf/progress/notebooks/5×highlights），RTT 累加；改为分两批并发（批1 四个顶层接口，批2 progress+highlights 依赖批1 bookId），并给 `WeReadClient` 加线程本地 Session 复用 TCP 连接、超时 20→12s；实测单次刷新 2.25s→0.50s（约 4.5×）。刷新进行中重复点击由静默忽略改为状态提示 | `weread_core.py`、`weread_view.py` | 2026-11-25 |
 
 <!-- ===== 以下 5 条已随 v4.1.5 发布，归档保留 ===== -->
 | 1 | 资源瘦身：删除原神四星题图 27 张 + 火影尾图库 378 个文件，并清理相关代码、文案与文档 | `assets/chapter_hero/`、`assets/chapter_tail_naruto*/`、`chapter_hero.py`、`qimao_core.py`、`main_window.py`、`i18n.py`、`qimao_downloader_plugin.py`、两份说明文档 | 2026-11-25 |

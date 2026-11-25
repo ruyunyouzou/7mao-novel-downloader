@@ -1491,8 +1491,9 @@ class WereadView(QWidget):
     # ------------------------------------------------------------------ 刷新
 
     def refresh(self) -> None:
-        # 防止定时刷新与手动点击叠加，避免旧 worker 被覆盖后仍在运行
+        # 防止定时刷新与手动点击叠加：正在同步时给出反馈，不再静默忽略
         if self._worker is not None and self._worker.isRunning():
+            self.status_lbl.setText("正在同步微信读书数据，请稍候…")
             return
         key = self.api_key_edit.text().strip()
         if not key:
