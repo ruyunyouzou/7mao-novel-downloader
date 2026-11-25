@@ -50,13 +50,7 @@ class QimaoRealDownloader(DownloaderBase):
         hero_mode = kwargs.get("hero_mode") or store.settings_get("epub_hero_mode", "rotate") or "rotate"
         hero_fixed = kwargs.get("hero_fixed") or store.settings_get("epub_hero_fixed", "") or ""
         hero_library = "genshin"  # 题图固定用原神祈愿立绘库
-        # 章末尾图（火影横屏无字图）：全局设置，可由下载对话框本次覆盖
-        chapter_tail = kwargs.get("chapter_tail")
-        if chapter_tail is None:
-            chapter_tail = bool(store.settings_get("epub_chapter_tail", False))
-        tail_mode = kwargs.get("tail_mode") or store.settings_get("epub_tail_mode", "rotate") or "rotate"
-        tail_fixed = kwargs.get("tail_fixed") or store.settings_get("epub_tail_fixed", "") or ""
-        # 智能选题预设（题图每本随机30张含7神明 / 尾图2020+随机10张）
+        # 智能选题预设（章首题图每本随机30张含7神明）
         smart_art = kwargs.get("smart_art")
         if smart_art is None:
             smart_art = bool(store.settings_get("epub_smart_art", True))
@@ -80,9 +74,6 @@ class QimaoRealDownloader(DownloaderBase):
                 hero_mode=str(hero_mode),
                 hero_fixed=str(hero_fixed),
                 hero_library=str(hero_library),
-                chapter_tail=bool(chapter_tail),
-                tail_mode=str(tail_mode),
-                tail_fixed=str(tail_fixed),
                 smart_art=bool(smart_art),
             )
         except Exception as exc:  # noqa: BLE001

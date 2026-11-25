@@ -1,7 +1,7 @@
 {
   "_source": "enka.network UI_Gacha_AvatarImg (原神祈愿立绘)",
   "_note": "非商用个人使用；版权归版权方。透明PNG，底部渐隐由 chapter_hero.py 烘焙进 alpha。",
-  "count": 69,
+  "count": 42,
   "heroes": [
     {
       "key": "Venti",
@@ -70,58 +70,16 @@
       "file": "Ayato.png"
     },
     {
-      "key": "Barbara",
-      "zh": "芭芭拉",
-      "group": "four",
-      "file": "Barbara.png"
-    },
-    {
-      "key": "Beidou",
-      "zh": "北斗",
-      "group": "four",
-      "file": "Beidou.png"
-    },
-    {
-      "key": "Bennett",
-      "zh": "班尼特",
-      "group": "four",
-      "file": "Bennett.png"
-    },
-    {
-      "key": "Candace",
-      "zh": "坎蒂丝",
-      "group": "four",
-      "file": "Candace.png"
-    },
-    {
-      "key": "Charlotte",
-      "zh": "夏洛蒂",
-      "group": "four",
-      "file": "Charlotte.png"
-    },
-    {
       "key": "Chasca",
       "zh": "恰斯卡",
       "group": "five",
       "file": "Chasca.png"
     },
     {
-      "key": "Chevreuse",
-      "zh": "夏沃蕾",
-      "group": "four",
-      "file": "Chevreuse.png"
-    },
-    {
       "key": "Chiori",
       "zh": "千织",
       "group": "five",
       "file": "Chiori.png"
-    },
-    {
-      "key": "Chongyun",
-      "zh": "重云",
-      "group": "four",
-      "file": "Chongyun.png"
     },
     {
       "key": "Citlali",
@@ -134,12 +92,6 @@
       "zh": "克洛琳德",
       "group": "five",
       "file": "Clorinde.png"
-    },
-    {
-      "key": "Collei",
-      "zh": "柯莱",
-      "group": "four",
-      "file": "Collei.png"
     },
     {
       "key": "Cyno",
@@ -160,18 +112,6 @@
       "file": "Diluc.png"
     },
     {
-      "key": "Diona",
-      "zh": "迪奥娜",
-      "group": "four",
-      "file": "Diona.png"
-    },
-    {
-      "key": "Dori",
-      "zh": "多莉",
-      "group": "four",
-      "file": "Dori.png"
-    },
-    {
       "key": "Emilie",
       "zh": "艾梅莉埃",
       "group": "five",
@@ -182,24 +122,6 @@
       "zh": "优菈",
       "group": "five",
       "file": "Eula.png"
-    },
-    {
-      "key": "Faruzan",
-      "zh": "法露珊",
-      "group": "four",
-      "file": "Faruzan.png"
-    },
-    {
-      "key": "Fischl",
-      "zh": "菲谢尔",
-      "group": "four",
-      "file": "Fischl.png"
-    },
-    {
-      "key": "Freminet",
-      "zh": "菲米尼",
-      "group": "four",
-      "file": "Freminet.png"
     },
     {
       "key": "Ganyu",
@@ -218,18 +140,6 @@
       "zh": "荒泷一斗",
       "group": "five",
       "file": "Itto.png"
-    },
-    {
-      "key": "Kaeya",
-      "zh": "凯亚",
-      "group": "four",
-      "file": "Kaeya.png"
-    },
-    {
-      "key": "Kaveh",
-      "zh": "卡维",
-      "group": "four",
-      "file": "Kaveh.png"
     },
     {
       "key": "Kazuha",
@@ -254,12 +164,6 @@
       "zh": "珊瑚宫心海",
       "group": "five",
       "file": "Kokomi.png"
-    },
-    {
-      "key": "Lisa",
-      "zh": "丽莎",
-      "group": "four",
-      "file": "Lisa.png"
     },
     {
       "key": "Mona",
@@ -292,58 +196,16 @@
       "file": "Nilou.png"
     },
     {
-      "key": "Ningguang",
-      "zh": "凝光",
-      "group": "four",
-      "file": "Ningguang.png"
-    },
-    {
       "key": "Qiqi",
       "zh": "七七",
       "group": "five",
       "file": "Qiqi.png"
     },
     {
-      "key": "Razor",
-      "zh": "雷泽",
-      "group": "four",
-      "file": "Razor.png"
-    },
-    {
-      "key": "Rosaria",
-      "zh": "罗莎莉亚",
-      "group": "four",
-      "file": "Rosaria.png"
-    },
-    {
-      "key": "Sara",
-      "zh": "九条裟罗",
-      "group": "four",
-      "file": "Sara.png"
-    },
-    {
-      "key": "Sayu",
-      "zh": "早柚",
-      "group": "four",
-      "file": "Sayu.png"
-    },
-    {
       "key": "Shenhe",
       "zh": "申鹤",
       "group": "five",
       "file": "Shenhe.png"
-    },
-    {
-      "key": "Sigewinne",
-      "zh": "希格雯",
-      "group": "four",
-      "file": "Sigewinne.png"
-    },
-    {
-      "key": "Sucrose",
-      "zh": "砂糖",
-      "group": "four",
-      "file": "Sucrose.png"
     },
     {
       "key": "Tartaglia",
@@ -370,12 +232,6 @@
       "file": "Wriothesley.png"
     },
     {
-      "key": "Xiangling",
-      "zh": "香菱",
-      "group": "four",
-      "file": "Xiangling.png"
-    },
-    {
       "key": "Xiao",
       "zh": "魈",
       "group": "five",
@@ -388,28 +244,10 @@
       "file": "Xilonen.png"
     },
     {
-      "key": "Xingqiu",
-      "zh": "行秋",
-      "group": "four",
-      "file": "Xingqiu.png"
-    },
-    {
-      "key": "Xinyan",
-      "zh": "辛焱",
-      "group": "four",
-      "file": "Xinyan.png"
-    },
-    {
       "key": "Yae",
       "zh": "八重神子",
       "group": "five",
       "file": "Yae.png"
-    },
-    {
-      "key": "Yaoyao",
-      "zh": "瑶瑶",
-      "group": "four",
-      "file": "Yaoyao.png"
     },
     {
       "key": "Yoimiya",
