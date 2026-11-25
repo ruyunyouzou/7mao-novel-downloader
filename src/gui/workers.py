@@ -14,10 +14,18 @@ from .plugin.base import DownloaderBase, DownloadResult
 
 
 class SearchWorker(QThread):
-    """搜索线程。"""
+    """搜索线程。
+
+    取消采用 Qt 协作式 ``requestInterruption()``，绝不使用 ``terminate()``
+    （后者强杀线程会丢失信号、偶发 "QThread: Destroyed while running"）。
+    被取消的请求仍会自然跑完网络超时，但结束时丢弃结果、不发信号。
+    """
 
     finished = Signal(list)   # List[Dict]
     failed = Signal(str)
+    # 线程体真正结束时发出（无论成功/失败/取消），供 UI 安全回收对象。
+    # 注意：QThread 内建的 finished 被本类同名信号遮蔽，故另起名字。
+    finished_run = Signal()
 
     def __init__(self, keyword: str, parent=None, tab: str = "0",
                  page: int = 1, tag: str = "") -> None:
@@ -30,11 +38,19 @@ class SearchWorker(QThread):
     def run(self) -> None:
         try:
             results = search_books(self.keyword, tab=self.tab, page=self.page)
+            # 已在等待期间被取消（用户又发了新搜索）：丢弃旧结果
+            if self.isInterruptionRequested():
+                return
             self.finished.emit(results)
         except ApiError as exc:
-            self.failed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"搜索异常: {exc}")
+            if not self.isInterruptionRequested():
+                self.failed.emit(f"搜索异常: {exc}")
+        finally:
+            # 线程体已走完，此时回收对象才安全（不会 "Destroyed while running"）
+            self.finished_run.emit()
 
 
 class DetailWorker(QThread):
@@ -42,6 +58,7 @@ class DetailWorker(QThread):
 
     finished = Signal(dict)
     failed = Signal(str)
+    finished_run = Signal()  # 线程体结束后发出，供 UI 安全回收
 
     def __init__(self, book_id: str, fallback: Dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -51,11 +68,16 @@ class DetailWorker(QThread):
     def run(self) -> None:
         try:
             info = get_book_info(self.book_id, fallback=self.fallback)
-            self.finished.emit(info)
+            if not self.isInterruptionRequested():
+                self.finished.emit(info)
         except ApiError as exc:
-            self.failed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"详情异常: {exc}")
+            if not self.isInterruptionRequested():
+                self.failed.emit(f"详情异常: {exc}")
+        finally:
+            self.finished_run.emit()
 
 
 class DownloadWorker(QThread):
