@@ -93,10 +93,14 @@ class MainWindow(QMainWindow):
         self.store = DataStore()
         # 选择对话框：注入 store 让「上次目录」跨重启持久化
         _fd.configure_store(self.store)
-        # 下载保存目录：优先读用户持久化设置，缺省为 ~/七猫小说
+        # 下载保存目录：按书源分流。七猫沿用历史 key（兼容用户已设置的目录），
+        # 番茄用独立 key，缺省分别为 ~/七猫小说 与 ~/番茄小说。
         _saved_dir = str(self.store.settings_get("default_save_dir", "") or "").strip()
         self.default_save_dir = _saved_dir if _saved_dir and os.path.isdir(_saved_dir) \
             else os.path.join(os.path.expanduser("~"), "七猫小说")
+        _fanqie_dir = str(self.store.settings_get("fanqie_save_dir", "") or "").strip()
+        self.fanqie_save_dir = _fanqie_dir if _fanqie_dir and os.path.isdir(_fanqie_dir) \
+            else os.path.join(os.path.expanduser("~"), "番茄小说")
         # 动效模块读取设置：ui_motion / ui_motion_level / ui_low_power
         motion.bind_settings(lambda k, d: self.store.settings_get(k, d))
         # 通知/提示音模块读取设置
@@ -743,9 +747,21 @@ class MainWindow(QMainWindow):
         self.settings_path.setStyleSheet(f"color: {TEXT_DIM};")
         row.addWidget(self.settings_path, 1)
         self.settings_choose_btn = QPushButton(tr("set.choose_dir"))
-        self.settings_choose_btn.clicked.connect(self._choose_save_dir)
+        self.settings_choose_btn.clicked.connect(lambda: self._choose_save_dir("qimao"))
         row.addWidget(self.settings_choose_btn)
         l1.addLayout(row)
+        # 番茄目录独立配置：番茄书籍下载到此目录
+        self.set_fanqie_dir_label = hint_label(tr("set.fanqie_dir"))
+        l1.addWidget(self.set_fanqie_dir_label)
+        row_fanqie = QHBoxLayout()
+        self.settings_fanqie_path = QLabel(self.fanqie_save_dir)
+        self.settings_fanqie_path.setStyleSheet(f"color: {TEXT_DIM};")
+        row_fanqie.addWidget(self.settings_fanqie_path, 1)
+        self.settings_fanqie_choose_btn = QPushButton(tr("set.choose_dir"))
+        self.settings_fanqie_choose_btn.clicked.connect(
+            lambda: self._choose_save_dir("fanqie"))
+        row_fanqie.addWidget(self.settings_fanqie_choose_btn)
+        l1.addLayout(row_fanqie)
         self.set_default_format_label = hint_label(tr("set.default_format"))
         l1.addWidget(self.set_default_format_label)
         self.settings_format = QComboBox()
@@ -1837,6 +1853,8 @@ class MainWindow(QMainWindow):
         self.set_download_title.setText(tr("set.download"))
         self.set_default_dir_label.setText(tr("set.default_dir"))
         self.settings_choose_btn.setText(tr("set.choose_dir"))
+        self.set_fanqie_dir_label.setText(tr("set.fanqie_dir"))
+        self.settings_fanqie_choose_btn.setText(tr("set.choose_dir"))
         self.set_default_format_label.setText(tr("set.default_format"))
         self.set_tpl_label.setText(tr("set.filename_tpl"))
         self.settings_tpl_save_btn.setText(tr("common.save"))
@@ -2338,7 +2356,7 @@ class MainWindow(QMainWindow):
             try:
                 src = sources[idx] if sources and idx < len(sources) else ""
                 book = self._book_from_id(bid, src)
-                self.queue_view.add_task(book, self.default_save_dir, fmt)
+                self.queue_view.add_task(book, self.resolve_save_dir(book.get("source", "")), fmt)
                 added += 1
             except Exception as exc:  # noqa: BLE001
                 from .logutil import log_error
@@ -2513,7 +2531,7 @@ class MainWindow(QMainWindow):
         if str(self.store.settings_get("download_method", "builtin") or "builtin") == "builtin_retry":
             options["_retry"] = 2
         self.pm.emit(Hook.ON_DOWNLOAD_START, book)
-        self.queue_view.add_task(book, self.default_save_dir, fmt, options=options)
+        self.queue_view.add_task(book, self.resolve_save_dir(book.get("source", "")), fmt, options=options)
         scope = ""
         if options.get("start_chapter"):
             scope = f"（第{options['start_chapter']}-{options['end_chapter']}章）"
@@ -2616,7 +2634,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "无下载内核", "当前没有可用的下载内核插件。")
             return
         fmt = self.format_combo.currentText()
-        self.queue_view.add_task(book, self.default_save_dir, fmt)
+        self.queue_view.add_task(book, self.resolve_save_dir(book.get("source", "")), fmt)
         self.tabs.setCurrentWidget(self.queue_view)
         self.log(f"已重新加入队列：《{book.get('title')}》")
 
@@ -2767,15 +2785,30 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "恢复失败", str(exc))
 
-    def _choose_save_dir(self) -> None:
-        directory = _fd.select_directory(self, "选择保存目录", self.default_save_dir)
+    def resolve_save_dir(self, source: str = "") -> str:
+        """按书源解析保存目录：番茄进番茄目录，其余（七猫/未知）进七猫目录。"""
+        if str(source or "").strip().lower() == "fanqie":
+            return self.fanqie_save_dir
+        return self.default_save_dir
+
+    def _choose_save_dir(self, source: str = "qimao") -> None:
+        is_fanqie = str(source or "").strip().lower() == "fanqie"
+        key = "fanqie_save_dir" if is_fanqie else "default_save_dir"
+        current = self.fanqie_save_dir if is_fanqie else self.default_save_dir
+        title = "选择番茄小说保存目录" if is_fanqie else "选择七猫小说保存目录"
+        directory = _fd.select_directory(self, title, current)
         if directory:
-            self.default_save_dir = directory
+            if is_fanqie:
+                self.fanqie_save_dir = directory
+            else:
+                self.default_save_dir = directory
             # 持久化：否则重启后又会回到硬编码默认值
-            self.store.settings_set("default_save_dir", directory)
-            if hasattr(self, "settings_path"):
-                self.settings_path.setText(directory)
-            self.log(f"保存目录已设为：{directory}")
+            self.store.settings_set(key, directory)
+            label = getattr(
+                self, "settings_fanqie_path" if is_fanqie else "settings_path", None)
+            if label is not None:
+                label.setText(directory)
+            self.log(f"{'番茄' if is_fanqie else '七猫'}保存目录已设为：{directory}")
 
     def _on_default_format_changed(self, fmt: str) -> None:
         """设置页切换默认下载格式：持久化并同步到搜索页、直达页下拉。"""
