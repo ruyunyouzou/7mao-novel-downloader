@@ -136,6 +136,57 @@ def _initial_state(page: str) -> dict:
     return state
 
 
+# 番茄分享短链域名：/t/<token> 形态需联网跟随重定向还原为真实 bookId。
+# 只对这些白名单域名发起请求，防止把任意 URL 当短链跟随（SSRF 风险）。
+_SHORT_LINK_HOSTS = (
+    "changdunovel.com", "www.changdunovel.com",
+    "fanqienovel.com", "www.fanqienovel.com",
+    "fqnovel.com", "www.fqnovel.com",
+)
+_SHORT_LINK_RE = re.compile(r"https?://([^/\s]+)/t/([A-Za-z0-9_-]+)/?", re.I)
+
+
+@lru_cache(maxsize=64)
+def resolve_short_link(url: str, timeout: int = 15) -> str:
+    """把番茄 ``/t/<token>`` 分享短链还原为真实 bookId。
+
+    番茄 App 分享出的短链（如 ``https://changdunovel.com/t/4NZeXnfTfY/``）
+    里 token 是字母数字混合串，不是书籍 ID；服务端会 302 到带 ``book_id``
+    或 ``/page/<id>`` 的地址。这里跟随重定向，从**最终 URL**（优先）和响应
+    正文里提取数字 ID。仅跟随白名单域名，失败返回空串由上层提示。
+    """
+    match = _SHORT_LINK_RE.search(str(url or "").strip())
+    if not match:
+        return ""
+    host = match.group(1).lower()
+    if host not in _SHORT_LINK_HOSTS:
+        return ""
+    target = match.group(0)
+    try:
+        resp = requests.get(
+            target, headers=_HEADERS, timeout=timeout, allow_redirects=True,
+        )
+        # 1) 最终 URL 里的 book_id=/page/<id>（最可靠）
+        final_url = str(getattr(resp, "url", "") or target)
+        m = re.search(r"[?&](?:book_id|bookId|item_id)=(\d{6,24})", final_url, re.I)
+        if m:
+            return m.group(1)
+        m = re.search(r"/page/(\d{6,24})", final_url)
+        if m:
+            return m.group(1)
+        # 2) 响应正文/中间页里的 book_id（部分渠道返回 HTML/JSON 跳转页）
+        text = resp.text or ""
+        m = re.search(r"[?&]?(?:book_id|bookId|bookID)[\"']?\s*[:=]\s*[\"']?(\d{6,24})", text, re.I)
+        if m:
+            return m.group(1)
+        m = re.search(r"fanqienovel\.com/page/(\d{6,24})", text, re.I)
+        if m:
+            return m.group(1)
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 @lru_cache(maxsize=64)
 def resolve_book_id(value: str, timeout: int = 20) -> str:
     """把番茄的 bookId / 章节 ID / 完整链接统一归一化为真实 bookId。
@@ -152,6 +203,11 @@ def resolve_book_id(value: str, timeout: int = 20) -> str:
     value = str(value or "").strip()
     if not value:
         return ""
+    # 0) /t/<token> 分享短链：先联网还原为真实 bookId（白名单域名）
+    if _SHORT_LINK_RE.search(value):
+        short_id = resolve_short_link(value, timeout=timeout)
+        if short_id:
+            return short_id
     if not value.isdigit():
         # 传入的是完整链接/口令文本，取第一个独立长数字
         match = re.search(r"(?<!\d)(\d{6,24})(?!\d)", value)

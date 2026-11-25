@@ -67,6 +67,31 @@ class ParseTestCase(unittest.TestCase):
                 self.assertEqual(detect_source(text), "qimao", name)
                 self.assertEqual(extract_book_id(text), expect, name)
 
+    def test_fanqie_short_link(self):
+        """番茄短链域名识别 + book-share query 提取（无需网络）。"""
+        cases = [
+            ("短链 detect_source",
+             "https://changdunovel.com/t/4NZeXnfTfY/"),
+            ("口令内短链 detect_source",
+             "推荐一部好书《邻家妹妹恋上我》https://changdunovel.com/t/4NZeXnfTfY/"),
+        ]
+        for name, text in cases:
+            with self.subTest(name=name):
+                self.assertEqual(detect_source(text), "fanqie", name)
+        # book-share 形态的 book_id 可直接提取
+        self.assertEqual(
+            extract_book_id(
+                "https://changdunovel.com/ug/pages/book-share"
+                "?share_type=11&aid=1967&book_id=7423591956359416856"),
+            "7423591956359416856")
+
+    def test_book_title_extract(self):
+        """口令文本书名提取，供短链失效时按书名回退。"""
+        from gui.book_link import extract_book_title
+        text = "推荐一部好书《邻家妹妹恋上我》https://changdunovel.com/t/4NZeXnfTfY/"
+        self.assertEqual(extract_book_title(text), "邻家妹妹恋上我")
+        self.assertEqual(extract_book_title("无书名 https://x.com"), "")
+
 
 @unittest.skipUnless("--net" in sys.argv, "需要 --net 参数，跳过真实网络测试")
 class ResolveTestCase(unittest.TestCase):

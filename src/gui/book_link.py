@@ -57,8 +57,11 @@ _FANQIE_PATH_PATTERN = (
 # 番茄 ID 更长，故上限放宽到 24。
 _BARE_PATTERN = r"(?<!\d)(\d{6,24})(?!\d)"
 
-# 番茄识别特征
-_FANQIE_HINT = re.compile(r"fanqienovel\.com|fanqie\s*novel|番茄", re.I)
+# 番茄识别特征：官网域名 + App 分享短链域名（changdunovel / fqnovel）
+_FANQIE_HINT = re.compile(
+    r"fanqienovel\.com|changdunovel\.com|fqnovel\.com|fanqie\s*novel|番茄", re.I)
+# 番茄 /t/<token> 分享短链（token 为字母数字混合，非书籍 ID，需联网还原）
+_FANQIE_SHORT_LINK = re.compile(r"https?://[^/\s]+/t/[A-Za-z0-9_-]+/?", re.I)
 # 纯数字书 ID：番茄 ID 通常 13~24 位，七猫多为 6~12 位
 _FANQIE_PURE_ID = re.compile(r"\d{13,24}\Z")
 
@@ -71,6 +74,16 @@ def detect_source(text: str) -> str:
     if _FANQIE_PURE_ID.match(text):
         return "fanqie"
     return "qimao"
+
+
+def extract_book_title(text: str) -> str:
+    """从口令文本里提取《书名》，供短链失效时按书名回退搜索。
+
+    例："推荐一部好书《邻家妹妹恋上我》https://changdunovel.com/t/xxx/"
+    → "邻家妹妹恋上我"。找不到返回空串。
+    """
+    m = re.search(r"《([^》]{1,80})》", str(text or ""))
+    return m.group(1).strip() if m else ""
 
 
 def _query_id(text: str, keys) -> str:
@@ -98,6 +111,18 @@ def extract_book_id(text: str) -> str:
     if not text:
         return ""
     is_fanqie = bool(_FANQIE_HINT.search(text))
+
+    # 0) 番茄 /t/<token> 分享短链：token 非书籍 ID，须联网跟随重定向还原。
+    #    放在最前，避免被口令文本里的其它数字（如时间戳）干扰。
+    short = _FANQIE_SHORT_LINK.search(text)
+    if short:
+        try:
+            from plugins.vendor.fanqie_reader import resolve_short_link
+            real = resolve_short_link(short.group(0))
+            if real:
+                return real
+        except Exception:  # noqa: BLE001 - 离线/网络异常时继续走其它规则
+            pass
 
     # 1) 通用 query key（七猫 ?id= / ?bookId= 等）
     for pat in _KEY_PATTERNS:

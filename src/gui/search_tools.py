@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from .datastore import DataStore
 from .i18n import tr
 from .style import TEXT_DIM, ACCENT
-from .book_link import extract_book_id, detect_source
+from .book_link import extract_book_id, detect_source, extract_book_title
 from .widgets import apply_nation_icon
 
 
@@ -141,10 +141,27 @@ def _clear_layout(layout) -> None:
 def _goto(win) -> None:
     text = win.link_edit.text().strip()
     bid = extract_book_id(text)
+    source = detect_source(text)
+
+    # 短链（/t/<token>）可能已失效，服务端返回 404 无法还原 ID；
+    # 若口令文本里带《书名》，回退用番茄搜索接口按书名找到第一条结果直达。
+    if not bid and source == "fanqie":
+        title = extract_book_title(text)
+        if title:
+            try:
+                from plugins.vendor.fanqie_search import search_fanqie
+                results = search_fanqie(title, page=1) or []
+                if results:
+                    bid = str(results[0].get("id", "") or "").strip()
+                    if bid:
+                        win.log(f"短链失效，已按书名《{title}》匹配到书籍直达。")
+            except Exception:  # noqa: BLE001 - 搜索失败仍走原报错路径
+                bid = ""
+
     if not bid:
         QMessageBox.warning(win, tr("searchtools.goto"), tr("searchtools.bad_link"))
         return
-    win._load_book_by_id(bid, source=detect_source(text))
+    win._load_book_by_id(bid, source=source)
 
 
 def _bulk(win) -> None:
