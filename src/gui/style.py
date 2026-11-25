@@ -445,6 +445,34 @@ QPushButton#histDanger {{ color: #e08888; border-color: #7a4242; }}
 QPushButton#histDanger:hover {{ background-color: #4a3030; border-color: #b05a5a; }}
 QLabel#histStatPill {{ background: #2f2c38; border: 1px solid #4a4458; border-radius: 10px; padding: 2px 9px; color: #bbb; font-size: 11px; }}
 
+/* ============ 任务队列 / 历史：B2 卡片流 ============ */
+QScrollArea#queueCardArea, QScrollArea#histCardArea {{ background: transparent; border: none; }}
+QWidget#queueCardList, QWidget#histCardList {{ background: transparent; }}
+QFrame#queueTaskCard, QFrame#histTaskCard {{
+    background-color: {BG_CARD};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+QFrame#queueTaskCard:hover, QFrame#histTaskCard:hover {{ border-color: {ACCENT_DARK}; }}
+QFrame#queueTaskCard[selected="true"], QFrame#histTaskCard[selected="true"] {{
+    border-color: {ACCENT};
+    background-color: #2b2833;
+}}
+QLabel#queueCover, QLabel#histCover {{
+    background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1,
+        stop:0 #5a4f72, stop:1 #37304a);
+    color: #e6dcff;
+    border-radius: 5px;
+    font-size: 17px;
+    font-weight: bold;
+}}
+QLabel#queueCardTitle, QLabel#histCardTitle {{ font-size: 13.5px; font-weight: bold; color: {TEXT}; }}
+QLabel#queueMetaText, QLabel#histMetaText {{ color: {TEXT_DIM}; font-size: 11px; }}
+QLabel#queuePct {{ color: {TEXT_DIM}; font-size: 11px; }}
+QFrame#queueCardLine, QFrame#histCardLine {{ background-color: {BORDER_LIGHT}; }}
+QLabel#queueStatusText, QLabel#histStatusText {{ font-size: 11px; }}
+QProgressBar {{ min-height: 8px; }}
+
 /* ============ 消息框 ============ */
 QMessageBox {{
     background-color: {BG_CARD};
@@ -510,6 +538,31 @@ QFrame#queueConcurrentCard {{ background: #fafafa; border: 1px solid #e0e0e0; }}
 QPushButton#histDanger {{ color: #c0392b; border-color: #e0b0b0; }}
 QPushButton#histDanger:hover {{ background: #fdecea; border-color: #c0392b; }}
 QLabel#histStatPill {{ background: #fafafa; border: 1px solid #e0e0e0; border-radius: 10px; padding: 2px 9px; color: #555; font-size: 11px; }}
+/* ============ 任务队列 / 历史：B2 卡片流（浅色） ============ */
+QScrollArea#queueCardArea, QScrollArea#histCardArea {{ background: transparent; border: none; }}
+QWidget#queueCardList, QWidget#histCardList {{ background: transparent; }}
+QFrame#queueTaskCard, QFrame#histTaskCard {{
+    background-color: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+}}
+QFrame#queueTaskCard:hover, QFrame#histTaskCard:hover {{ border-color: #b9a3d8; }}
+QFrame#queueTaskCard[selected="true"], QFrame#histTaskCard[selected="true"] {{
+    border-color: #7E6AA6;
+    background-color: #f3eefb;
+}}
+QLabel#queueCover, QLabel#histCover {{
+    background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1,
+        stop:0 #b9a6d8, stop:1 #8f7cb0);
+    color: #ffffff;
+    border-radius: 5px;
+    font-size: 17px;
+    font-weight: bold;
+}}
+QLabel#queueCardTitle, QLabel#histCardTitle {{ font-size: 13.5px; font-weight: bold; color: #2a2a2a; }}
+QLabel#queueMetaText, QLabel#histMetaText {{ color: #666; font-size: 11px; }}
+QLabel#queuePct {{ color: #666; font-size: 11px; }}
+QFrame#queueCardLine, QFrame#histCardLine {{ background-color: #ececec; }}
 {modern_scrollbar_qss(False)}
 QMessageBox {{ background: #fff; }}
 """

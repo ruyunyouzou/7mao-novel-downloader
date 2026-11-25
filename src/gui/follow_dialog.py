@@ -47,7 +47,7 @@ class _FollowWorker(QThread):
             else:
                 # EPUB/分章：重建整本（缓存 ZIP 含全书，保证排版一致）
                 import os as _os
-                from .qimao_core import build_txt
+                from .qimao_core import build_txt, book_source_for
                 save_dir = _os.path.dirname(self.file_path) or "."
                 res = build_txt(
                     book_id=str(self.rec.get("book_id", "")),
@@ -55,6 +55,9 @@ class _FollowWorker(QThread):
                     fmt=self.fmt,
                     progress_cb=lambda p: self.progress.emit(p),
                     title_hint=self.rec.get("title", ""),
+                    author_hint=self.rec.get("author", ""),
+                    # 按书源重建：番茄书不能再落到七猫缓存 ZIP
+                    source=book_source_for(self.rec.get("source", "")),
                 )
                 r = {"changed": True, "message": "已重新生成", "total": res.get("total_chapters", 0)}
                 new_total = res.get("total_chapters", 0)
@@ -148,13 +151,16 @@ class FollowDialog(QDialog):
                         "last_chapter": last,
                         "file_path": e.get("file_path", ""),
                         "title": e.get("title", ""),
+                        "source": e.get("source", ""),
                     })
             rec = {
                 "book_id": bid,
                 "title": e.get("title", ""),
+                "author": e.get("author", ""),
                 "format": fmt,
                 "file_path": e.get("file_path", ""),
                 "last_chapter": last,
+                "source": e.get("source", ""),
             }
             self._records.append(rec)
         self._render(self._records, checked=False)
@@ -235,6 +241,9 @@ class FollowDialog(QDialog):
                     "last_chapter": r["new_total"],
                     "file_path": r["file_path"],
                     "title": rec.get("title", ""),
+                    # 必须回写书源：follow_core 按 source 选章节源，番茄书追更后
+                    # 若丢失 source，下次会回退到七猫内核导致追更失败/串源。
+                    "source": rec.get("source", ""),
                 })
             self.log_skip(rec, r["message"])
             self._idx += 1

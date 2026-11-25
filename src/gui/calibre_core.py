@@ -26,6 +26,18 @@ import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+
+def _no_window_flags() -> int:
+    """Windows 下隐藏子进程控制台窗口，避免调用 calibredb 等外部程序时闪黑框。
+
+    非 Windows 返回 0（creationflags 在 POSIX 上会被 subprocess 忽略）。
+    """
+    if os.name == "nt":
+        # CREATE_NO_WINDOW = 0x08000000；部分 Python 版本未导出该常量，故硬编码兜底
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return 0
+
+
 # ---------------------------------------------------------------- 常量
 
 CALIBRE_BIN_NAMES = {
@@ -176,7 +188,7 @@ def detect_calibre(extra_bin_dir: str = "") -> CalibreInstall:
         try:
             out = subprocess.run(
                 [ver_exe, "--version"], capture_output=True, text=True,
-                timeout=8,
+                timeout=8, creationflags=_no_window_flags(),
             )
             m = re.search(r"(\d+\.\d+\.\d+)", (out.stdout or "") + (out.stderr or ""))
             if m:
@@ -287,7 +299,10 @@ def book_file(entry: BookEntry, prefer: Tuple[str, ...] = (".epub",)) -> str:
 
 def _run(cmd: List[str], timeout: int = 120) -> Tuple[int, str, str]:
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            creationflags=_no_window_flags(),
+        )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except FileNotFoundError as exc:
         raise CalibreError(f"找不到可执行文件：{cmd[0]}") from exc
@@ -307,6 +322,7 @@ def open_editor(install: CalibreInstall, file_path: str) -> None:
         subprocess.Popen(
             [install.editor, file_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_no_window_flags(),
         )
     except Exception as exc:  # noqa: BLE001
         raise CalibreError(f"启动 ebook-edit 失败：{exc}") from exc

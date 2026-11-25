@@ -206,7 +206,13 @@ class BookCard(QFrame):
             self._set_cover_pixmap(img)
 
     def dispose(self) -> None:
-        """销毁前安全处理仍在运行的封面线程。"""
+        """销毁前安全处理仍在运行的封面线程。
+
+        封面线程可能在 finished 回调里被 _release_loader -> deleteLater 回收，
+        此时 C++ 对象已失效，直接 isRunning()/wait() 会抛
+        "Internal C++ object already deleted"。先用 shiboken 校验有效性，
+        再兜底捕获 RuntimeError，保证快速连续搜索（换书源/连点）不崩溃。
+        """
         loader = self._loader
         if loader is None:
             return
@@ -217,8 +223,16 @@ class BookCard(QFrame):
             pass
         # loader 已在 __init__ 纳入 _orphan_loaders 并连接了自释放；
         # 这里只需尽量等待其自然结束，超时则由退出流程统一停止
-        if loader.isRunning():
-            loader.wait(1200)
+        try:
+            try:
+                from shiboken6 import isValid  # type: ignore
+                alive = isValid(loader)
+            except Exception:  # noqa: BLE001
+                alive = True
+            if alive and loader.isRunning():
+                loader.wait(1200)
+        except RuntimeError:  # noqa: BLE001
+            pass
 
     def mousePressEvent(self, event) -> None:
         self.clicked.emit(self.book)

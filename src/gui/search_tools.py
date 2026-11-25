@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushBu
 from .datastore import DataStore
 from .i18n import tr
 from .style import TEXT_DIM, ACCENT
-from .book_link import extract_book_id
+from .book_link import extract_book_id, detect_source
 from .widgets import apply_nation_icon
 
 
@@ -120,7 +120,8 @@ def build_search_tools(win) -> tuple:
         for b in bms[:12]:
             win.bookmark_chips_layout.addWidget(
                 _chip(f"⭐{b.get('title','')}",
-                      lambda bid=b.get('id'): win._load_book_by_id(bid)))
+                      lambda bid=b.get('id'), src=b.get('source', ''):
+                          win._load_book_by_id(bid, src)))
         win.bookmark_chips_layout.addStretch()
 
     win.reload_search_tools = lambda: (reload_hist(), reload_bookmarks())
@@ -143,7 +144,7 @@ def _goto(win) -> None:
     if not bid:
         QMessageBox.warning(win, tr("searchtools.goto"), tr("searchtools.bad_link"))
         return
-    win._load_book_by_id(bid)
+    win._load_book_by_id(bid, source=detect_source(text))
 
 
 def _bulk(win) -> None:
@@ -152,12 +153,13 @@ def _bulk(win) -> None:
     if not ok or not text.strip():
         return
     import re
-    ids = []
+    ids, sources = [], []
     for line in re.split(r"[\s,，;；]+", text.strip()):
         bid = extract_book_id(line)
         if bid and bid not in ids:
             ids.append(bid)
+            sources.append(detect_source(line))
     if not ids:
         QMessageBox.warning(win, tr("searchtools.bulk"), tr("searchtools.bad_link"))
         return
-    win._bulk_download(ids)
+    win._bulk_download(ids, sources=sources)

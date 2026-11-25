@@ -406,6 +406,8 @@ class DataStore:
                 "title": book.get("title", ""),
                 "author": book.get("author", ""),
                 "cover": book.get("cover", ""),
+                # 书源随书签落库：点击书签加载详情时按源选内核，避免番茄书误判为七猫
+                "source": book.get("source", ""),
                 "added_at": _now(),
             }
             self._bookmarks.insert(0, rec)

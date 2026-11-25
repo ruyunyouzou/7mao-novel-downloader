@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""更新对话框：展示新版本说明、下载渠道，支持强制更新拦截。
+"""更新对话框：展示新版本说明、下载渠道，支持强制更新拦截与一键升级。
 
 由设置页「检查更新」与启动时静默检查共用。强制更新（manifest 的
 min_version 高于本地）时隐藏「稍后再说」按钮，并拦截关闭。
+
+一键升级：点主按钮后后台下载新版 zip → 解压 → 拉起独立 updater → 本程序退出，
+由 updater 完成文件替换与重启。任一环节失败都会给出明确提示，并保留原来的
+「下载渠道」按钮让用户手动下载兜底。
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextBrowser,
+    QProgressBar, QMessageBox,
 )
 
 
@@ -29,11 +34,12 @@ class UpdateDialog(QDialog):
         self._tr = tr
         self.result = result
         force = bool(result.get("force"))
+        self._worker = None  # UpgradeWorker 实例
 
         self.setWindowTitle(tr("update.title"))
         self.setModal(True)
-        self.setMinimumWidth(480)
-        self.setMinimumHeight(320)
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(380)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 22, 18)
@@ -63,10 +69,34 @@ class UpdateDialog(QDialog):
         notes = QTextBrowser()
         notes.setOpenExternalLinks(True)
         notes.setPlainText(self._clean_notes(result.get("notes") or ""))
-        notes.setMinimumHeight(130)
+        notes.setMinimumHeight(120)
         root.addWidget(notes)
 
-        # 下载渠道按钮
+        # ---- 一键升级区 ----
+        self.upgrade_bar = QVBoxLayout()
+        from .widgets import nation_icon
+        from PySide6.QtCore import QSize
+        self.btn_upgrade = QPushButton(tr("update.upgrade_now"))
+        self.btn_upgrade.setObjectName("upgradeBtn")
+        self.btn_upgrade.setIcon(nation_icon("natlan", "#EC4923", 18))
+        self.btn_upgrade.setIconSize(QSize(18, 18))
+        self.btn_upgrade.setMinimumHeight(40)
+        self.btn_upgrade.clicked.connect(self._start_upgrade)
+        self.upgrade_bar.addWidget(self.btn_upgrade)
+
+        self.upgrade_status = QLabel("")
+        self.upgrade_status.setWordWrap(True)
+        self.upgrade_status.setStyleSheet("font-size: 11px; color: #888;")
+        self.upgrade_status.hide()
+        self.upgrade_bar.addWidget(self.upgrade_status)
+
+        self.upgrade_progress = QProgressBar()
+        self.upgrade_progress.setRange(0, 100)
+        self.upgrade_progress.hide()
+        self.upgrade_bar.addWidget(self.upgrade_progress)
+        root.addLayout(self.upgrade_bar)
+
+        # 下载渠道按钮（手动兜底）
         channels = result.get("channels") or []
         if channels:
             ch_label = QLabel(tr("update.channels"))
@@ -102,12 +132,82 @@ class UpdateDialog(QDialog):
                 padding: 8px 12px; border-radius: 6px; text-align: left;
             }
             QPushButton#channelBtn:hover { background-color: rgba(255,255,255,0.08); }
+            QPushButton#upgradeBtn {
+                padding: 8px 12px; border-radius: 8px; font-weight: 600;
+                background-color: #4caf50; color: #fff;
+            }
+            QPushButton#upgradeBtn:hover { background-color: #43a047; }
+            QPushButton#upgradeBtn:disabled { background-color: #666; color: #ccc; }
             QTextBrowser {
                 background: transparent; border: 1px solid rgba(128,128,128,0.25);
                 border-radius: 8px; padding: 8px;
             }
         """)
 
+    # ---------------------------------------------------------------- 一键升级
+    def _start_upgrade(self) -> None:
+        """点击一键升级：启动后台下载并安装。"""
+        from .update_installer import UpgradeWorker
+        self.btn_upgrade.setEnabled(False)
+        self.btn_upgrade.setText(self._tr("update.upgrading"))
+        self.upgrade_status.show()
+        self.upgrade_progress.show()
+        self.upgrade_progress.setValue(0)
+        self.upgrade_status.setText(self._tr("update.upgrade_preparing"))
+
+        self._worker = UpgradeWorker(version=str(self.result.get("latest") or ""), parent=self)
+        self._worker.progress.connect(self.upgrade_progress.setValue)
+        self._worker.status.connect(self.upgrade_status.setText)
+        self._worker.done.connect(self._on_upgrade_done)
+        self._worker.start()
+
+    def _on_upgrade_done(self, r: Dict[str, Any]) -> None:
+        self._worker = None
+        if r.get("ok") and r.get("need_restart"):
+            # 更新进程已拉起，本程序即将退出；隐藏对话框，让主窗口走退出流程
+            self.upgrade_status.setText(self._tr("update.upgrade_restarting"))
+            self.upgrade_progress.setValue(100)
+            QMessageBox.information(
+                self, self._tr("update.title"),
+                self._tr("update.upgrade_restart_hint"),
+            )
+            self.accept()  # 先关对话框
+            # 请求主程序退出：updater 会等本进程结束后覆盖并重启。
+            # 先标记主窗口 _force_quit，避免任何托盘/closeEvent 拦截导致进程不退出；
+            # 再 quit() 结束事件循环。updater 侧轮询 PID 消失后开始覆盖。
+            from PySide6.QtWidgets import QApplication
+            win = self._find_main_window()
+            if win is not None:
+                win._force_quit = True
+            QApplication.instance().quit()
+            return
+
+        # 失败：恢复按钮，给出提示，引导手动下载
+        self.btn_upgrade.setEnabled(True)
+        self.btn_upgrade.setText(self._tr("update.upgrade_now"))
+        self.upgrade_progress.hide()
+        err = r.get("error") or self._tr("update.upgrade_failed")
+        self.upgrade_status.setText(err)
+        QMessageBox.warning(
+            self, self._tr("update.upgrade_failed"),
+            f"{err}\n\n{self._tr('update.upgrade_fallback')}",
+        )
+
+    def _find_main_window(self):
+        """沿 parent 链找主窗口（带 _force_quit 属性的那个）。"""
+        w = self.parent()
+        while w is not None:
+            if hasattr(w, "_force_quit"):
+                return w
+            w = w.parent() if hasattr(w, "parent") else None
+        # 兜底：遍历顶层窗口
+        from PySide6.QtWidgets import QApplication
+        for top in QApplication.topLevelWidgets():
+            if hasattr(top, "_force_quit"):
+                return top
+        return None
+
+    # ---------------------------------------------------------------- 静态工具
     @staticmethod
     def _clean_notes(text: str) -> str:
         """去掉常见 Markdown 标记，纯文本展示。"""
@@ -141,13 +241,13 @@ class UpdateDialog(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """强制更新时拦截右上角 X / Esc，只能通过「前往下载」离开。"""
-        if self.result.get("force") and not self._force_accepted:
+        if self.result.get("force") and not getattr(self, "_force_accepted", False):
             event.ignore()
             return
         super().closeEvent(event)
 
     def reject(self) -> None:
-        if self.result.get("force") and not self._force_accepted:
+        if self.result.get("force") and not getattr(self, "_force_accepted", False):
             return
         super().reject()
 

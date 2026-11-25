@@ -57,6 +57,10 @@ class _BgSwatch(QFrame):
         # 渐变预览条
         self.preview = QFrame()
         self.preview.setFixedHeight(46)
+        # 整块色块（含 preview / 名称）点击都应切换背景：
+        # 给子控件装事件过滤器，把鼠标按下转发给外层 _BgSwatch 统一处理，
+        # 避免点击落在子控件上被吞掉导致「白框不移动」。
+        self.preview.installEventFilter(self)
         lay.addWidget(self.preview)
 
         # 名称 + 编辑按钮
@@ -77,10 +81,24 @@ class _BgSwatch(QFrame):
                 edit.setIconSize(QSize(14, 14))
             except Exception:  # noqa: BLE001
                 edit.setText("*")
-            edit.clicked.connect(lambda: self.on_edit(self.key))
+            # 点国徽编辑按钮时也先选中本色块（让白框立即移动），再打开配色编辑
+            edit.clicked.connect(self._on_edit_clicked)
             name_row.addWidget(edit)
         lay.addLayout(name_row)
         self._refresh()
+
+    def _on_edit_clicked(self) -> None:
+        """编辑按钮：先切换选中态，再打开配色编辑对话框。"""
+        self.on_select(self.key)
+        self.on_edit(self.key)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        """把 preview / 名称 / 按钮上的鼠标按下转发为「选中本背景」。"""
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self.on_select(self.key)
+            return True
+        return super().eventFilter(obj, event)
 
     def _refresh(self) -> None:
         border = "2px solid #ffffff" if self._selected else "1px solid #666"

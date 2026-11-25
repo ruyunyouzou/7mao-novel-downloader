@@ -23,7 +23,7 @@ import inspect
 import os
 import sys
 import traceback
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .base import Plugin, Hook, DownloaderBase, BackgroundProvider
 
@@ -78,7 +78,8 @@ class PluginManager:
         targets = []
         for entry in sorted(os.listdir(self.plugin_dir)):
             full = os.path.join(self.plugin_dir, entry)
-            if entry.startswith("_"):
+            if entry.startswith("_") or entry == "vendor":
+                # vendor 是上游实现隔离目录，不是插件
                 continue
             if entry.endswith(".py"):
                 targets.append((entry[:-3], full))
@@ -135,14 +136,35 @@ class PluginManager:
         """派发事件并收集非空返回值（用于 register_tabs、provide_downloader 等）。"""
         return [r for r in self.emit(hook, *args, **kwargs) if r is not None]
 
-    def get_downloader(self) -> Optional[DownloaderBase]:
-        """获取优先级最高的下载内核实例（priority 越大越优先）。"""
+    def get_downloader(self, book_info: Optional[Dict[str, Any]] = None,
+                       source: Optional[str] = None) -> Optional[DownloaderBase]:
+        """获取下载内核实例（priority 越大越优先）。
+
+        - 未传参数：返回全局优先级最高的内核（保持原有行为，默认仍是七猫）。
+        - 传 source：优先选 source_key 匹配的内核（如 fanqie）。
+        - 传 book_info：再用内核的 supports() 过滤，避免番茄书落到七猫内核。
+        """
         candidates = [
             d for d in self.collect(Hook.PROVIDE_DOWNLOADER)
             if isinstance(d, DownloaderBase)
         ]
         if not candidates:
             return None
+        if source:
+            matched = [d for d in candidates
+                       if str(getattr(d, "source_key", "") or "") == source]
+            if matched:
+                candidates = matched
+        if book_info is not None:
+            matched = []
+            for d in candidates:
+                try:
+                    if d.supports(book_info):
+                        matched.append(d)
+                except Exception:  # noqa: BLE001
+                    continue
+            if matched:
+                candidates = matched
         return max(candidates, key=lambda d: getattr(d, "priority", 0))
 
     def get_backgrounds(self) -> List[BackgroundProvider]:

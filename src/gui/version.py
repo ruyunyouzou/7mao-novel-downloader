@@ -6,12 +6,12 @@
 三处不一致的问题。
 
 版本号语义：沿用上游 CLI 的 4.x 主线（CLI 当前 v4.0.2），本 GUI 在其上做了
-大量增强，故定为 4.1.0。发布新版时只需改 APP_VERSION 一处。
+大量增强。发布新版时只需改 APP_VERSION 一处。
 """
 
 from __future__ import annotations
 
-APP_VERSION = "4.1.0"
+APP_VERSION = "5.0.0"
 
 # 展示用完整字符串（标题栏 / 关于 / 页脚统一）
 VERSION_LABEL = f"v{APP_VERSION}"

@@ -18,19 +18,20 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QTimer, QSize, QPropertyAnimation, QEasingCurve, Property
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPixmap, QImage, QPainter, QColor, QDragEnterEvent, QDropEvent, QIcon, QTransform
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextBrowser, QListWidget, QPushButton,
-    QComboBox, QSlider, QLabel, QSplitter, QMessageBox, QFileDialog, QMenu,
-    QFrame, QScrollArea, QWidgetAction,
+    QComboBox, QSlider, QLabel, QSplitter, QMessageBox, QMenu,
+    QFrame, QScrollArea, QWidgetAction, QGraphicsOpacityEffect,
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..dialogue_highlight import highlight_text
 from ..i18n import tr
 from ..style import ACCENT
-from ..widgets import apply_nation_icon
+from ..widgets import apply_nation_icon, nation_icon
 from ..voice_library import VoiceProfile, get_voice, sample_for_language, DEFAULT_VOICE_ID, edge_available
 from ..tts_engine import TTSEngine
 from ..voice_dialog import VoiceDialog
@@ -83,6 +84,117 @@ class _CenteredPageHost(QWidget):
         super().resizeEvent(event)
 
 
+class _SpinExitButton(QPushButton):
+    """右下角退出专注按钮：直接显示金色国徽（无圆底），支持旋转 + 淡入淡出。
+
+    国徽本身作为按钮内容——透明背景，不带圆形色块。点击时国徽旋转一圈，
+    进入/退出专注模式时伴随透明度与缩放的丝滑转场。
+    """
+
+    def __init__(self, icon: QIcon, size: int = 40, parent=None) -> None:
+        super().__init__(parent)
+        self._icon = icon
+        self._size = size
+        self._angle = 0.0
+        self._on_spun = None
+
+        # 旋转动画
+        self._spin = QPropertyAnimation(self, b"spinAngle", self)
+        self._spin.setDuration(420)
+        self._spin.setStartValue(0.0)
+        self._spin.setEndValue(360.0)
+        self._spin.setEasingCurve(QEasingCurve.InOutCubic)
+        self._spin.valueChanged.connect(self._apply_icon)
+        self._spin.finished.connect(self._on_spin_finished)
+
+        # 淡入淡出动画（透明度作用于窗口级 opacity 效果，缩放走 iconSize）
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._fade = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade.setDuration(260)
+        self._fade.setEasingCurve(QEasingCurve.InOutCubic)
+        self._on_fade_out_done = None
+        # finished 只连接一次，用标志区分淡入/淡出结束，避免 disconnect 告警
+        self._fade.finished.connect(self._on_fade_finished)
+
+        self.setIconSize(QSize(size, size))
+        self.setFixedSize(size + 8, size + 8)
+        self._apply_icon()
+
+    def getSpinAngle(self) -> float:  # noqa: N802
+        return self._angle
+
+    def setSpinAngle(self, angle: float) -> None:  # noqa: N802
+        self._angle = float(angle)
+        self._apply_icon()
+
+    spinAngle = Property(float, getSpinAngle, setSpinAngle)  # noqa: N815
+
+    def _apply_icon(self, *args) -> None:
+        """按当前角度旋转国徽 pixmap 并设为按钮图标。"""
+        if self._icon.isNull():
+            return
+        pm = self._icon.pixmap(self._size, self._size)
+        if pm.isNull():
+            return
+        rotated = pm.transformed(QTransform().rotate(self._angle), Qt.SmoothTransformation)
+        self.setIcon(QIcon(rotated))
+
+    def fade_in(self) -> None:
+        """淡入：透明度 0→1 + 国徽由小放大到正常尺寸。"""
+        self.setVisible(True)
+        self.raise_()
+        self._opacity_effect.setOpacity(0.0)
+        self.setIconSize(QSize(int(self._size * 0.5), int(self._size * 0.5)))
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.start()
+        # 缩放动画：图标尺寸同步放大
+        self._scale = QPropertyAnimation(self, b"iconSize", self)
+        self._scale.setDuration(300)
+        self._scale.setStartValue(QSize(int(self._size * 0.5), int(self._size * 0.5)))
+        self._scale.setEndValue(QSize(self._size, self._size))
+        self._scale.setEasingCurve(QEasingCurve.OutBack)
+        self._scale.start()
+
+    def fade_out(self, done=None) -> None:
+        """淡出：透明度 1→0 + 国徽缩小，结束后隐藏并回调。"""
+        self._on_fade_out_done = done
+        self._fade.setStartValue(self._opacity_effect.opacity())
+        self._fade.setEndValue(0.0)
+        self._fade.start()
+        self._scale = QPropertyAnimation(self, b"iconSize", self)
+        self._scale.setDuration(240)
+        self._scale.setStartValue(self.iconSize())
+        self._scale.setEndValue(QSize(int(self._size * 0.6), int(self._size * 0.6)))
+        self._scale.setEasingCurve(QEasingCurve.InCubic)
+        self._scale.start()
+
+    def _on_fade_finished(self) -> None:
+        # 淡出结束（opacity 归零）才隐藏并回调；淡入结束不处理
+        if self._opacity_effect.opacity() > 0.01:
+            return
+        self.setVisible(False)
+        self.setIconSize(QSize(self._size, self._size))
+        if callable(getattr(self, "_on_fade_out_done", None)):
+            cb, self._on_fade_out_done = self._on_fade_out_done, None
+            cb()
+
+    def spin(self, done=None) -> None:
+        """播放国徽旋转动画，结束后调用 done。"""
+        if self._spin.state() == QPropertyAnimation.Running:
+            return
+        self._on_spun = done
+        self.setSpinAngle(0.0)
+        self._spin.start()
+
+    def _on_spin_finished(self) -> None:
+        self.setSpinAngle(0.0)
+        if callable(self._on_spun):
+            cb, self._on_spun = self._on_spun, None
+            cb()
+
+
 def _is_app_dark(widget) -> bool:
     """读取主界面当前深浅，供"纸张跟随界面"判断。
 
@@ -105,6 +217,7 @@ CHAPTER_RE = re.compile(
     r"第[零一二三四五六七八九十百千万两〇0-9]+\s*[章节回部篇卷]"  # 第X章（允许"第两百七十四 章"中间空格）
     r"|第[零一二三四五六七八九十百千万两〇0-9]{2,}(?=\s|$|[^\d零一二三四五六七八九十百千万两〇])"  # 第一千三百四十五离开天墓（章字省略）
     r"|[零一二三四五六七八九十百千万两〇]+章(?=\s|$)"          # 四百七十章 这类省略"第"的
+    r"|卷[零一二三四五六七八九十百千万两〇0-9]+(?=\s|$|[章节篇部])"  # 卷一/卷二 这类省略"第"的卷名
     r"|[Cc]hapter\s*\d+"                                     # Chapter N
     r"|序章|楔子|番外|尾声|后记|终章|番外篇"
     r")"
@@ -152,6 +265,19 @@ class ReaderView(QWidget):
         self._apply_font()
 
     # ------------------------------------------------------------------ UI
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """窗口尺寸变化时，把专注模式退出圆钮固定在正文区右下角（状态栏上方）。"""
+        super().resizeEvent(event)
+        if hasattr(self, "btn_exit_focus"):
+            w, h = self.width(), self.height()
+            bw, bh = self.btn_exit_focus.width(), self.btn_exit_focus.height()
+            # 状态栏高度作为底部偏移，避免圆钮压住状态文字
+            status_h = self.status_label.height() if hasattr(self, "status_label") else 28
+            x = max(8, w - bw - 22)
+            y = max(8, h - bh - status_h - 18)
+            self.btn_exit_focus.move(x, y)
+            self.btn_exit_focus.raise_()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -246,6 +372,22 @@ class ReaderView(QWidget):
         QShortcut(QKeySequence("Ctrl+Left"), self, self.prev_chapter)
         QShortcut(QKeySequence("Ctrl+Right"), self, self.next_chapter)
 
+        # 专注模式退出：Esc 快捷键只注册一次（不随进入次数累积），并常驻一个可见的悬浮退出按钮
+        self._esc_shortcut = QShortcut(QKeySequence("Escape"), self)
+        self._esc_shortcut.activated.connect(self._exit_focus)
+        # 退出专注：右下角直接显示金色国徽（无圆底/透明背景），点击国徽旋转一圈后退出
+        self.btn_exit_focus = _SpinExitButton(
+            nation_icon("liyue", None, 40), 40, self)
+        self.btn_exit_focus.setObjectName("exitFocusBtn")
+        self.btn_exit_focus.setCursor(Qt.PointingHandCursor)
+        self.btn_exit_focus.setToolTip(tr("reader.exit_focus_tip"))
+        self.btn_exit_focus.setStyleSheet(
+            "QPushButton#exitFocusBtn { background: transparent; border: none; padding: 0; }"
+        )
+        self.btn_exit_focus.clicked.connect(self._on_exit_clicked)
+        self.btn_exit_focus.setVisible(False)
+        self.btn_exit_focus.raise_()
+
         # 拖放文件支持
         self.setAcceptDrops(True)
         self.welcome_widget.setAcceptDrops(True)
@@ -310,7 +452,7 @@ class ReaderView(QWidget):
         self.act_speak.setEnabled(self.tts_available)
         self.act_speak.triggered.connect(self._toggle_speech)
         if not self.tts_available:
-            self.act_speak.setToolTip("当前系统无可用语音引擎")
+            self.act_speak.setToolTip(tr("reader.speak_no_engine"))
 
         self.act_voice = self.more_menu.addAction(tr("voice.menu"))
         self.act_voice.triggered.connect(self._choose_voice)
@@ -322,12 +464,12 @@ class ReaderView(QWidget):
 
         self.act_dialogue = self.more_menu.addAction(tr("reader.dialogue"))
         self.act_dialogue.setCheckable(True)
-        self.act_dialogue.setToolTip("不同人物的对话显示为不同颜色（仅显示效果，不影响下载/EPUB）")
+        self.act_dialogue.setToolTip(tr("reader.dialogue_tip"))
         self.act_dialogue.triggered.connect(self._toggle_dialogue)
 
         self.act_auto = self.more_menu.addAction(tr("reader.auto"))
         self.act_auto.setCheckable(True)
-        self.act_auto.setToolTip("读到章末后自动翻到下一章，可再次点击关闭")
+        self.act_auto.setToolTip(tr("reader.auto_tip"))
         self.act_auto.triggered.connect(self._toggle_auto_read)
 
     # ------------------------------------------------------------------ 听书倍速
@@ -673,7 +815,7 @@ class ReaderView(QWidget):
     # ------------------------------------------------------------------ 打开与解析
 
     def open_local(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, "选择本地小说", "", "小说文件 (*.txt *.epub);;所有文件 (*.*)"
         )
         if path:
@@ -705,8 +847,15 @@ class ReaderView(QWidget):
 
         self.catalog_list.blockSignals(True)
         self.catalog_list.clear()
-        for ch in chapters:
-            self.catalog_list.addItem(ch["title"])
+        for i, ch in enumerate(chapters, 1):
+            raw = ch.get("title") or ""
+            # 标题已含"第X章"就不重复加章数，否则补"第N章 "前缀
+            if CHAPTER_RE.match(raw):
+                label = raw
+            else:
+                label = f"第 {i} 章　{raw}" if raw else f"第 {i} 章"
+            ch["catalog_title"] = label
+            self.catalog_list.addItem(label)
         self.catalog_list.blockSignals(False)
 
         # 恢复进度
@@ -767,21 +916,91 @@ class ReaderView(QWidget):
         return [c for c in chapters if c["content"]]
 
     def _parse_epub(self, path: str) -> List[Dict[str, Any]]:
-        """用 ebooklib 解析 EPUB 章节。"""
-        from ebooklib import epub
+        """用 ebooklib 解析 EPUB 章节。
+
+        标题按 ``h1~h6 → <title> → 正文首行章节正则 → 第N章`` 的优先级提取，
+        不再一律回退成"章节"；按 spine 阅读顺序排列并跳过 nav/toc 导航文档。
+        """
+        from ebooklib import epub, ITEM_DOCUMENT
         from bs4 import BeautifulSoup
 
         book = epub.read_epub(path)
-        chapters = []
-        for item in book.get_items():
-            if item.get_type() == 9:  # ITEM_DOCUMENT
-                soup = BeautifulSoup(item.get_content(), "html.parser")
-                for tag in soup(["script", "style", "nav"]):
-                    tag.decompose()
-                title = soup.title.string.strip() if soup.title and soup.title.string else "章节"
-                content = soup.get_text("\n", strip=True)
-                if content:
-                    chapters.append({"title": title, "content": content})
+
+        # 按 spine 顺序取正文文档（id → item）
+        id_map = {}
+        for it in book.get_items_of_type(ITEM_DOCUMENT):
+            id_map[str(it.get_id())] = it
+        ordered = []
+        for spine_item in book.spine:
+            sid = spine_item[0] if isinstance(spine_item, tuple) else spine_item
+            it = id_map.get(str(sid))
+            if it is not None:
+                ordered.append(it)
+        # spine 缺失时退回文件列表
+        if not ordered:
+            ordered = list(book.get_items_of_type(ITEM_DOCUMENT))
+
+        def _is_nav(it) -> bool:
+            name = os.path.basename(str(it.get_name())).lower()
+            ident = str(it.get_id()).lower()
+            if any(k in name for k in ("nav", "toc", "cover")) or ident in ("nav", "toc", "cover"):
+                return True
+            # 含 <nav> 且正文极短（纯目录页）
+            try:
+                soup = BeautifulSoup(it.get_content(), "html.parser")
+                if soup.find("nav") and len(soup.get_text(" ", strip=True)) < 120:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
+        chapters: List[Dict[str, Any]] = []
+        for it in ordered:
+            if _is_nav(it):
+                continue
+            soup = BeautifulSoup(it.get_content(), "html.parser")
+            for tag in soup(["script", "style", "nav"]):
+                tag.decompose()
+
+            # 1) 优先取 h1~h6 的第一个非空文本作为章节名
+            title = ""
+            for h in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+                t = " ".join(h.get_text(" ", strip=True).split())
+                if t:
+                    title = t
+                    break
+            # 2) 其次 <title>
+            if not title and soup.title and soup.title.string:
+                title = " ".join(soup.title.string.strip().split())
+            content = soup.get_text("\n", strip=True)
+
+            # 3) 再次：正文首行命中章节正则（如"第2章 全能系统"）
+            first_line = next((ln.strip() for ln in content.splitlines() if ln.strip()), "")
+            if (not title or title in ("章节", "正文")) and first_line and CHAPTER_RE.match(first_line):
+                title = first_line
+
+            lines = [ln for ln in content.splitlines()]
+            # 正文若以与标题相同/高度重合的行开头，去掉重复标题行。
+            # EPUB 常把标题拆成多行（如"第三卷 扬名修魔海" + "第141章 斗邪派"），
+            # 这里累积前 1~4 行比对，命中后一并去掉，避免正文顶部重复章名。
+            if title and lines:
+                norm = lambda s: "".join(str(s).split())
+                target = norm(title)
+                for n in range(1, min(4, len(lines)) + 1):
+                    if norm("".join(lines[:n])) == target:
+                        lines = lines[n:]
+                        break
+                else:
+                    if norm(lines[0]) == target:
+                        lines = lines[1:]
+            content = "\n".join(lines).strip()
+
+            # 4) 兜底：按序号命名
+            if not title:
+                title = f"第 {len(chapters) + 1} 章"
+
+            if content:
+                chapters.append({"title": title, "content": content})
         return chapters
 
     # ------------------------------------------------------------------ 渲染与导航
@@ -797,8 +1016,10 @@ class ReaderView(QWidget):
             body = highlight_text(ch["content"], dark=self._paper_colors()[1])
         else:
             body = escape(ch["content"]).replace("\n", "<br/>")
+        # 正文标题优先用带章数的目录标题，与目录一致
+        heading = ch.get("catalog_title") or ch["title"]
         self.text.setHtml(
-            f"<div style='line-height:1.8;'><h2>{escape(ch['title'])}</h2><p>{body}</p></div>"
+            f"<div style='line-height:1.8;'><h2>{escape(heading)}</h2><p>{body}</p></div>"
         )
         self.text.verticalScrollBar().setValue(0)
         self.btn_prev.setEnabled(index > 0)
@@ -854,7 +1075,7 @@ class ReaderView(QWidget):
         if checked is None:
             checked = self.act_auto.isChecked()
         self._auto_read = bool(checked)
-        self.act_auto.setText("⏸ 停止自动" if self._auto_read else "▶️ 自动阅读")
+        self.act_auto.setText(tr("reader.auto_stop") if self._auto_read else tr("reader.auto"))
         if not self._auto_read and self._auto_timer.isActive():
             self._auto_timer.stop()
         self._save_setting("auto_read", self._auto_read)
@@ -886,6 +1107,13 @@ class ReaderView(QWidget):
     def _apply_font(self) -> None:
         size = self.size_slider.value()
         self.text.setFont(QFont("Microsoft YaHei", size))
+        # 同步 HTML 正文默认字号（QTextBrowser 的 setHtml 会重置 document 默认字体），
+        # 并立即重渲染当前章，保证拖动滑块即时可见
+        self.text.document().setDefaultFont(QFont("Microsoft YaHei", size))
+        if self.chapters:
+            scroll = self.text.verticalScrollBar().value()
+            self._render_chapter(self.current_index)
+            self.text.verticalScrollBar().setValue(scroll)
         self._save_setting("font_size", size)
 
     def _on_theme_index_changed(self, _idx: int = 0) -> None:
@@ -951,7 +1179,7 @@ class ReaderView(QWidget):
             tr("reader.catalog_show_tip") if checked else tr("reader.catalog_tip"))
 
     def _toggle_focus(self, checked: bool) -> None:
-        """简洁模式：隐藏工具栏与目录。"""
+        """简洁模式：隐藏工具栏与目录，并以淡入淡出转场显示/隐藏退出国徽。"""
         for i in range(self.toolbar.count()):
             item = self.toolbar.itemAt(i)
             w = item.widget()
@@ -961,9 +1189,45 @@ class ReaderView(QWidget):
         self.catalog_list.setVisible(
             (not checked) and not self.btn_catalog.isChecked())
         self.btn_focus.setText(tr("reader.exit_focus") if checked else tr("reader.focus"))
-        # 专注模式下仍保留一个退出按钮（当前按钮本身在工具栏里会被隐藏，用快捷键 Esc 恢复）
-        if checked:
-            QShortcut(QKeySequence("Escape"), self, lambda: (self.btn_focus.setChecked(False), self._toggle_focus(False)))
+        # 退出国徽：进入时淡入+放大，退出时由调用方（点击旋转 / Esc）统一淡出
+        if hasattr(self, "btn_exit_focus"):
+            if checked:
+                self.btn_exit_focus.fade_in()
+            elif not self.btn_exit_focus.isHidden():
+                # 从工具栏 btn_focus 直接退出时，也走淡出转场
+                self.btn_exit_focus.fade_out(done=self._finish_focus_exit)
+                return
+            self.btn_exit_focus.raise_()
+
+    def _on_exit_clicked(self) -> None:
+        """点击国徽：先旋转一圈，再淡出并退出专注模式（丝滑转场）。"""
+        if not self.btn_focus.isChecked():
+            return
+        self.btn_exit_focus.spin(done=self._exit_focus_smooth)
+
+    def _exit_focus_smooth(self) -> None:
+        """退出专注：国徽淡出缩小，动画结束后恢复工具栏并复位状态。"""
+        if not self.btn_focus.isChecked():
+            return
+        self.btn_focus.setChecked(False)
+        self.btn_exit_focus.fade_out(done=self._finish_focus_exit)
+
+    def _finish_focus_exit(self) -> None:
+        """退出收尾：恢复工具栏/目录（Esc 无旋转时也会走到这里）。"""
+        for i in range(self.toolbar.count()):
+            item = self.toolbar.itemAt(i)
+            w = item.widget()
+            if w:
+                w.setVisible(True)
+        self.catalog_list.setVisible(not self.btn_catalog.isChecked())
+        self.btn_focus.setText(tr("reader.focus"))
+
+    def _exit_focus(self, *args) -> None:
+        """Esc 快捷退出（无旋转）：同样走国徽淡出的丝滑转场。"""
+        if not self.btn_focus.isChecked():
+            return
+        self.btn_focus.setChecked(False)
+        self.btn_exit_focus.fade_out(done=self._finish_focus_exit)
 
     # ------------------------------------------------------------------ 听书
 
@@ -1027,7 +1291,7 @@ class ReaderView(QWidget):
 
     def _import_audio(self) -> None:
         """通过音频导入接口播放本地音频文件（复用倍速/停止/音量控制）。"""
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, tr("voice.import_audio"), "", TTSEngine.audio_filter())
         if not path:
             return
@@ -1101,7 +1365,7 @@ class ReaderView(QWidget):
         self.act_auto.blockSignals(False)
         self._auto_read = auto
         if auto:
-            self.act_auto.setText("⏸ 停止自动")
+            self.act_auto.setText(tr("reader.auto_stop"))
         # 恢复听书音色
         self._voice_id = str(self.store.settings_get("read_voice", DEFAULT_VOICE_ID) or DEFAULT_VOICE_ID)
         if not get_voice(self._voice_id).id == self._voice_id:
@@ -1128,6 +1392,8 @@ class ReaderView(QWidget):
                 tr("reader.catalog_show") if collapsed else tr("reader.catalog"))
         self.btn_focus.setText(tr("reader.exit_focus") if self.btn_focus.isChecked()
                                else tr("reader.focus"))
+        if hasattr(self, "btn_exit_focus"):
+            self.btn_exit_focus.setToolTip(tr("reader.exit_focus_tip"))
         self.btn_settings_menu.setText(tr("reader.settings") + "  ▾")
         self.btn_more_menu.setText(tr("reader.more") + "  ▾")
         self.act_speak.setText(tr("reader.stop") if self._speaking else tr("reader.speak"))

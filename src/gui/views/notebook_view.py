@@ -17,11 +17,12 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QLinearGradient
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFrame, QLabel,
-    QPushButton, QLineEdit, QScrollArea, QMessageBox, QFileDialog, QDialog,
+    QPushButton, QLineEdit, QScrollArea, QMessageBox, QDialog,
     QTabWidget, QSizePolicy,
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from .. import render_quality
 from ..widgets import GroupTitleLabel, apply_nation_icon
@@ -275,6 +276,7 @@ class NotebookCard(QFrame):
     def __init__(self, book: Dict[str, Any], parent=None) -> None:
         super().__init__(parent)
         self.book = book
+        self._hovered = False
         self.setObjectName("notebookCard")
         self.setFixedHeight(124)  # 方案 A：加大卡片以容纳 72×100 封面
         self.setCursor(Qt.PointingHandCursor)
@@ -326,20 +328,21 @@ class NotebookCard(QFrame):
             self.accent_bar.setGeometry(10, 0, max(0, self.width() - 20), 3)
 
     def enterEvent(self, event) -> None:  # noqa: N802
-        """悬停上浮感：投影 + 描边高亮。"""
-        from PySide6.QtWidgets import QGraphicsDropShadowEffect
-        eff = QGraphicsDropShadowEffect(self)
-        eff.setBlurRadius(18)
-        eff.setOffset(0, 4)
-        eff.setColor(QColor(NB_ORANGE))
-        self.setGraphicsEffect(eff)
+        """悬停高亮：改用纯 QSS 描边 + 背景提亮。
+
+        原实现用 QGraphicsDropShadowEffect 做投影，但在 Qt6 + QScrollArea
+        网格中动态挂 QGraphicsEffect 会让该卡片离屏合成失败、整块渲染成空白
+        （鼠标移上去卡片"消失"）。纯 QSS 无此问题。
+        """
+        self._hovered = True
         self.setStyleSheet(
-            f"QFrame#notebookCard{{background-color:{NB_CARD};border:1px solid {NB_ORANGE};border-radius:10px;}}"
+            f"QFrame#notebookCard{{background-color:{NB_HOVER};"
+            f"border:1px solid {NB_ORANGE};border-radius:10px;}}"
         )
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
-        self.setGraphicsEffect(None)
+        self._hovered = False
         self.setStyleSheet(
             f"QFrame#notebookCard{{background-color:{NB_CARD};border:1px solid {NB_LINE};border-radius:10px;}}"
         )
@@ -348,9 +351,16 @@ class NotebookCard(QFrame):
     def apply_colors(self) -> None:
         """跟随主题刷新卡片配色（深浅主题 + 主题色）。"""
         self.cover.apply_colors()
-        self.setStyleSheet(
-            f"QFrame#notebookCard{{background-color:{NB_CARD};border:1px solid {NB_LINE};border-radius:10px;}}"
-        )
+        # 主题切换时若鼠标正悬停，保留悬停高亮态，避免被默认样式覆盖
+        if self._hovered:
+            self.setStyleSheet(
+                f"QFrame#notebookCard{{background-color:{NB_HOVER};"
+                f"border:1px solid {NB_ORANGE};border-radius:10px;}}"
+            )
+        else:
+            self.setStyleSheet(
+                f"QFrame#notebookCard{{background-color:{NB_CARD};border:1px solid {NB_LINE};border-radius:10px;}}"
+            )
         self.accent_bar.setStyleSheet(
             "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             f"stop:0 {NB_ORANGE},stop:1 {NB_ORANGE_L});border-radius:2px;"
@@ -803,10 +813,10 @@ class NotebookView(QWidget):
             return
         key = str(self.store.settings_get("weread_api_key", "")).strip()
         if not key:
-            self.status_lbl.setText("提示：请在微信读书页的凭据设置中填写 API Key（wrk- 开头）")
+            self.status_lbl.setText(tr("notebook.need_key"))
             return
         self.btn_refresh.setEnabled(False)
-        self.status_lbl.setText("正在加载笔记本…")
+        self.status_lbl.setText(tr("notebook.loading"))
         self._worker = NotebooksWorker(key, self)
         self._worker.finished.connect(self._on_books)
         self._worker.failed.connect(self._on_failed)
@@ -881,14 +891,14 @@ class NotebookView(QWidget):
         if not key:
             QMessageBox.information(self, "提示", "请先填写微信读书 API Key")
             return
-        path, _ = QFileDialog.getSaveFileName(
+        path = _fd.save_file(
             self, "导出笔记", os.path.expanduser("~/微信读书笔记.md"),
             "Markdown 文件 (*.md);;文本文件 (*.txt)",
         )
         if not path:
             return
         self.btn_export.setEnabled(False)
-        self.status_lbl.setText("正在导出笔记…")
+        self.status_lbl.setText(tr("notebook.exporting"))
         self._export_worker = ExportWorker(key, self.books, path, self)
         self._export_worker.progress.connect(lambda m: self.status_lbl.setText(m))
         self._export_worker.finished.connect(self._on_export_done)

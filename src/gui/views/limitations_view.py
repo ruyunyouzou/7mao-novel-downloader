@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..style import BG_CARD, BORDER, TEXT, TEXT_DIM, ACCENT, WARN
 from ..widgets import nation_icon
+from ..i18n import tr
 
 
 # (图标, 标题, 状态, 状态色, 说明, 接入路径)
@@ -51,7 +52,7 @@ class LimitationsView(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("功能说明")
+        self.setWindowTitle(tr("common.feature_info"))
         self._build_ui()
 
     def _build_ui(self) -> None:

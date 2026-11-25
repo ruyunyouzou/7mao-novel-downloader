@@ -8,3 +8,6 @@ pycryptodome
 PyYAML
 edge-tts>=7.0
 qrcode[pil]>=7.4
+fonttools>=4.50
+brotli>=1.1
+gmssl>=3.2

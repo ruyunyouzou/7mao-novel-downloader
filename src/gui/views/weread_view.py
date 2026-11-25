@@ -17,19 +17,20 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QRectF, QTimer, QUrl
-from PySide6.QtGui import QPainter, QColor, QFont, QPixmap, QLinearGradient
+from PySide6.QtCore import Qt, QThread, Signal, QRectF, QTimer, QUrl, QDate, QSize
+from PySide6.QtGui import QPainter, QColor, QFont, QPixmap, QLinearGradient, QFontMetrics, QPainterPath, QPen
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
-from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QFileDialog, QScrollArea, QGroupBox, QProgressBar
+from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit, QMessageBox, QScrollArea, QGroupBox
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from .. import render_quality
 from ..style import accent_color
 from ..weread_core import WeReadClient, WeReadUploader, build_dashboard, greeting_by_time, SUPPORTED_FORMATS, MAX_SIZE_MB
 from ..weread_login import WeReadMobileSession, clear_session, load_session, save_session
 from ..weread_login_dialog import WereadLoginDialog
-from ..widgets import GroupTitleLabel, apply_nation_icon
+from ..widgets import GroupTitleLabel, apply_nation_icon, nation_icon
 
 # ---- 微信读书仪表盘配色：跟随主程序深浅主题 + 主题色 ----
 # 下列常量是"默认深色"值；主题切换时由 _apply_palette() 通过 global 重新赋值，
@@ -242,6 +243,157 @@ def _lbl(text: str = "", color: str = WR_TEXT, size: int = 13,
     return q
 
 
+# 横条列表统一布局：阅读偏好 / 书籍划线统计两张卡共用「B 名称独立行 + 国徽序号徽章」。
+# 每张条分两段：上排 = 国徽徽章 + 名称(左) + 数值(右)，下排 = 通栏进度条。
+# 两页用同一套结构与列宽，切换页面时排版完全一致，不再忽左忽右。
+BAR_VALUE_W = 52
+BAR_BADGE_SIZE = 22
+_BADGE_NATIONS = ("mondstadt", "liyue", "inazuma", "sumeru", "fontaine", "natlan")
+
+
+class _RankBadge(QWidget):
+    """国徽序号徽章：国徽图标铺底，中间叠排名数字（前三名高亮）。"""
+
+    def __init__(self, index: int, rank: int, parent=None) -> None:
+        super().__init__(parent)
+        self.index = int(index)
+        self.rank = int(rank) if rank and rank > 0 else 1
+        self.setFixedSize(BAR_BADGE_SIZE, BAR_BADGE_SIZE)
+        self.setToolTip(f"#{self.rank}")
+
+    def paintEvent(self, _ev) -> None:
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        except AttributeError:  # 旧版 PySide6 兼容
+            p.setRenderHint(QPainter.Antialiasing)
+        hot = self.rank <= 3
+        color = WR_ORANGE_L if hot else WR_DIM
+        nation = _BADGE_NATIONS[(self.rank - 1) % len(_BADGE_NATIONS)]
+        pm = nation_icon(nation, color, BAR_BADGE_SIZE).pixmap(
+            BAR_BADGE_SIZE, BAR_BADGE_SIZE)
+        if not pm.isNull():
+            p.drawPixmap(0, 0, pm)
+        # 序号角标放在右下角，不遮挡国徽主体；描边保证在任意底色上都清晰
+        d = 12
+        x = BAR_BADGE_SIZE - d
+        y = BAR_BADGE_SIZE - d
+        p.setPen(QColor(WR_CARD))
+        p.setBrush(QColor(WR_ORANGE if hot else WR_CARD2))
+        p.drawRoundedRect(QRectF(x, y, d, d), 4, 4)
+        p.setPen(QColor("#ffffff" if hot else WR_TEXT))
+        f = QFont()
+        f.setPointSize(7)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(QRectF(x, y, d, d), Qt.AlignCenter, str(self.rank))
+
+
+class SoftProgressBar(QWidget):
+    """圆滑进度条（方案 B）：胶囊轨道 + 内阴影 + 橙色横向渐变 + 柔光外发光。
+
+    QSS 的 QProgressBar 无法表达 chunk 渐变与外侧 box-shadow，故改为自绘。
+    对外接口（setMaximum / setValue）与 QProgressBar 一致，可原位替换。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._value = 0
+        self._maximum = 100
+        self.setFixedHeight(12)
+
+    def setMaximum(self, maximum: int) -> None:
+        self._maximum = max(1, int(maximum))
+        self.setValue(self._value)
+
+    def maximum(self) -> int:
+        return self._maximum
+
+    def setValue(self, value: int) -> None:
+        v = max(0, min(self._maximum, int(value)))
+        if v != self._value:
+            self._value = v
+            self.update()
+
+    def value(self) -> int:
+        return self._value
+
+    def apply_colors(self) -> None:
+        self.update()
+
+    def paintEvent(self, _ev) -> None:
+        w, h = self.width(), self.height()
+        if w < 6 or h < 6:
+            return
+        p = QPainter(self)
+        render_quality.apply_painter(p)
+        p.setPen(Qt.NoPen)
+        r = QRectF(0, 0, w, h)
+        rad = h / 2.0
+
+        # 轨道：顶部略暗、底部略亮，模拟 inset 阴影的凹陷感
+        track = QLinearGradient(0, 0, 0, h)
+        track.setColorAt(0.0, QColor(WR_CARD2).darker(120))
+        track.setColorAt(1.0, QColor(WR_CARD2).lighter(108))
+        p.setBrush(track)
+        p.drawRoundedRect(r, rad, rad)
+
+        ratio = self._value / float(self._maximum)
+        if ratio <= 0:
+            return
+        fr = QRectF(0, 0, w * ratio, h)
+
+        # 柔光外发光：半透明橙色铺底，比填充略大
+        glow = QColor(WR_ORANGE)
+        glow.setAlpha(90)
+        p.setBrush(glow)
+        p.drawRoundedRect(fr.adjusted(-1.5, -1.5, 1.5, 1.5), rad + 1, rad + 1)
+
+        # 填充：横向三段渐变，两端胶囊圆头
+        fill = QLinearGradient(0, 0, w, 0)
+        fill.setColorAt(0.0, QColor(WR_ORANGE).darker(118))
+        fill.setColorAt(0.45, QColor(WR_ORANGE))
+        fill.setColorAt(1.0, QColor(WR_ORANGE_L))
+        p.setBrush(fill)
+        p.drawRoundedRect(fr, rad, rad)
+
+
+def _aligned_bar_row(name: str, ratio: int, value: str,
+                     tip: str | None = None, index: int = 0) -> QWidget:
+    """统一横条：上排「国徽序号徽章 + 名称 + 数值」，下排通栏进度条。
+
+    名称过长时省略号截断并挂 tooltip（含完整书名/分类名）；上排两端对齐、
+    下排进度条铺满整行，两张卡用同一结构，视觉完全对齐。
+    """
+    outer = QWidget()
+    col = QVBoxLayout(outer)
+    col.setContentsMargins(0, 0, 0, 0)
+    col.setSpacing(4)
+
+    top = QHBoxLayout()
+    top.setSpacing(8)
+    top.addWidget(_RankBadge(index, index), 0, Qt.AlignVCenter)
+
+    name_lbl = _lbl(str(name), WR_DIM, 11)
+    fm = QFontMetrics(name_lbl.font())
+    name_lbl.setText(fm.elidedText(str(name), Qt.ElideRight, 240))
+    name_lbl.setToolTip(str(name))
+    top.addWidget(name_lbl, 1)
+
+    num = _lbl(str(value), WR_TEXT, 11)
+    num.setFixedWidth(BAR_VALUE_W)
+    num.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    num.setToolTip(str(tip if tip is not None else value))
+    top.addWidget(num, 0)
+    col.addLayout(top)
+
+    bar = SoftProgressBar()
+    bar.setMaximum(100)
+    bar.setValue(int(max(0, min(100, ratio))))
+    col.addWidget(bar)
+    return outer
+
+
 def _ghost_btn(text: str) -> QPushButton:
     b = QPushButton(text)
     b.setCursor(Qt.PointingHandCursor)
@@ -301,8 +453,21 @@ class BarChart(QWidget):
             if not hot and self.show_value:
                 col = QColor(WR_BAR_IDLE)
             p.setPen(Qt.NoPen)
-            p.setBrush(col)
-            p.drawRoundedRect(QRectF(x, y, bar_w, bh), 3, 3)
+            # 方案 B：渐变填充 + 顶部 6px 圆角（底部贴轴保持方角）
+            grad = QLinearGradient(0, y, 0, y + bh)
+            grad.setColorAt(0.0, col)
+            grad.setColorAt(1.0, QColor(col).lighter(120))
+            p.setBrush(grad)
+            rr = min(6.0, bar_w / 2.0, bh)
+            path = QPainterPath()
+            path.moveTo(x, y + bh)
+            path.lineTo(x, y + rr)
+            path.quadTo(x, y, x + rr, y)
+            path.lineTo(x + bar_w - rr, y)
+            path.quadTo(x + bar_w, y, x + bar_w, y + rr)
+            path.lineTo(x + bar_w, y + bh)
+            path.closeSubpath()
+            p.drawPath(path)
             # 数值
             if self.show_value and val > 0:
                 p.setPen(QColor(WR_ORANGE_L if hot else WR_DIM))
@@ -319,71 +484,165 @@ class BarChart(QWidget):
                            Qt.AlignCenter, label)
 
 
-class Sparkline(QWidget):
-    """迷你折线图：data = [(label, value), ...]，纯 Qt 绘制，带渐变填充。"""
+class _SparkPlot(QWidget):
+    """迷你折线绘图区：逐日点 + 醒目星点 + 渐变填充。"""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.data: List[tuple] = []
-        self.setMinimumHeight(62)
-        self.setMaximumHeight(84)
+        self.points: List[float] = []
+        self.labels: List[str] = []
+        self.setMinimumHeight(60)
 
-    def set_data(self, data: List[tuple]) -> None:
-        self.data = data or []
+    def set_points(self, points: List[float], labels: List[str]) -> None:
+        self.points = points or []
+        self.labels = labels or []
         self.update()
 
     def apply_colors(self) -> None:
         self.update()
 
     def paintEvent(self, event) -> None:
-        if len(self.data) < 2:
+        if len(self.points) < 2:
             return
+        from PySide6.QtGui import QPolygonF, QBrush
+        from PySide6.QtCore import QPointF
         p = QPainter(self)
         render_quality.apply_painter(p, text=True)
         w, h = self.width(), self.height()
-        pad = 6
-        vals = [float(v) for _, v in self.data]
+        pad_x, top, bottom = 7, 12, 13
+        vals = [float(v) for v in self.points]
         maxv = max(vals) or 1
         n = len(vals)
-        xs = [pad + (w - 2 * pad) * i / (n - 1) for i in range(n)]
-        ys = [h - pad - (h - 2 * pad) * (v / maxv) for v in vals]
+        plot_h = max(8, h - top - bottom)
+        xs = [pad_x + (w - 2 * pad_x) * i / (n - 1) for i in range(n)]
+        ys = [top + plot_h - plot_h * (v / maxv) for v in vals]
         # 渐变填充
-        from PySide6.QtGui import QPolygonF, QBrush
-        from PySide6.QtCore import QPointF
-        poly = QPolygonF([QPointF(xs[0], h - pad)]
+        poly = QPolygonF([QPointF(xs[0], top + plot_h)]
                          + [QPointF(x, y) for x, y in zip(xs, ys)]
-                         + [QPointF(xs[-1], h - pad)])
-        grad = QLinearGradient(0, 0, 0, h)
-        ga = QColor(WR_ORANGE)
-        ga.setAlpha(70)
-        gb = QColor(WR_ORANGE)
-        gb.setAlpha(0)
+                         + [QPointF(xs[-1], top + plot_h)])
+        grad = QLinearGradient(0, top, 0, top + plot_h)
+        ga = QColor(WR_ORANGE); ga.setAlpha(75)
+        gb = QColor(WR_ORANGE); gb.setAlpha(0)
         grad.setColorAt(0.0, ga)
         grad.setColorAt(1.0, gb)
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(grad))
         p.drawPolygon(poly)
         # 折线
-        line = QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)])
-        pen = QColor(WR_ORANGE_L)
-        p.setPen(pen)
+        p.setPen(QPen(QColor(WR_ORANGE_L), 1.6))
         p.setBrush(Qt.NoBrush)
-        p.drawPolyline(line)
-        # 数据点 + 数值
-        p.setBrush(QColor(WR_ORANGE_L))
-        p.setPen(Qt.NoPen)
-        for x, y, v in zip(xs, ys, vals):
-            p.drawEllipse(QRectF(x - 2.5, y - 2.5, 5, 5))
-        # x 轴标签（只显示首/尾/中间）
+        p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)]))
+        # 醒目星点：外圈淡色晕 + 内圈实心 + 描边；峰值点更大
+        peak = max(range(n), key=lambda i: vals[i]) if vals else -1
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            is_peak = (i == peak and vals[i] > 0)
+            r = 4.2 if is_peak else 3.2
+            halo = QColor(WR_ORANGE_L); halo.setAlpha(70)
+            p.setPen(Qt.NoPen); p.setBrush(halo)
+            p.drawEllipse(QRectF(x - r - 2, y - r - 2, (r + 2) * 2, (r + 2) * 2))
+            p.setBrush(QColor(WR_CARD))
+            p.drawEllipse(QRectF(x - r, y - r, r * 2, r * 2))
+            p.setBrush(QColor(WR_ORANGE_L) if is_peak else QColor(WR_ORANGE))
+            p.drawEllipse(QRectF(x - r + 1.2, y - r + 1.2, (r - 1.2) * 2, (r - 1.2) * 2))
+        # x 轴标签：首 / 中 / 尾
         p.setPen(QColor(WR_FAINT))
         f = QFont(); f.setPointSize(7)
         p.setFont(f)
         for i in (0, n // 2, n - 1):
-            if i < len(self.data):
-                label = str(self.data[i][0])
+            if i < len(self.labels):
+                label = str(self.labels[i])
                 tw = p.fontMetrics().horizontalAdvance(label)
                 x = max(0, min(w - tw, xs[i] - tw / 2))
                 p.drawText(QRectF(x, h - 12, tw, 12), Qt.AlignCenter, label)
+
+
+class Sparkline(QWidget):
+    """逐日划线趋势（方案 A）：真实日历天数 + 醒目星点 + 国徽历史月份切换。
+
+    set_data 接收后端 note_day_counts（{'YYYY-MM-DD': count}），按所选月份
+    的真实天数（28/29/30/31）逐日生成序列；历史翻月纯本地聚合，零额外请求。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.day_counts: Dict[str, int] = {}
+        self.month_offset = 0  # 0=本月，1=上一月……
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+
+        nav = QHBoxLayout()
+        nav.setContentsMargins(0, 0, 0, 0)
+        nav.setSpacing(4)
+        self.prev_btn = QPushButton()
+        self.prev_btn.setCursor(Qt.PointingHandCursor)
+        self.prev_btn.setToolTip(tr("weread.trend_prev"))
+        self.prev_btn.setIcon(nation_icon("mondstadt", WR_ORANGE_L, 15))
+        self.prev_btn.setIconSize(QSize(15, 15))
+        self.prev_btn.setFixedSize(22, 22)
+        self.prev_btn.clicked.connect(lambda: self._shift_month(1))
+        nav.addWidget(self.prev_btn)
+        self.month_lbl = _lbl("", WR_DIM, 10, bold=True)
+        self.month_lbl.setAlignment(Qt.AlignCenter)
+        nav.addWidget(self.month_lbl, 1)
+        self.next_btn = QPushButton()
+        self.next_btn.setCursor(Qt.PointingHandCursor)
+        self.next_btn.setToolTip(tr("weread.trend_next"))
+        self.next_btn.setIcon(nation_icon("liyue", WR_ORANGE_L, 15))
+        self.next_btn.setIconSize(QSize(15, 15))
+        self.next_btn.setFixedSize(22, 22)
+        self.next_btn.clicked.connect(lambda: self._shift_month(-1))
+        nav.addWidget(self.next_btn)
+        lay.addLayout(nav)
+
+        self.plot = _SparkPlot()
+        lay.addWidget(self.plot, 1)
+        self.setMinimumHeight(94)
+
+    def _target_month(self) -> tuple:
+        d = QDate.currentDate().addMonths(-self.month_offset)
+        return d.year(), d.month(), d.daysInMonth()
+
+    def _rebuild(self) -> None:
+        y, m, days = self._target_month()
+        pts: List[float] = []
+        labels: List[str] = []
+        for day in range(1, days + 1):
+            key = f"{y:04d}-{m:02d}-{day:02d}"
+            pts.append(float(self.day_counts.get(key, 0)))
+            labels.append(f"{m}/{day}")
+        self.month_lbl.setText(tr("weread.trend_month", y=y, m=m))
+        self.plot.set_points(pts, labels)
+        self.next_btn.setEnabled(self.month_offset > 0)
+        self.prev_btn.setEnabled(True)
+
+    def set_data(self, data, month_count=None, keep_month: bool = False) -> None:
+        # 兼容旧 [(label, count)] 调用：无日期信息时按上月 6 段近似，等新字段接入
+        if isinstance(data, dict):
+            self.day_counts = {str(k): int(v) for k, v in data.items()}
+        else:
+            self.day_counts = {}
+        if not keep_month:
+            self.month_offset = 0
+        self._rebuild()
+
+    def _shift_month(self, delta: int) -> None:
+        new = max(0, self.month_offset + delta)
+        if new != self.month_offset:
+            self.month_offset = new
+            self._rebuild()
+
+    def apply_colors(self) -> None:
+        self.prev_btn.setIcon(nation_icon("mondstadt", WR_ORANGE_L, 15))
+        self.next_btn.setIcon(nation_icon("liyue", WR_ORANGE_L, 15))
+        self.month_lbl.setStyleSheet(
+            f"color:{WR_DIM};font-size:10px;font-weight:bold;background:transparent;border:none;padding:0;")
+        for b in (self.prev_btn, self.next_btn):
+            b.setStyleSheet(
+                f"QPushButton{{background-color:{WR_CARD2};border:1px solid {WR_LINE};border-radius:6px;}}"
+                f"QPushButton:hover{{border-color:{WR_ORANGE};}}"
+                f"QPushButton:disabled{{opacity:0.4;}}")
+        self.plot.apply_colors()
 
 
 # ------------------------------------------------------------------ 卡片组件
@@ -584,14 +843,8 @@ class RhythmCard(QFrame):
         gears.addStretch()
         lay.addLayout(gears)
 
-        self.bar = QProgressBar()
-        self.bar.setTextVisible(False)
-        self.bar.setFixedHeight(8)
+        self.bar = SoftProgressBar()
         self.bar.setValue(0)
-        self.bar.setStyleSheet(
-            f"QProgressBar{{background-color:{WR_CARD2};border:none;border-radius:4px;}}"
-            f"QProgressBar::chunk{{background-color:{WR_ORANGE};border-radius:4px;}}"
-        )
         lay.addWidget(self.bar)
 
         self.chart = BarChart(highlight=6, show_value=True)
@@ -654,9 +907,7 @@ class RhythmCard(QFrame):
         self.today_caption_lbl.setStyleSheet(f"color:{WR_DIM};font-size:12px;background:transparent;border:none;padding:0;")
         self.goal_lbl.setStyleSheet(f"color:{WR_DIM};font-size:12px;background:transparent;border:none;padding:0;")
         self.week_lbl.setStyleSheet(f"color:{WR_DIM};font-size:11px;background:transparent;border:none;padding:0;")
-        self.bar.setStyleSheet(
-            f"QProgressBar{{background-color:{WR_CARD2};border:none;border-radius:4px;}}"
-            f"QProgressBar::chunk{{background-color:{WR_ORANGE};border-radius:4px;}}")
+        self.bar.apply_colors()
         self._refresh_gears()
         self.chart.apply_colors()
 
@@ -838,24 +1089,11 @@ class PreferenceCard(QFrame):
             if w:
                 w.setParent(None)
                 w.deleteLater()
-        for name, hours, weight in categories[:5]:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            row.addWidget(_lbl(name, WR_DIM, 11), 0)
-            bar = QProgressBar()
-            bar.setTextVisible(False)
-            bar.setFixedHeight(7)
-            bar.setMaximum(100)
-            bar.setValue(int(max(0, min(100, weight))))
-            bar.setStyleSheet(
-                f"QProgressBar{{background-color:{WR_CARD2};border:none;border-radius:4px;}}"
-                f"QProgressBar::chunk{{background-color:{WR_ORANGE};border-radius:4px;}}"
+        for idx, (name, hours, weight) in enumerate(categories[:5], 1):
+            self.cats_box.addWidget(
+                _aligned_bar_row(name, weight, tr("weread.hours", h=hours),
+                                 index=idx)
             )
-            row.addWidget(bar, 1)
-            row.addWidget(_lbl(tr("weread.hours", h=hours), WR_TEXT, 11), 0)
-            wrap = QWidget()
-            wrap.setLayout(row)
-            self.cats_box.addWidget(wrap)
         if not categories:
             self.cats_box.addWidget(_lbl(tr("weread.pref_empty"), WR_FAINT, 11))
 
@@ -931,13 +1169,13 @@ class NoteStatsCard(QFrame):
         lay.addLayout(body)
 
     def set_data(self, total: int, book_count: int, top: List[tuple],
-                 month: Optional[List[tuple]] = None) -> None:
-        self._data = (total, book_count, top, month or [])
+                 month=None, keep_month: bool = False) -> None:
+        self._data = (total, book_count, top, month if month is not None else {})
         self.total_num.setText(_fmt_count(total))
         self.books_num.setText(_fmt_count(book_count))
         self.total_num.setToolTip(str(total))
         self.books_num.setToolTip(str(book_count))
-        self.spark.set_data(month or [])
+        self.spark.set_data(month if isinstance(month, dict) else {}, keep_month=keep_month)
 
         while self.rank_box.count():
             item = self.rank_box.takeAt(0)
@@ -947,29 +1185,13 @@ class NoteStatsCard(QFrame):
                 w.deleteLater()
 
         maxv = max((int(n) for _, n in top), default=0) or 1
-        for title, count in (top or [])[:6]:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            name = _lbl(str(title), WR_DIM, 11)
-            name.setMinimumWidth(70)
-            row.addWidget(name, 0)
-            bar = QProgressBar()
-            bar.setTextVisible(False)
-            bar.setFixedHeight(7)
-            bar.setMaximum(100)
-            bar.setValue(int(max(0, min(100, int(count) * 100 / maxv))))
-            bar.setStyleSheet(
-                f"QProgressBar{{background-color:{WR_CARD2};border:none;border-radius:4px;}}"
-                f"QProgressBar::chunk{{background-color:{WR_ORANGE};border-radius:4px;}}")
-            row.addWidget(bar, 1)
-            num = _lbl(_fmt_count(count), WR_TEXT, 11)
-            num.setMinimumWidth(38)
-            num.setAlignment(Qt.AlignRight)
-            num.setToolTip(str(count))
-            row.addWidget(num, 0)
-            wrap = QWidget()
-            wrap.setLayout(row)
-            self.rank_box.addWidget(wrap)
+        for idx, (title, count) in enumerate((top or [])[:6], 1):
+            self.rank_box.addWidget(
+                _aligned_bar_row(
+                    title, int(count) * 100 / maxv,
+                    _fmt_count(count), tip=str(count), index=idx,
+                )
+            )
         if not top:
             self.rank_box.addWidget(_lbl(tr("weread.note_empty"), WR_FAINT, 11))
 
@@ -980,7 +1202,7 @@ class NoteStatsCard(QFrame):
         self.rank_lbl.setText(tr("weread.note_rank"))
         self.trend_title.setText(tr("weread.note_month"))
         if self._data is not None:
-            self.set_data(*self._data)
+            self.set_data(*self._data, keep_month=True)
 
     def apply_colors(self) -> None:
         self.setStyleSheet(
@@ -995,7 +1217,7 @@ class NoteStatsCard(QFrame):
             cap.setStyleSheet(f"color:{WR_DIM};font-size:11px;background:transparent;border:none;padding:0;")
         self.spark.apply_colors()
         if self._data is not None:
-            self.set_data(*self._data)
+            self.set_data(*self._data, keep_month=True)
 
 
 class CoverWallCard(QFrame):
@@ -1490,17 +1712,16 @@ class WereadView(QWidget):
     # ------------------------------------------------------------------ 刷新
 
     def refresh(self) -> None:
-        # 防止定时刷新与手动点击叠加，避免旧 worker 被覆盖后仍在运行
+        # 防止定时刷新与手动点击叠加：正在同步时给出反馈，不再静默忽略
         if self._worker is not None and self._worker.isRunning():
+            self.status_lbl.setText(tr("weread.sync_busy"))
             return
         key = self.api_key_edit.text().strip()
         if not key:
-            self.status_lbl.setText(
-                "提示：展开下方「凭据设置」并填写 API Key（wrk- 开头）后点击刷新，即可展示真实阅读数据。"
-            )
+            self.status_lbl.setText(tr("weread.need_key"))
             return
         self.btn_refresh.setEnabled(False)
-        self.status_lbl.setText("正在同步微信读书阅读数据…")
+        self.status_lbl.setText(tr("weread.syncing"))
         self._worker = DashboardWorker(key, self.store, self)
         self._worker.progress.connect(lambda m: self.status_lbl.setText(m))
         self._worker.finished.connect(self._on_dashboard_done)
@@ -1512,9 +1733,9 @@ class WereadView(QWidget):
         self._render(data)
         errs = data.get("errors") or []
         if errs:
-            self.status_lbl.setText("部分数据获取失败：" + "；".join(errs[:3]))
+            self.status_lbl.setText(tr("weread.sync_partial", errors="；".join(errs[:3])))
         else:
-            self.status_lbl.setText("✓ 已同步微信读书阅读数据")
+            self.status_lbl.setText(tr("weread.synced"))
 
     def _on_dashboard_failed(self, message: str) -> None:
         self.btn_refresh.setEnabled(True)
@@ -1568,7 +1789,7 @@ class WereadView(QWidget):
             if not note_books and note_top:
                 note_books = len(note_top)
         self.note_stats.set_data(
-            note_total, note_books, note_top, data.get("note_month") or [])
+            note_total, note_books, note_top, data.get("note_day_counts") or {})
         # 书籍封面墙（缺字段时从继续阅读的书补一张）
         cover_books = data.get("cover_books") or []
         if not cover_books and cont.get("title"):
@@ -1597,7 +1818,7 @@ class WereadView(QWidget):
             from PySide6.QtCore import QUrl
             QDesktopServices.openUrl(QUrl(link))
         else:
-            self.status_lbl.setText("当前没有在读的书，去微信读书开始读一本吧。")
+            self.status_lbl.setText(tr("weread.no_reading"))
 
     # ------------------------------------------------------------------ 导入
 
@@ -1612,7 +1833,7 @@ class WereadView(QWidget):
                 self, "缺少凭据", tr("weread.qr_login.need_cred"),
             )
             return
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择要导入微信读书的书",
             os.path.expanduser("~/七猫小说"),
             "支持的格式 (*.epub *.txt *.pdf *.mobi *.azw3);;所有文件 (*.*)",

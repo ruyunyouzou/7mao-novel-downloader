@@ -15,7 +15,9 @@ import sys
 # 保证能 import 到 gui 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gui.plugin.base import Plugin, PluginMeta, DownloaderBase, DownloadResult
+from gui.plugin.base import (
+    Plugin, PluginMeta, DownloaderBase, DownloadResult, DownloadCancelled,
+)
 from gui.qimao_core import build_txt
 
 
@@ -24,6 +26,11 @@ class QimaoRealDownloader(DownloaderBase):
 
     name = "七猫真实内核 v4.0.4"
     priority = 100  # 高于示例插件的演示内核
+    source_key = "qimao"
+
+    def supports(self, book_info):
+        # 未标注来源的书默认仍走七猫；显式标成番茄的书不接管。
+        return str((book_info or {}).get("source", "") or "qimao") != "fanqie"
 
     def download(self, book_id, save_path, fmt="txt", progress_cb=None, **kwargs):
         title = kwargs.get("title", "") or ""
@@ -50,13 +57,13 @@ class QimaoRealDownloader(DownloaderBase):
         hero_mode = kwargs.get("hero_mode") or store.settings_get("epub_hero_mode", "rotate") or "rotate"
         hero_fixed = kwargs.get("hero_fixed") or store.settings_get("epub_hero_fixed", "") or ""
         hero_library = "genshin"  # 题图固定用原神祈愿立绘库
-        # 章末尾图（火影横屏无字图）：全局设置，可由下载对话框本次覆盖
+        # 章末尾图（原神地理志风景图）：全局设置，可由下载对话框本次覆盖
         chapter_tail = kwargs.get("chapter_tail")
         if chapter_tail is None:
             chapter_tail = bool(store.settings_get("epub_chapter_tail", False))
         tail_mode = kwargs.get("tail_mode") or store.settings_get("epub_tail_mode", "rotate") or "rotate"
         tail_fixed = kwargs.get("tail_fixed") or store.settings_get("epub_tail_fixed", "") or ""
-        # 智能选题预设（题图每本随机30张含7神明 / 尾图2020+随机10张）
+        # 智能选题预设（题图每本随机30张含7神明 / 尾图地理志按地区均衡抽10张）
         smart_art = kwargs.get("smart_art")
         if smart_art is None:
             smart_art = bool(store.settings_get("epub_smart_art", True))
@@ -85,6 +92,8 @@ class QimaoRealDownloader(DownloaderBase):
                 tail_fixed=str(tail_fixed),
                 smart_art=bool(smart_art),
             )
+        except DownloadCancelled:
+            raise  # 取消必须冒泡，否则队列会误判为失败
         except Exception as exc:  # noqa: BLE001
             return DownloadResult(
                 book_id=book_id,

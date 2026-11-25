@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import io
 import os
 import zipfile
 from typing import Any, Callable, Dict, List, Optional
@@ -55,12 +54,13 @@ def check_one(rec: Dict[str, Any], session=None) -> Dict[str, Any]:
     """检查单本追更记录是否有新章。返回带 new_chapters 的字典。"""
     session = session or requests.Session()
     bid = str(rec.get("book_id", ""))
+    source = core.book_source_for(rec.get("source", ""))
     out = dict(rec)
     out["has_new"] = False
     out["new_chapters"] = 0
     out["error"] = ""
     try:
-        catalog = core.get_catalog(bid, session)
+        catalog = source.fetch_catalog(bid, session)
         remote_total = len(catalog)
         local_total = int(rec.get("last_chapter", 0) or 0)
         out["remote_total"] = remote_total
@@ -69,7 +69,7 @@ def check_one(rec: Dict[str, Any], session=None) -> Dict[str, Any]:
             out["has_new"] = True
             out["new_chapters"] = remote_total - local_total
             try:
-                detail = core.get_detail(bid, session)
+                detail = source.fetch_detail(bid, session) or {}
                 out["title"] = detail.get("title") or rec.get("title", "")
             except Exception:  # noqa: BLE001
                 pass
@@ -95,28 +95,28 @@ def follow_txt(rec: Dict[str, Any], path: str,
                progress_cb: Optional[Callable[[int], None]] = None) -> Dict[str, Any]:
     """TXT 真增量：只下新章并追加到已有 txt。"""
     bid = str(rec.get("book_id", ""))
+    source = core.book_source_for(rec.get("source", ""))
     local_total = int(rec.get("last_chapter", 0) or 0)
     session = requests.Session()
-    catalog = core.get_catalog(bid, session)
+    catalog = source.fetch_catalog(bid, session)
     remote_total = len(catalog)
     if remote_total <= local_total:
         return {"changed": False, "total": remote_total, "message": "暂无新章节"}
     new_catalog = catalog[local_total:]  # 索引从 local_total 起的都是新章（前 local_total 章已下）
 
-    link = core.get_cache_zip_link(bid, session)
-    zip_bytes = core.download_cache_zip(link, session, progress_cb)
     appended = 0
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        name_map = {os.path.splitext(os.path.basename(n))[0]: n for n in zf.namelist()}
+    # 部分场景（如追更）没有进度回调，统一给空实现，避免内核内 report(None) 崩溃
+    cb = progress_cb or (lambda _p: None)
+    # 七猫：缓存 ZIP + AES 解密；番茄：官网正文 + 字体解密；追加逻辑完全共用
+    with source.context(bid, session, cb) as ctx:
         with open(path, "a", encoding="utf-8") as f:
             for ch in new_catalog:
-                member = name_map.get(ch["id"])
-                if not member:
-                    continue
                 try:
-                    text = core.decrypt_chapter(zf.read(member))
+                    text = source.chapter_text(ctx, ch, session, cb)
                 except Exception as exc:  # noqa: BLE001
-                    logger.error(f"追更解密失败 {ch['id']}", exc=exc, tag="follow")
+                    logger.error(f"追更取章失败 {ch['id']}", exc=exc, tag="follow")
+                    continue
+                if not text:
                     continue
                 f.write(f"\n\n{ch['title']}\n\n{text}\n")
                 appended += 1

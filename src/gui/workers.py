@@ -10,31 +10,58 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QThread, Signal, QMutex, QMutexLocker
 
 from .api import search_books, get_book_info, ApiError
-from .plugin.base import DownloaderBase, DownloadResult
+from .plugin.base import DownloaderBase, DownloadResult, DownloadCancelled
+
+
+def _search_by_source(keyword: str, tab: str = "0", page: int = 1,
+                      source: str = "qimao") -> list:
+    """按书源分发搜索：七猫关键词接口 / 番茄官方搜索接口。"""
+    if source == "fanqie":
+        from plugins.vendor.fanqie_search import search_fanqie
+        return search_fanqie(keyword, page=page)
+    return search_books(keyword, tab=tab, page=page)
 
 
 class SearchWorker(QThread):
-    """搜索线程。"""
+    """搜索线程。
+
+    取消采用 Qt 协作式 ``requestInterruption()``，绝不使用 ``terminate()``
+    （后者强杀线程会丢失信号、偶发 "QThread: Destroyed while running"）。
+    被取消的请求仍会自然跑完网络超时，但结束时丢弃结果、不发信号。
+    """
 
     finished = Signal(list)   # List[Dict]
     failed = Signal(str)
+    # 线程体真正结束时发出（无论成功/失败/取消），供 UI 安全回收对象。
+    # 注意：QThread 内建的 finished 被本类同名信号遮蔽，故另起名字。
+    finished_run = Signal()
 
     def __init__(self, keyword: str, parent=None, tab: str = "0",
-                 page: int = 1, tag: str = "") -> None:
+                 page: int = 1, tag: str = "", source: str = "qimao") -> None:
         super().__init__(parent)
         self.keyword = keyword
         self.tab = tab
         self.page = page
-        self.tag = tag  # 标记请求来源：""=用户搜索 / "recommend"=推荐换一批
+        self.tag = tag  # 请求来源：search=用户搜索 / recommend=推荐（翻页会原样复用）
+        self.source = source or "qimao"  # 书源：qimao / fanqie
 
     def run(self) -> None:
         try:
-            results = search_books(self.keyword, tab=self.tab, page=self.page)
+            results = _search_by_source(self.keyword, tab=self.tab,
+                                        page=self.page, source=self.source)
+            # 已在等待期间被取消（用户又发了新搜索）：丢弃旧结果
+            if self.isInterruptionRequested():
+                return
             self.finished.emit(results)
         except ApiError as exc:
-            self.failed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"搜索异常: {exc}")
+            if not self.isInterruptionRequested():
+                self.failed.emit(f"搜索异常: {exc}")
+        finally:
+            # 线程体已走完，此时回收对象才安全（不会 "Destroyed while running"）
+            self.finished_run.emit()
 
 
 class DetailWorker(QThread):
@@ -42,20 +69,43 @@ class DetailWorker(QThread):
 
     finished = Signal(dict)
     failed = Signal(str)
+    finished_run = Signal()  # 线程体结束后发出，供 UI 安全回收
 
-    def __init__(self, book_id: str, fallback: Dict[str, Any], parent=None) -> None:
+    def __init__(self, book_id: str, fallback: Dict[str, Any], parent=None,
+                 source: str = "qimao") -> None:
         super().__init__(parent)
         self.book_id = book_id
         self.fallback = fallback
+        self.source = source or "qimao"
 
     def run(self) -> None:
         try:
-            info = get_book_info(self.book_id, fallback=self.fallback)
-            self.finished.emit(info)
+            if self.source == "fanqie":
+                # 番茄搜索结果已带解码后的完整信息，直接复用，避免七猫接口误查与 PUA 残留
+                f = self.fallback or {}
+                info = {
+                    "id": str(self.book_id),
+                    "title": f.get("title") or f"书 {self.book_id}",
+                    "author": f.get("author") or "",
+                    "words_num": f.get("words_num") or "未知",
+                    "tags": f.get("tags") or "",
+                    "img_url": f.get("cover") or "",
+                    "intro": f.get("intro") or "",
+                    "degraded": False,
+                    "source": "fanqie",
+                }
+            else:
+                info = get_book_info(self.book_id, fallback=self.fallback)
+            if not self.isInterruptionRequested():
+                self.finished.emit(info)
         except ApiError as exc:
-            self.failed.emit(str(exc))
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"详情异常: {exc}")
+            if not self.isInterruptionRequested():
+                self.failed.emit(f"详情异常: {exc}")
+        finally:
+            self.finished_run.emit()
 
 
 class DownloadWorker(QThread):
@@ -130,7 +180,7 @@ class DownloadWorker(QThread):
             def progress_cb(p):
                 # 进度回调中处理暂停与取消
                 if self._check_pause():
-                    raise _CancelledError()
+                    raise DownloadCancelled()
                 self.progress.emit(int(p))
 
             # 下载选项（章节范围 / 文件名模板等）随请求透传给下载内核
@@ -149,6 +199,9 @@ class DownloadWorker(QThread):
                         progress_cb=progress_cb,
                         **extra,
                     )
+                except DownloadCancelled:
+                    # 取消必须立即冒泡，不能被重试逻辑吞掉
+                    raise
                 except Exception:  # noqa: BLE001
                     if attempt >= retry:
                         raise
@@ -168,7 +221,7 @@ class DownloadWorker(QThread):
                     message="下载内核未返回结果",
                 )
             self.finished.emit(result)
-        except _CancelledError:
+        except DownloadCancelled:
             self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"下载异常: {exc}")
@@ -177,24 +230,26 @@ class DownloadWorker(QThread):
 class ProtocolCheckWorker(QThread):
     """下载内核协议健康自检（后台执行，避免阻塞界面）。
 
-    依次验证下载真正依赖的两级接口：
-      1) 搜索  qimao_core.search_books
-      2) 目录  qimao_core.get_catalog（顺带验证签名/请求头链路）
+    依次验证两路内核真正依赖的接口：
+      1) 七猫搜索  qimao_core.search_books
+      2) 七猫目录  qimao_core.get_catalog（顺带验证签名/请求头链路）
+      3) 番茄目录  FanqieBookSource.fetch_catalog
 
     progress = Signal(str)              每一步的状态文字
-    finished = Signal(dict)             最终结果 {ok, search, catalog, detail, message}
+    finished = Signal(dict)             最终结果 {ok, search, catalog, fanqie, detail, message}
     """
     progress = Signal(str)
     finished = Signal(dict)
 
     # 固定自检样本（不依赖用户输入、不写任何数据）
     PROBE_KEYWORD = "斗破苍穹"
+    PROBE_FANQIE_ID = "7546406625741917209"  # 公开可访问的番茄书，只取目录不写盘
 
     def run(self) -> None:
-        from .qimao_core import search_books, get_catalog
+        from .qimao_core import search_books, book_source_for
 
         result = {"ok": False, "search": False, "catalog": False,
-                  "detail": "", "message": ""}
+                  "fanqie": False, "detail": "", "message": ""}
 
         # 1) 搜索接口（结果复用给目录测试）
         self.progress.emit("正在检测搜索接口…")
@@ -214,25 +269,41 @@ class ProtocolCheckWorker(QThread):
         book_id = str(books[0].get("id", "")) if books else ""
         book_id = book_id or "1784900"  # 斗破苍穹常见 ID 兜底
         try:
-            chapters = get_catalog(book_id)
+            chapters = book_source_for("qimao").fetch_catalog(book_id, None)
             if chapters:
                 result["catalog"] = True
-                result["detail"] += f"；目录正常（{len(chapters)} 章）"
+                result["detail"] += f"；七猫目录正常（{len(chapters)} 章）"
             else:
-                result["detail"] += "；目录可访问但返回空章节"
+                result["detail"] += "；七猫目录可访问但返回空章节"
         except Exception as exc:  # noqa: BLE001
-            result["detail"] += f"；目录失败：{exc}"
+            result["detail"] += f"；七猫目录失败：{exc}"
 
-        result["ok"] = result["search"] and result["catalog"]
+        # 3) 番茄目录接口（走上游原样实现，只读目录不下载正文）
+        self.progress.emit("正在检测番茄目录接口…")
+        try:
+            fanqie = book_source_for("fanqie")
+            fc = fanqie.fetch_catalog(self.PROBE_FANQIE_ID, None)
+            if fc:
+                result["fanqie"] = True
+                result["detail"] += f"；番茄目录正常（{len(fc)} 章）"
+            else:
+                result["detail"] += "；番茄目录返回空章节"
+        except Exception as exc:  # noqa: BLE001
+            result["detail"] += f"；番茄目录失败：{exc}"
+
+        result["ok"] = result["search"] and result["catalog"] and result["fanqie"]
         if result["ok"]:
-            result["message"] = "下载内核正常 · 搜索与目录接口均可用"
-        elif result["search"] != result["catalog"]:
-            result["message"] = "部分异常 · 下载可能受影响，建议关注上游协议变更"
+            result["message"] = "七猫 / 番茄内核均正常"
         else:
-            result["message"] = "下载内核可能已失效 · 上游协议或接口可能已变更"
+            bad = []
+            if not (result["search"] and result["catalog"]):
+                bad.append("七猫")
+            if not result["fanqie"]:
+                bad.append("番茄")
+            result["message"] = "、".join(bad) + "内核异常 · 详情见提示"
         self.finished.emit(result)
 
 
-class _CancelledError(Exception):
-    """内部信号：用户取消下载。"""
+# 兼容旧引用：取消异常真源已移到 plugin.base，便于各内核 re-raise
+_CancelledError = DownloadCancelled
 

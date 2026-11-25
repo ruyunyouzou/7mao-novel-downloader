@@ -38,8 +38,11 @@ def _epubcheck_validate(path: str, jar: str) -> Dict[str, Any]:
     if not java:
         return {"ok": False, "engine": "none", "errors": ["未找到 Java"], "warnings": []}
     try:
+        flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                 if os.name == "nt" else 0)
         proc = subprocess.run(
-            [java, "-jar", jar, path], capture_output=True, text=True, timeout=60)
+            [java, "-jar", jar, path], capture_output=True, text=True,
+            timeout=60, creationflags=flags)
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         errors = [l.strip() for l in out.splitlines()
                   if "ERROR(" in l.upper() or "FATAL" in l.upper()]

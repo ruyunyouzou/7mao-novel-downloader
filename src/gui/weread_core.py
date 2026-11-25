@@ -27,8 +27,10 @@ import hashlib
 import hmac
 import os
 import re
+import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
@@ -144,14 +146,53 @@ def cos_authorization(
     return auth, start, end
 
 
+# ---------------------------------------------------------------- 笔记本字段归一化
+
+def normalize_notebook_book(b: Dict[str, Any]) -> Dict[str, Any]:
+    """把 ``/user/notebooks`` 的单条书目归一化成卡片/统计所需字段。
+
+    官方 Agent Gateway 的实际结构里，``bookId`` / ``noteCount`` /
+    ``reviewCount`` / ``bookmarkCount`` 在条目顶层，而 ``title`` / ``author`` /
+    ``cover`` 嵌在 ``book`` 子对象里。旧代码直接读顶层 ``title``，导致书名显示
+    「未命名」、封面退回首字占位，但划线数量正常。这里统一把嵌套字段提升到
+    顶层；顶层已有非空值时保留（兼容接口未来平铺字段的情况）。
+    """
+    if not isinstance(b, dict):
+        return {}
+    item: Dict[str, Any] = dict(b)
+    nested = item.get("book") or item.get("bookInfo") or {}
+    if not isinstance(nested, dict):
+        nested = {}
+    for key in ("title", "author", "cover"):
+        if not str(item.get(key) or "").strip():
+            val = nested.get(key)
+            if val is not None:
+                item[key] = val
+    if not str(item.get("bookId") or "").strip():
+        nested_id = str(nested.get("bookId") or "").strip()
+        if nested_id:
+            item["bookId"] = nested_id
+    return item
+
+
 # ---------------------------------------------------------------- 只读同步客户端
 
 class WeReadClient:
     """官方 Agent Gateway 客户端（只读：书架 / 进度 / 书籍信息）。"""
 
-    def __init__(self, api_key: str, timeout: int = 20) -> None:
+    def __init__(self, api_key: str, timeout: int = 12) -> None:
         self.api_key = (api_key or "").strip()
         self.timeout = timeout
+        # 线程本地 Session：仪表盘并发拉取时每个工作线程复用自己的 TCP 连接
+        # （requests.Session 非线程安全，故用 thread-local 而非实例共享）。
+        self._tls = threading.local()
+
+    def _session(self) -> "requests.Session":
+        sess = getattr(self._tls, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            self._tls.session = sess
+        return sess
 
     def call(self, api_name: str, **params: Any) -> Dict[str, Any]:
         if not self.api_key:
@@ -162,7 +203,7 @@ class WeReadClient:
         }
         body.update(params)
         try:
-            resp = requests.post(
+            resp = self._session().post(
                 GATEWAY_URL,
                 json=body,
                 headers={
@@ -225,7 +266,7 @@ class WeReadClient:
     def get_notebooks(self) -> Dict[str, Any]:
         """笔记本概览（所有有笔记的书）。noteCount=划线数，reviewCount=想法数。"""
         data = self.call("/user/notebooks")
-        books = data.get("books") or []
+        books = [normalize_notebook_book(b) for b in (data.get("books") or [])]
         total = int(data.get("totalNoteCount") or 0)
         if not total:
             total = sum(
@@ -283,6 +324,12 @@ class WeReadClient:
 def build_dashboard(client: WeReadClient) -> Dict[str, Any]:
     """一次拉取并整理仪表盘所需数据。任何子接口失败都不影响其它模块。
 
+    网络请求分两批并发执行（原来为 10 次串行，网关 RTT 累加造成明显延迟）：
+      批 1（互相独立）：weekly / overall / shelf / notebooks
+      批 2（依赖批 1 的 bookId）：progress + 5×highlights
+    总耗时从约 10×RTT 降到约 2×RTT。每个工作线程通过 client 的 thread-local
+    Session 复用 TCP 连接，进一步减少握手开销。
+
     返回结构：
     {
       'greeting': str, 'continue': dict|None,
@@ -294,6 +341,7 @@ def build_dashboard(client: WeReadClient) -> Dict[str, Any]:
       'highlights': [(text, title, author)], 'note_count': int,
       'note_book_count': int, 'note_top': [(title, count)],
       'cover_books': [(title, cover_url)], 'note_month': [(label, count)],
+      'note_day_counts': {'YYYY-MM-DD': count},  # 全量划线按真实日期聚合，供逐日趋势与历史月份切换
       'errors': [str],
     }
     """
@@ -304,109 +352,179 @@ def build_dashboard(client: WeReadClient) -> Dict[str, Any]:
         "prefer_time": [], "highlights": [], "note_count": 0,
         "note_book_count": 0, "note_top": [],
         "cover_books": [], "note_month": [],
+        "note_day_counts": {},  # 全量划线按真实日期聚合（本地时区），历史月份切换零额外请求
         "notebook_books": [],  # 完整笔记本列表，供「书籍笔记」页实时联动
         "errors": [],
     }
+
+    errors_lock = threading.Lock()
+
+    def _record_error(label: str, exc: Exception) -> None:
+        with errors_lock:
+            result["errors"].append(f"{label}：{exc}")
+
+    def from_future(fut, label: str):
+        """从并发任务取结果；失败记入 errors 并回落 None，不影响其它模块。"""
+        try:
+            return fut.result()
+        except Exception as exc:  # noqa: BLE001
+            _record_error(label, exc)
+            return None
 
     def safe(fn, label):
         try:
             return fn()
         except Exception as exc:  # noqa: BLE001
-            result["errors"].append(f"{label}：{exc}")
+            _record_error(label, exc)
             return None
 
-    # --- 周 / 总阅读统计 ---
-    week = safe(lambda: client.get_readdata("weekly"), "本周阅读数据")
-    overall = safe(lambda: client.get_readdata("overall"), "累计阅读数据") or {}
+    # 单个线程池贯穿两批请求；max_workers=6 覆盖批 2 的最大并发数。
+    pool = ThreadPoolExecutor(max_workers=6)
+    try:
+        # ===== 批 1：4 个互不依赖的顶层接口并发 =====
+        f_week = pool.submit(client.get_readdata, "weekly")
+        f_overall = pool.submit(client.get_readdata, "overall")
+        f_shelf = pool.submit(client.get_shelf)
+        f_notebooks = pool.submit(client.get_notebooks)
+        week = from_future(f_week, "本周阅读数据")
+        overall = from_future(f_overall, "累计阅读数据") or {}
+        shelf = from_future(f_shelf, "书架")
+        notebooks = from_future(f_notebooks, "笔记本")
 
-    if isinstance(week, dict):
-        total = int(week.get("totalReadTime") or 0)
-        result["week_total_min"] = total // 60
-        result["week_days"] = int(week.get("readDays") or 0)
-        times = week.get("readTimes") or {}
-        # 按周一到周日排列
-        bars = []
-        for i, label in enumerate(["一", "二", "三", "四", "五", "六", "日"]):
-            day_min = 0
+        # --- 周 / 总阅读统计（纯计算，无网络）---
+        if isinstance(week, dict):
+            total = int(week.get("totalReadTime") or 0)
+            result["week_total_min"] = total // 60
+            result["week_days"] = int(week.get("readDays") or 0)
+            times = week.get("readTimes") or {}
+            # 按周一到周日排列
+            bars = []
+            for i, label in enumerate(["一", "二", "三", "四", "五", "六", "日"]):
+                day_min = 0
+                for key, val in times.items():
+                    try:
+                        d = time.localtime(int(key))
+                        if time.strftime("%w", d) == str((i + 1) % 7):
+                            day_min += int(val) // 60
+                    except (ValueError, TypeError, OSError):
+                        continue
+                bars.append((label, day_min))
+            result["week_bars"] = bars
+            # 今日：取今天日期对应的桶
+            today_key = time.strftime("%Y-%m-%d")
             for key, val in times.items():
                 try:
-                    d = time.localtime(int(key))
-                    if time.strftime("%w", d) == str((i + 1) % 7):
-                        day_min += int(val) // 60
+                    if time.strftime("%Y-%m-%d", time.localtime(int(key))) == today_key:
+                        result["today_min"] += int(val) // 60
                 except (ValueError, TypeError, OSError):
                     continue
-            bars.append((label, day_min))
-        result["week_bars"] = bars
-        # 今日：取今天日期对应的桶
-        today_key = time.strftime("%Y-%m-%d")
-        for key, val in times.items():
-            try:
-                if time.strftime("%Y-%m-%d", time.localtime(int(key))) == today_key:
-                    result["today_min"] += int(val) // 60
-            except (ValueError, TypeError, OSError):
-                continue
 
-    # --- 累计统计卡片 ---
-    def fmt_hours(seconds: int) -> str:
-        # 保留一位小数并去掉末尾的 .0：1414 / 5.5
-        return f"{seconds / 3600:.1f}".rstrip("0").rstrip(".")
+        # --- 累计统计卡片 ---
+        def fmt_hours(seconds: int) -> str:
+            # 保留一位小数并去掉末尾的 .0：1414 / 5.5
+            return f"{seconds / 3600:.1f}".rstrip("0").rstrip(".")
 
-    def clean_count(text: str) -> str:
-        # counts 自带 "104本" / "2.6条"，去掉单位后由 UI 统一拼接
-        return re.sub(r"(本|条|天|小时|次|周|月|年)$", "", text).strip()
+        def clean_count(text: str) -> str:
+            # counts 自带 "104本" / "2.6条"，去掉单位后由 UI 统一拼接
+            return re.sub(r"(本|条|天|小时|次|周|月|年)$", "", text).strip()
 
-    read_stat = {
-        str(s.get("stat")): clean_count(str(s.get("counts") or ""))
-        for s in (overall.get("readStat") or [])
-    }
-    result["stats"] = [
-        ("累计阅读", fmt_hours(int(overall.get("totalReadTime") or 0)), "小时", "🕐"),
-        ("阅读天数", str(int(overall.get("readDays") or 0)), "天", "📅"),
-        ("读过", read_stat.get("读过", "—"), "本", "📖"),
-        ("读完", read_stat.get("读完", "—"), "本", "✓"),
-        ("笔记", read_stat.get("笔记", "—"), "条", "✎"),
-        ("日均阅读", fmt_hours(int(overall.get("dayAverageReadTime") or 0)), "小时", "◷"),
-    ]
+        read_stat = {
+            str(s.get("stat")): clean_count(str(s.get("counts") or ""))
+            for s in (overall.get("readStat") or [])
+        }
+        result["stats"] = [
+            ("累计阅读", fmt_hours(int(overall.get("totalReadTime") or 0)), "小时", "🕐"),
+            ("阅读天数", str(int(overall.get("readDays") or 0)), "天", "📅"),
+            ("读过", read_stat.get("读过", "—"), "本", "📖"),
+            ("读完", read_stat.get("读完", "—"), "本", "✓"),
+            ("笔记", read_stat.get("笔记", "—"), "条", "✎"),
+            ("日均阅读", fmt_hours(int(overall.get("dayAverageReadTime") or 0)), "小时", "◷"),
+        ]
 
-    # --- 阅读偏好 ---
-    titles: List[str] = []
-    cat_word = str(overall.get("preferCategoryWord") or "").strip()
-    time_word = str(overall.get("preferTimeWord") or "").strip()
-    if cat_word:
-        titles.append(cat_word)
-    if time_word:
-        titles.append(time_word)
-    result["prefer_titles"] = titles[:2]
+        # --- 阅读偏好 ---
+        titles: List[str] = []
+        cat_word = str(overall.get("preferCategoryWord") or "").strip()
+        time_word = str(overall.get("preferTimeWord") or "").strip()
+        if cat_word:
+            titles.append(cat_word)
+        if time_word:
+            titles.append(time_word)
+        result["prefer_titles"] = titles[:2]
 
-    cats = []
-    for c in (overall.get("preferCategory") or [])[:5]:
-        cats.append((
-            str(c.get("categoryTitle") or c.get("parentCategoryTitle") or "未分类"),
-            round(int(c.get("readingTime") or 0) / 3600, 1),
-            float(c.get("val") or 0),
-        ))
-    result["prefer_categories"] = cats
+        cats = []
+        for c in (overall.get("preferCategory") or [])[:5]:
+            cats.append((
+                str(c.get("categoryTitle") or c.get("parentCategoryTitle") or "未分类"),
+                round(int(c.get("readingTime") or 0) / 3600, 1),
+                float(c.get("val") or 0),
+            ))
+        result["prefer_categories"] = cats
 
-    prefer_time = overall.get("preferTime") or []
-    if prefer_time:
-        # 接口顺序：从 6 点开始到次日 5 点
-        hour_bars = []
-        for idx, sec in enumerate(prefer_time[:24]):
-            hour = (idx + 6) % 24
-            hour_bars.append((f"{hour:02d}", int(sec) // 60))
-        result["prefer_time"] = hour_bars
+        prefer_time = overall.get("preferTime") or []
+        if prefer_time:
+            # 接口顺序：从 6 点开始到次日 5 点
+            hour_bars = []
+            for idx, sec in enumerate(prefer_time[:24]):
+                hour = (idx + 6) % 24
+                hour_bars.append((f"{hour:02d}", int(sec) // 60))
+            result["prefer_time"] = hour_bars
 
-    # --- 继续阅读（书架里最近读的一本）---
-    shelf = safe(lambda: client.get_shelf(), "书架")
-    if shelf and shelf.get("books"):
-        books = sorted(
-            shelf["books"],
-            key=lambda b: int(b.get("readUpdateTime") or 0),
-            reverse=True,
-        )
-        if books:
-            b = books[0]
-            prog = safe(lambda: client.get_progress(str(b.get("bookId", ""))), "阅读进度")
+        # ===== 批 2：progress + 5×highlights 并发（依赖批 1 的 bookId）=====
+        shelf_books: List[Dict[str, Any]] = []
+        if shelf and shelf.get("books"):
+            shelf_books = sorted(
+                shelf["books"],
+                key=lambda b: int(b.get("readUpdateTime") or 0),
+                reverse=True,
+            )
+
+        prog_future = None
+        if shelf_books:
+            b = shelf_books[0]
+            prog_future = pool.submit(
+                client.get_progress, str(b.get("bookId", "")))
+
+        nb_books: List[Dict[str, Any]] = []
+        highlight_futures: Dict[str, Any] = {}
+        if notebooks:
+            result["note_count"] = int(notebooks.get("total") or 0)
+            # 供书籍笔记页实时联动：转成卡片所需字段
+            result["notebook_books"] = [
+                {
+                    "bookId": str(b.get("bookId") or ""),
+                    "title": str(b.get("title") or ""),
+                    "author": str(b.get("author") or ""),
+                    "cover": str(b.get("cover") or ""),
+                    "noteCount": int(b.get("noteCount") or 0),
+                    "reviewCount": int(b.get("reviewCount") or 0),
+                    "bookmarkCount": int(b.get("bookmarkCount") or 0),
+                }
+                for b in (notebooks.get("books") or [])
+            ]
+            nb_books = sorted(
+                notebooks.get("books") or [],
+                key=lambda b: int(b.get("noteCount") or 0),
+                reverse=True,
+            )
+            # 划线统计：有划线的书籍数 + 划线最多的前若干本（书名, 划线数）
+            books_with_notes = [
+                b for b in nb_books if int(b.get("noteCount") or 0) > 0
+            ]
+            result["note_book_count"] = len(books_with_notes)
+            result["note_top"] = [
+                (str(b.get("title") or "未命名"), int(b.get("noteCount") or 0))
+                for b in books_with_notes[:8]
+            ]
+            for nb in nb_books[:5]:
+                bid = str(nb.get("bookId") or "")
+                highlight_futures[bid] = pool.submit(client.get_highlights, bid)
+
+        # 等待批 2 全部完成（此时才用到结果，纯计算部分不受影响）
+        prog = from_future(prog_future, "阅读进度") if prog_future is not None else None
+
+        # --- 继续阅读（书架里最近读的一本）+ 书籍封面墙 ---
+        if shelf_books:
+            b = shelf_books[0]
             result["continue"] = {
                 "title": str(b.get("title") or ""),
                 "author": str(b.get("author") or ""),
@@ -415,10 +533,9 @@ def build_dashboard(client: WeReadClient) -> Dict[str, Any]:
                 "reader_link": str(b.get("readerLink") or ""),
                 "book_id": str(b.get("bookId") or ""),
             }
-            # 书籍封面墙：最近读的前 12 本（书名 + 封面 URL，去重）
             seen = set()
             covers: List[Tuple[str, str]] = []
-            for sb in books:
+            for sb in shelf_books:
                 t = str(sb.get("title") or "").strip()
                 if not t or t in seen:
                     continue
@@ -428,70 +545,50 @@ def build_dashboard(client: WeReadClient) -> Dict[str, Any]:
                     break
             result["cover_books"] = covers
 
-    # --- 划线（取有笔记的书里第一本，拉它的划线）---
-    notebooks = safe(lambda: client.get_notebooks(), "笔记本")
-    if notebooks:
-        result["note_count"] = int(notebooks.get("total") or 0)
-        # 供书籍笔记页实时联动：转成卡片所需字段
-        result["notebook_books"] = [
-            {
-                "bookId": str(b.get("bookId") or ""),
-                "title": str(b.get("title") or ""),
-                "author": str(b.get("author") or ""),
-                "cover": str(b.get("cover") or ""),
-                "noteCount": int(b.get("noteCount") or 0),
-                "reviewCount": int(b.get("reviewCount") or 0),
-                "bookmarkCount": int(b.get("bookmarkCount") or 0),
-            }
-            for b in (notebooks.get("books") or [])
-        ]
-        nb_books = sorted(
-            notebooks.get("books") or [],
-            key=lambda b: int(b.get("noteCount") or 0),
-            reverse=True,
-        )
-        # 划线统计：有划线的书籍数 + 划线最多的前若干本（书名, 划线数）
-        books_with_notes = [
-            b for b in nb_books if int(b.get("noteCount") or 0) > 0
-        ]
-        result["note_book_count"] = len(books_with_notes)
-        result["note_top"] = [
-            (str(b.get("title") or "未命名"), int(b.get("noteCount") or 0))
-            for b in books_with_notes[:8]
-        ]
-        # 月度划线趋势：统计每本书划线时间，按最近 6 个 5 天段聚合
-        now_ts = int(time.time())
-        day = 5 * 24 * 3600
-        buckets = [0] * 6
-        for nb in nb_books[:5]:
-            bids = str(nb.get("bookId") or "")
-            marks = safe(lambda bid=bids: client.get_highlights(bid), "趋势划线")
-            if not marks:
-                continue
-            for m in marks:
-                try:
-                    ts = int(m.get("time") or 0)
-                except (TypeError, ValueError):
+        # --- 划线（取有笔记的书里前 5 本，并发拉取后聚合）---
+        if notebooks:
+            # 月度划线趋势：统计每本书划线时间，按最近 6 个 5 天段聚合
+            now_ts = int(time.time())
+            day = 5 * 24 * 3600
+            buckets = [0] * 6
+            for nb in nb_books[:5]:
+                bids = str(nb.get("bookId") or "")
+                marks = from_future(highlight_futures[bids], "趋势划线")
+                if not marks:
                     continue
-                if ts <= 0:
-                    continue
-                age = now_ts - ts
-                if age < 0 or age >= day * 6:
-                    continue
-                idx = 5 - int(age // day)
-                if 0 <= idx < 6:
-                    buckets[idx] += 1
-            if not result["highlights"]:
-                title = str(nb.get("title") or "")
-                author = str(nb.get("author") or "")
-                for m in marks[:20]:
-                    m.setdefault("title", title)
-                    m.setdefault("author", author)
-                result["highlights"] = marks
-        if any(buckets):
-            result["note_month"] = [
-                (tr_month(i), buckets[i]) for i in range(6)
-            ]
+                for m in marks:
+                    try:
+                        ts = int(m.get("time") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if ts <= 0:
+                        continue
+                    # 全量按真实日期（本地时区）聚合，供逐日趋势 + 历史月份切换
+                    try:
+                        dkey = time.strftime("%Y-%m-%d", time.localtime(ts))
+                        result["note_day_counts"][dkey] = result["note_day_counts"].get(dkey, 0) + 1
+                    except (ValueError, OSError, OverflowError):
+                        pass
+                    age = now_ts - ts
+                    if age < 0 or age >= day * 6:
+                        continue
+                    idx = 5 - int(age // day)
+                    if 0 <= idx < 6:
+                        buckets[idx] += 1
+                if not result["highlights"]:
+                    title = str(nb.get("title") or "")
+                    author = str(nb.get("author") or "")
+                    for m in marks[:20]:
+                        m.setdefault("title", title)
+                        m.setdefault("author", author)
+                    result["highlights"] = marks
+            if any(buckets):
+                result["note_month"] = [
+                    (tr_month(i), buckets[i]) for i in range(6)
+                ]
+    finally:
+        pool.shutdown(wait=True)
+
     return result
 
 

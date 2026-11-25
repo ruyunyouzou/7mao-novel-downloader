@@ -22,10 +22,11 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QLinearGradient, QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QMessageBox, QFileDialog, QProgressBar, QFrame, QStackedWidget,
+    QMessageBox, QProgressBar, QFrame, QStackedWidget,
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..style import accent_color, BG as _BG_DARK, BG_CARD as _CARD_DARK, BORDER as _LINE_DARK, TEXT as _TEXT_DARK, TEXT_DIM as _DIM_DARK, BG_INPUT as _INPUT_DARK
 from ..widgets import apply_nation_icon, nation_icon
@@ -334,7 +335,10 @@ class CalibreView(QWidget):
         from PySide6.QtWidgets import QGroupBox
         self.path_box = QGroupBox(tr("cb.advanced"))
         self.path_box.setCheckable(True)
-        self.path_box.setChecked(False)
+        # 默认勾选：未勾选时 Qt 会禁用 GroupBox 内全部子控件，导致
+        # Bin/书库输入框与「浏览…/保存并重新检测」按钮全部点不动。
+        # 自动探测失败时用户必须能手动指定路径，故默认展开且可用。
+        self.path_box.setChecked(True)
         form = QVBoxLayout(self.path_box)
         form.setContentsMargins(12, 10, 12, 10)
         r1 = QHBoxLayout()
@@ -583,12 +587,12 @@ class CalibreView(QWidget):
         self.lib_edit.setText(str(self.store.settings_get("calibre_library", "")))
 
     def _choose_bin(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择 Calibre 安装目录（含 ebook-edit）")
+        d = _fd.select_directory(self, "选择 Calibre 安装目录（含 ebook-edit）")
         if d:
             self.bin_edit.setText(d)
 
     def _choose_lib(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "选择 Calibre 书库目录（含 metadata.db）")
+        d = _fd.select_directory(self, "选择 Calibre 书库目录（含 metadata.db）")
         if d:
             self.lib_edit.setText(d)
 
@@ -599,6 +603,8 @@ class CalibreView(QWidget):
         QMessageBox.information(self, "已保存", "Calibre 路径已保存到本机。")
 
     def _detect(self) -> None:
+        # 每次检测都写日志，让用户明确知道按钮生效了（否则界面看似“没反应”）
+        self.log(tr("cb.detecting"))
         self.install = detect_calibre(self.bin_edit.text().strip())
         lib = self.lib_edit.text().strip() or detect_library()
         if lib:
@@ -611,6 +617,7 @@ class CalibreView(QWidget):
                 f"color:{p['warn']};font-size:11px;font-weight:bold;background:transparent;border:none;")
             self.conn_path.setText(tr("cb.conn_hint"))
             self._set_buttons(False)
+            self.log(tr("cb.detect_fail_bin"))
         elif not lib or not os.path.isfile(os.path.join(lib, "metadata.db")):
             self.conn_title.setText(self.install.summary())
             self.conn_state.setText("● " + tr("cb.conn_lib_missing"))
@@ -618,6 +625,7 @@ class CalibreView(QWidget):
                 f"color:{p['warn']};font-size:11px;font-weight:bold;background:transparent;border:none;")
             self.conn_path.setText(tr("cb.lib_ph"))
             self._set_buttons(False)
+            self.log(tr("cb.detect_fail_lib"))
         else:
             self.conn_title.setText(self.install.summary())
             self.conn_state.setText("● " + tr("cb.connected"))
@@ -777,7 +785,7 @@ class CalibreView(QWidget):
         if not lib or not os.path.isfile(os.path.join(lib, "metadata.db")):
             QMessageBox.warning(self, "书库无效", "请先设置有效的 Calibre 书库目录")
             return
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择要加入 Calibre 书库的电子书",
             os.path.expanduser("~/七猫小说"),
             "电子书 (*.epub *.mobi *.azw3 *.pdf *.txt *.fb2);;所有文件 (*.*)",
@@ -801,7 +809,7 @@ class CalibreView(QWidget):
             QMessageBox.information(self, "提示", "请先选择一本书")
             return
         lib = self.lib_edit.text().strip()
-        out_dir = QFileDialog.getExistingDirectory(self, "选择导出目录")
+        out_dir = _fd.select_directory(self, "选择导出目录", lib)
         if not out_dir:
             return
         try:

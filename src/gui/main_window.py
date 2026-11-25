@@ -18,10 +18,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QTextCursor, QIcon, QKeySequence, QShortcut, QColor
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QFileDialog, QMessageBox, QComboBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QMessageBox, QComboBox, QSpinBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
+
+try:
+    from shiboken6 import isValid as _qt_is_valid
+except Exception:  # noqa: BLE001
+    def _qt_is_valid(obj) -> bool:  # type: ignore
+        return True
+
 
 from .plugin import PluginManager, Hook, DownloadResult
 from .workers import SearchWorker, DownloadWorker, DetailWorker
+from . import filedialogs as _fd
 from .datastore import DataStore
 from .i18n import tr, manager as i18n_manager, LANGUAGES
 from .views import ShelfView, QueueView, HistoryView, ReaderView, StatsView
@@ -74,7 +82,6 @@ class MainWindow(QMainWindow):
         self.search_worker: Optional[SearchWorker] = None
         self.download_worker: Optional[DownloadWorker] = None
         self.detail_worker: Optional[DetailWorker] = None
-        self.default_save_dir = os.path.join(os.path.expanduser("~"), "七猫小说")
         self._dark_theme = True
         self._dynamic_bg = None  # 当前动态背景 widget（若背景为动态）
         self._system_scheme_connected = False  # 是否已监听系统深浅色变化
@@ -84,6 +91,12 @@ class MainWindow(QMainWindow):
         self._last_search_tag = ""       # 最近一次搜索来源：search / recommend
 
         self.store = DataStore()
+        # 选择对话框：注入 store 让「上次目录」跨重启持久化
+        _fd.configure_store(self.store)
+        # 下载保存目录：优先读用户持久化设置，缺省为 ~/七猫小说
+        _saved_dir = str(self.store.settings_get("default_save_dir", "") or "").strip()
+        self.default_save_dir = _saved_dir if _saved_dir and os.path.isdir(_saved_dir) \
+            else os.path.join(os.path.expanduser("~"), "七猫小说")
         # 动效模块读取设置：ui_motion / ui_motion_level / ui_low_power
         motion.bind_settings(lambda k, d: self.store.settings_get(k, d))
         # 通知/提示音模块读取设置
@@ -114,6 +127,10 @@ class MainWindow(QMainWindow):
             lambda k, v: self.store.settings_set(k, v),
         )
         i18n_manager().changed.connect(self._retranslate)
+        # Qt 标准控件文案（右键菜单/消息框/文件对话框按钮）跟随界面语言
+        from .qt_translator import set_language as _set_qt_language
+        _set_qt_language(i18n_manager().current)
+        i18n_manager().changed.connect(_set_qt_language)
 
         self.setWindowTitle(f"{tr('app.name')} · GUI")
         self.resize(1180, 760)
@@ -389,6 +406,8 @@ class MainWindow(QMainWindow):
         self._update_bg_pause_visibility()
         # 给所有滚动区域装平滑滚动（表格/文本域/滚动页）
         motion.install_smooth_scrolling(self)
+        # 应用级守卫：滚轮划过下拉框时滚页面而非切换选项（点击弹窗选择不受影响）
+        motion.install_combo_wheel_guard()
 
     def _build_search_page(self) -> None:
         """搜索页：搜索栏（含搜书/搜作者、热搜词）+ 卡片结果列表 + 右侧详情。"""
@@ -454,6 +473,12 @@ class MainWindow(QMainWindow):
         self.tab_combo.currentIndexChanged.connect(self._on_search_tab_changed)
         bar.addWidget(self.tab_combo)
 
+        # 书源选择：七猫 / 番茄（默认七猫，行为不变）
+        self.source_combo = QComboBox()
+        self.source_combo.addItems([tr("search.source_qimao"), tr("search.source_fanqie")])
+        self.source_combo.setToolTip(tr("search.source_tip"))
+        bar.addWidget(self.source_combo)
+
         self.search_btn = QPushButton(tr("search.button"))
         accent_button(self.search_btn)
         apply_nation_icon(self.search_btn, "mondstadt", "#1a1a1a", 16)
@@ -513,17 +538,14 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
-        # 带"换一批"的标题行
+        # 标题行（已移除"换一批"，改为结果下方的分页条）
         title_row = QHBoxLayout()
         self.result_title = section_title(tr("search.recommend_title"))
         title_row.addWidget(self.result_title)
         title_row.addStretch()
+        # 兼容保留对象但不再显示：旧逻辑仍会 setEnabled，避免引用报错
         self.refresh_btn = QPushButton(tr("search.refresh"))
-        self.refresh_btn.setMaximumWidth(110)
-        from .widgets import apply_nation_icon
-        apply_nation_icon(self.refresh_btn, "liyue", ACCENT, 16)
-        self.refresh_btn.clicked.connect(self._refresh_recommend)
-        title_row.addWidget(self.refresh_btn)
+        self.refresh_btn.hide()
         left_layout.addLayout(title_row)
         self.result_hint = hint_label(tr("search.recommend_hint"))
         left_layout.addWidget(self.result_hint)
@@ -531,6 +553,42 @@ class MainWindow(QMainWindow):
         self.card_list = BookCardList()
         self.card_list.book_selected.connect(self._on_card_selected)
         left_layout.addWidget(self.card_list)
+
+        # ---- 分页条：上一页 / 当前页 / 页码输入跳转 / 下一页 ----
+        # 接口不返回总页数（可无限翻页），故用「当前页 + 页码输入」形态。
+        self._search_keyword = ""
+        self._search_tab = "0"
+        self._search_page = 1
+        self._search_tag = "search"
+        pager = QHBoxLayout()
+        pager.setContentsMargins(0, 0, 0, 0)
+        self.page_prev_btn = QPushButton(tr("search.page_prev"))
+        self.page_prev_btn.setMaximumWidth(90)
+        self.page_prev_btn.clicked.connect(
+            lambda: self._goto_page(max(1, self._search_page - 1)))
+        self.page_label = QLabel(tr("search.page_label", n=self._search_page))
+        self.page_spin = QSpinBox()
+        self.page_spin.setRange(1, 9999)
+        self.page_spin.setValue(1)
+        self.page_spin.setMaximumWidth(70)
+        self.page_jump_btn = QPushButton(tr("search.page_jump"))
+        self.page_jump_btn.setMaximumWidth(70)
+        self.page_jump_btn.clicked.connect(self._on_page_jump)
+        self.page_next_btn = QPushButton(tr("search.page_next"))
+        self.page_next_btn.setMaximumWidth(90)
+        self.page_next_btn.clicked.connect(
+            lambda: self._goto_page(self._search_page + 1))
+        self.page_spin.setToolTip(tr("search.page_jump_tip"))
+        self.page_jump_btn.setToolTip(tr("search.page_jump_tip"))
+        pager.addWidget(self.page_prev_btn)
+        pager.addWidget(self.page_label)
+        pager.addSpacing(12)
+        pager.addWidget(self.page_spin)
+        pager.addWidget(self.page_jump_btn)
+        pager.addWidget(self.page_next_btn)
+        pager.addStretch()
+        left_layout.addLayout(pager)
+        self._update_pager_ui(True)
 
         # 隐藏的兼容表格（保留数据供详情/选择逻辑使用，不显示）
         self.result_table = QTableWidget()
@@ -637,7 +695,8 @@ class MainWindow(QMainWindow):
         self._add_nav_tab(self.reader_view, "nav.read")
 
     def _build_queue_page(self) -> None:
-        self.queue_view = QueueView(self.store, lambda: self.pm.get_downloader(), self)
+        self.queue_view = QueueView(
+            self.store, lambda book_info=None: self.pm.get_downloader(book_info), self)
         self.queue_view.task_finished.connect(self._on_queue_task_finished)
         self._add_nav_tab(self.queue_view, "nav.queue")
 
@@ -882,7 +941,7 @@ class MainWindow(QMainWindow):
         self.epub_colorize_check.stateChanged.connect(self._on_epub_colorize_changed)
         l_epub.addWidget(self.epub_colorize_check)
 
-        # ---- 智能选题预设（题图30含7神明 / 尾图2020+随机10张） ----
+        # ---- 智能选题预设（章首题图30张含7神明） ----
         self.epub_smart_art_check = QCheckBox(tr("set.epub_smart_art"))
         self.epub_smart_art_check.setChecked(bool(self.store.settings_get("epub_smart_art", True)))
         self.epub_smart_art_check.setToolTip(tr("set.epub_smart_art_tip"))
@@ -916,7 +975,7 @@ class MainWindow(QMainWindow):
         l_epub.addLayout(row_hero)
         self._sync_hero_mode_ui()
 
-        # ---- 章末尾图（火影高招 S/A 横屏无字图，正文之后，底部渐隐） ----
+        # ---- 章末尾图（原神地理志横屏风景，正文之后，顶部渐隐） ----
         self.epub_tail_check = QCheckBox(tr("set.epub_tail"))
         self.epub_tail_check.setChecked(bool(self.store.settings_get("epub_chapter_tail", False)))
         self.epub_tail_check.setToolTip(tr("set.epub_tail_tip"))
@@ -933,7 +992,7 @@ class MainWindow(QMainWindow):
         self.epub_tail_mode_combo.setCurrentIndex(max(0, ti))
         self.epub_tail_mode_combo.currentIndexChanged.connect(self._on_epub_tail_mode_changed)
         self.epub_tail_fixed_combo = QComboBox()
-        self._refresh_hero_fixed_combo("naruto")
+        self._refresh_hero_fixed_combo("genshin_geo")
         self.epub_tail_fixed_combo.currentIndexChanged.connect(self._on_epub_tail_fixed_changed)
         row_tail.addWidget(self.set_tail_mode_label)
         row_tail.addWidget(self.epub_tail_mode_combo)
@@ -1288,6 +1347,14 @@ class MainWindow(QMainWindow):
                     w.setStyleSheet(f"color: {color};")
                 except Exception:  # noqa: BLE001
                     pass
+        # 任务队列卡片的高亮进度条跟随主题色 / 深浅主题
+        try:
+            dark = bool(getattr(self, "_dark_theme", True))
+            for w in self.findChildren(QWidget):
+                if type(w).__name__ == "GlowProgressBar" and hasattr(w, "apply_colors"):
+                    w.apply_colors(color, dark)
+        except Exception:  # noqa: BLE001
+            pass
         # 热搜词按钮也跟随主题色
         for btn in getattr(self, "_hot_word_buttons", []):
             try:
@@ -1425,16 +1492,25 @@ class MainWindow(QMainWindow):
         self.log(f"背景已切换为：{name}")
 
     def _refresh_bg_swatches(self) -> None:
-        """主题切换后，刷新设置页背景色块的预览色为当前主题对应的一套。"""
+        """主题切换后，刷新设置页背景色块的预览色为当前主题对应的一套。
+
+        同时按持久化的 background_key 重新同步选中白框：主题切换、配色编辑
+        重入、语言切换重建等路径都可能让色块状态漂移，这里统一校正，保证
+        高亮白框始终落在当前真正生效的背景上。
+        """
         from . import ui_background_theme as ub
         swatches = getattr(self, "_bg_swatches", None)
         if not swatches:
             return
+        current = str(self.store.settings_get("background_key", "") or "")
         for key, sw in swatches.items():
             if key == "__default__":
                 continue
             if key in ub.PRESET_DEFAULTS or key == ub.CUSTOM_KEY:
                 sw.set_colors(ub.resolved_value(key, self._dark_theme))
+            # 同步选中态：默认项 sw.key 为 __default__，对应持久化的空串
+            selected = (sw.key == "__default__" and not current) or (sw.key == current)
+            sw.set_selected(selected)
 
     def _on_theme_toggled(self, dark: bool) -> None:
         self._dark_theme = dark
@@ -1548,7 +1624,7 @@ class MainWindow(QMainWindow):
 
     def _pick_font_file(self, which: str) -> None:
         """选择字体文件（ttf/otf/woff/woff2），持久化到章节或分卷字体。"""
-        path, _ = QFileDialog.getOpenFileName(
+        path = _fd.open_file(
             self, tr("set.font_file_title"), "",
             "字体文件 (*.ttf *.otf *.woff *.woff2);;所有文件 (*)")
         if not path:
@@ -1624,9 +1700,9 @@ class MainWindow(QMainWindow):
     def _refresh_hero_fixed_combo(self, library: str = "genshin") -> None:
         """按图库重建「固定图」下拉。
 
-        library=genshin 时刷新题图下拉；library=naruto 时刷新尾图下拉。
+        library=genshin 刷新题图下拉；genshin_geo 刷新地理志尾图下拉。
         """
-        is_tail = library == "naruto"
+        is_tail = library == "genshin_geo"
         combo = getattr(self, "epub_tail_fixed_combo", None) if is_tail \
             else getattr(self, "epub_hero_fixed_combo", None)
         if combo is None:
@@ -1669,12 +1745,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "epub_hero_mode_combo"):
             self.epub_hero_mode_combo.setEnabled(enabled)
 
-    # ---- 章末尾图（火影横屏）回调 ----
     def _on_epub_tail_changed(self, state: int) -> None:
         """章末尾图开关变更，持久化。"""
         self.store.settings_set("epub_chapter_tail", bool(state))
         self._sync_tail_mode_ui()
-        self.log("EPUB 章末尾图（火影横屏）已" + ("开启" if state else "关闭") + "（下次下载生效）")
+        self.log("EPUB 章末尾图（地理志）已" + ("开启" if state else "关闭") + "（下次下载生效）")
 
     def _on_epub_tail_mode_changed(self, _idx: int = 0) -> None:
         """尾图分配方式变更。"""
@@ -1723,6 +1798,14 @@ class MainWindow(QMainWindow):
         self.tab_combo.setCurrentIndex(max(0, tab_idx))
         self.tab_combo.setToolTip(tr("search.switch_type"))
         self.tab_combo.blockSignals(False)
+        if hasattr(self, "source_combo"):
+            src_idx = self.source_combo.currentIndex()
+            self.source_combo.blockSignals(True)
+            self.source_combo.clear()
+            self.source_combo.addItems([tr("search.source_qimao"), tr("search.source_fanqie")])
+            self.source_combo.setCurrentIndex(max(0, src_idx))
+            self.source_combo.setToolTip(tr("search.source_tip"))
+            self.source_combo.blockSignals(False)
         self.search_btn.setText(tr("search.button"))
         self.format_label.setText(tr("search.format"))
         if hasattr(self, "direct_format_label"):
@@ -1731,6 +1814,16 @@ class MainWindow(QMainWindow):
         self.hot_prefix_label.setText(tr("search.hot_prefix"))
         self.result_title.setText(tr("search.recommend_title"))
         self.refresh_btn.setText(tr("search.refresh"))
+        if hasattr(self, "page_prev_btn"):
+            self.page_prev_btn.setText(tr("search.page_prev"))
+            self.page_next_btn.setText(tr("search.page_next"))
+            self.page_jump_btn.setText(tr("search.page_jump"))
+            self.page_spin.setToolTip(tr("search.page_jump_tip"))
+            self.page_jump_btn.setToolTip(tr("search.page_jump_tip"))
+            _busy = (getattr(self, "search_worker", None) is not None
+                     and self._is_alive(self.search_worker)
+                     and self.search_worker.isRunning())
+            self._update_pager_ui(not _busy)
         self.result_hint.setText(tr("search.recommend_hint"))
         self.result_table.setHorizontalHeaderLabels([
             tr("search.col_title"), tr("search.col_author"),
@@ -1797,14 +1890,14 @@ class MainWindow(QMainWindow):
                 self.epub_tail_check.setText(tr("set.epub_tail"))
                 self.epub_tail_check.setToolTip(tr("set.epub_tail_tip"))
                 self.set_tail_mode_label.setText(tr("set.epub_tail_mode"))
-                cur_tmode = self.epub_tail_mode_combo.currentData()
+                cur_mode = self.epub_tail_mode_combo.currentData()
                 self.epub_tail_mode_combo.blockSignals(True)
                 self.epub_tail_mode_combo.clear()
                 self.epub_tail_mode_combo.addItem(tr("set.epub_tail_rotate"), "rotate")
                 self.epub_tail_mode_combo.addItem(tr("set.epub_tail_fixed"), "fixed")
-                self.epub_tail_mode_combo.setCurrentIndex(max(0, self.epub_tail_mode_combo.findData(cur_tmode)))
+                self.epub_tail_mode_combo.setCurrentIndex(max(0, self.epub_tail_mode_combo.findData(cur_mode)))
                 self.epub_tail_mode_combo.blockSignals(False)
-                self._refresh_hero_fixed_combo("naruto")
+                self._refresh_hero_fixed_combo("genshin_geo")
             # 两个字体下拉框：保留当前配置值，重建为当前语言的标签
             from .qimao_core import font_combo_items
             cur_chapter = str(self.settings_font_combo.currentData() or "song")
@@ -1974,6 +2067,11 @@ class MainWindow(QMainWindow):
 
     # ---------------- 搜索页：搜索 / 推荐 / 卡片选择 ----------------
 
+    @staticmethod
+    def _is_alive(obj) -> bool:
+        """判断 QObject 包装的 C++ 对象是否仍有效（避免访问已回收对象）。"""
+        return obj is not None and _qt_is_valid(obj)
+
     def _next_recommend_keyword(self) -> str:
         """轮询推荐关键词，返回本次要加载的热门词。"""
         self._recommend_index = (self._recommend_index + 1) % len(RECOMMEND_KEYWORDS)
@@ -1981,19 +2079,62 @@ class MainWindow(QMainWindow):
         return self._current_recommend_kw
 
     def _start_search(self, keyword: str, tab: str = "0", page: int = 1,
-                      tag: str = "search") -> None:
-        """统一发起搜索请求：推荐与手动搜索共用同一条异步链路。"""
-        if self.search_worker is not None and self.search_worker.isRunning():
-            self.search_worker.terminate()
-            self.search_worker.wait(500)
+                      tag: str = "search", source: str = "") -> None:
+        """统一发起搜索请求：推荐与手动搜索共用同一条异步链路。
+
+        source 为空时按当前书源下拉框取值（qimao / fanqie）。
+
+        连续点击时不再 terminate 旧线程（Qt 禁止，会丢信号/崩溃），而是：
+        1. 协作式请求旧线程取消（requestInterruption），让它自然跑完网络超时；
+        2. 断开旧线程的信号，避免其回调污染界面；
+        3. 用递增代次校验，只接受最新一次搜索的结果。
+        """
+        old = self.search_worker
+        if old is not None and self._is_alive(old):
+            try:
+                old.finished.disconnect()
+                old.failed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            if old.isRunning():
+                # 协作式取消：标记后线程体会自然跑完网络超时再退出，
+                # 结果由 run() 内部丢弃，不发信号。绝不 terminate。
+                old.requestInterruption()
+
         self._last_search_tag = tag
+        self._search_gen = getattr(self, "_search_gen", 0) + 1
+        gen = self._search_gen
+        # 记录本次搜索上下文，供分页（上一页/下一页/跳页）原样复用
+        self._search_keyword = keyword
+        self._search_tab = tab
+        self._search_page = page
+        self._search_tag = tag
+        # 书源：显式传入优先，否则取当前下拉框；番茄与七猫互不串台
+        if not source:
+            combo = getattr(self, "source_combo", None)
+            source = ("fanqie" if combo is not None and combo.currentIndex() == 1
+                      else "qimao")
+        self._search_source = source
+        self._update_pager_ui(False)
         self.search_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
-        self.log(f"正在搜索：{keyword} …")
+        src_label = "番茄" if source == "fanqie" else "七猫"
+        self.log(f"正在搜索[{src_label}]：{keyword} …" + (f"（第 {page} 页）" if page > 1 else ""))
         self.pm.emit(Hook.ON_SEARCH, keyword, [])
-        self.search_worker = SearchWorker(keyword, self, tab=tab, page=page, tag=tag)
-        self.search_worker.finished.connect(self._on_search_done)
-        self.search_worker.failed.connect(self._on_search_failed)
+        self.search_worker = SearchWorker(keyword, self, tab=tab, page=page,
+                                          tag=tag, source=source)
+
+        def _recycle(w=self.search_worker):
+            if getattr(self, "search_worker", None) is w:
+                self.search_worker = None
+            w.deleteLater()
+
+        # 线程体真正结束后再回收对象，避免销毁仍在运行的线程报警
+        self.search_worker.finished_run.connect(_recycle)
+        self.search_worker.finished.connect(
+            lambda results, g=gen: self._on_search_done(results, g))
+        self.search_worker.failed.connect(
+            lambda msg, g=gen: self._on_search_failed(msg, g))
         self.search_worker.start()
 
     def do_search(self) -> None:
@@ -2001,10 +2142,12 @@ class MainWindow(QMainWindow):
         if not keyword:
             QMessageBox.warning(self, "提示", "请输入搜索关键词")
             return
-        # 搜书 tab=0，搜作者 tab=1
-        tab = "1" if self.tab_combo.currentIndex() == 1 else "0"
-        # 记录搜索历史（仅搜书模式）
-        if tab == "0":
+        # 搜书 tab=0，搜作者 tab=1（番茄搜索不支持搜作者，统一按搜书处理）
+        combo = getattr(self, "source_combo", None)
+        is_fanqie = combo is not None and combo.currentIndex() == 1
+        tab = "0" if is_fanqie else ("1" if self.tab_combo.currentIndex() == 1 else "0")
+        # 记录搜索历史（仅七猫搜书模式；番茄关键词单独走官方接口）
+        if tab == "0" and not is_fanqie:
             self.store.search_history_add(keyword)
             if hasattr(self, "reload_search_tools"):
                 self.reload_search_tools()
@@ -2018,21 +2161,51 @@ class MainWindow(QMainWindow):
         if keyword:
             self.do_search()
         else:
-            self.result_hint.setText(f"{mode}模式：输入关键词后开始搜索")
+            self.result_hint.setText(tr("search.mode_hint", mode=mode))
 
     def _load_recommend(self) -> None:
         """首屏推荐：取一个热门关键词作为推荐内容。"""
         if not hasattr(self, "card_list"):
             return
         keyword = self._next_recommend_keyword()
-        self.result_hint.setText(f"根据「{keyword}」的热门结果推荐 · 点击卡片查看详情")
+        self.result_hint.setText(tr("search.recommend_result_hint", kw=keyword))
         self._start_search(keyword, tab="0", page=1, tag="recommend")
 
     def _refresh_recommend(self) -> None:
-        """换一批：换一个热门关键词重新加载推荐卡片。"""
+        """换一批：换一个热门关键词重新加载推荐卡片（UI 已隐藏，保留兼容）。"""
         keyword = self._next_recommend_keyword()
-        self.result_hint.setText(f"根据「{keyword}」的热门结果推荐 · 点击卡片查看详情")
+        self.result_hint.setText(tr("search.recommend_result_hint", kw=keyword))
         self._start_search(keyword, tab="0", page=1, tag="recommend")
+
+    # ---------------------------------------------------------------- 分页
+    def _update_pager_ui(self, enabled: bool) -> None:
+        """刷新分页条状态：页码标签跟随当前页，搜索中禁用交互。"""
+        if not hasattr(self, "page_prev_btn"):
+            return
+        page = getattr(self, "_search_page", 1)
+        self.page_label.setText(tr("search.page_label", n=page))
+        self.page_spin.setValue(page)
+        self.page_prev_btn.setEnabled(enabled and page > 1)
+        self.page_next_btn.setEnabled(enabled)
+        self.page_jump_btn.setEnabled(enabled)
+        self.page_spin.setEnabled(enabled)
+
+    def _goto_page(self, page: int) -> None:
+        """翻到指定页：复用最近一次搜索的关键词/类型/标签，不重复记历史。"""
+        page = max(1, int(page))
+        keyword = getattr(self, "_search_keyword", "").strip()
+        if not keyword:
+            # 首屏推荐场景：用当前推荐关键词兜底
+            keyword = getattr(self, "_current_recommend_kw", "") or RECOMMEND_KEYWORDS[0]
+        tab = getattr(self, "_search_tab", "0")
+        tag = getattr(self, "_search_tag", "search")
+        source = getattr(self, "_search_source", "")
+        self.result_hint.setText(tr("search.result_hint_tpl", kw=keyword, page=page))
+        self._start_search(keyword, tab=tab, page=page, tag=tag, source=source)
+
+    def _on_page_jump(self) -> None:
+        """页码输入跳转。"""
+        self._goto_page(self.page_spin.value())
 
     def _on_card_selected(self, book: Dict[str, Any]) -> None:
         """点击卡片：同步选中态、触发插件钩子并加载详情。"""
@@ -2043,10 +2216,15 @@ class MainWindow(QMainWindow):
             self.btn_bookmark.setText(self._bookmark_label(book.get("id", "")))
         self.log(f"已选择：《{book.get('title', '')}》")
 
-    def _on_search_done(self, results: List[Dict[str, Any]]) -> None:
+    def _on_search_done(self, results: List[Dict[str, Any]], gen: Optional[int] = None) -> None:
+        # 代次校验：丢弃被取消的旧请求回调，避免覆盖最新结果
+        if gen is not None and gen != getattr(self, "_search_gen", 0):
+            return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
-        keyword = self.search_edit.text().strip()
+        self._update_pager_ui(True)
+        # 用本次实际发起搜索的关键词（翻页时输入框可能为空或已改），而非输入框当前文本
+        keyword = getattr(self, "_search_keyword", "") or self.search_edit.text().strip()
         self.pm.emit(Hook.ON_SEARCH, keyword, results)
         self.search_results = results
 
@@ -2058,26 +2236,37 @@ class MainWindow(QMainWindow):
             self.result_table.setItem(row, 2, QTableWidgetItem(str(item["words_num"])))
             self.result_table.setItem(row, 3, QTableWidgetItem(item["id"]))
 
-        # 卡片列表（用户实际看到的区域）
-        self.card_list.set_books(results)
+        # 卡片列表（用户实际看到的区域）：暂停重绘，避免 clear→重建的闪烁
+        self.card_list.setUpdatesEnabled(False)
+        try:
+            self.card_list.set_books(results)
+        finally:
+            self.card_list.setUpdatesEnabled(True)
 
         if self._last_search_tag == "recommend":
-            self.result_title.setText("小说推荐")
+            self.result_title.setText(tr("search.recommend_title"))
             self.current_book = None
             self.detail_download_btn.setEnabled(False)
-            self.detail_text.setPlainText("请选择一本书，查看详情并加入下载队列")
+            self.detail_text.setPlainText(tr("search.detail_hint"))
         else:
-            self.result_title.setText(f"搜索结果（{len(results)}）")
-            self.result_hint.setText(f"关键词「{keyword}」· 点击卡片查看详情")
+            src_label = "番茄" if getattr(self, "_search_source", "") == "fanqie" else "七猫"
+            self.result_title.setText(f"{src_label}搜索结果（{len(results)}）")
+            page = getattr(self, "_search_page", 1)
+            self.result_hint.setText(
+                f"关键词「{keyword}」· 第 {page} 页 · 点击卡片查看详情")
             if results:
                 self.card_list.setCurrentRow(0)
                 self._load_detail(results[0])
 
         self.log(f"搜索完成，共 {len(results)} 条结果")
 
-    def _on_search_failed(self, message: str) -> None:
+    def _on_search_failed(self, message: str, gen: Optional[int] = None) -> None:
+        # 代次校验：被取消的旧请求失败不应弹窗干扰用户
+        if gen is not None and gen != getattr(self, "_search_gen", 0):
+            return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
+        self._update_pager_ui(True)
         self.log(f"搜索失败：{message}")
         QMessageBox.critical(self, "搜索失败", message)
 
@@ -2089,22 +2278,44 @@ class MainWindow(QMainWindow):
             self.pm.emit(Hook.ON_BOOK_SELECTED, book)
             self._load_detail(book)
 
-    def _load_book_by_id(self, book_id: str) -> None:
+    def _book_from_id(self, book_id: str, source: str = "") -> Dict[str, Any]:
+        """按书源把书 ID 解析成 book_info；番茄走隔离的上游内核。"""
+        if not source:
+            from .book_link import detect_source
+            source = detect_source(str(book_id))
+        if source == "fanqie":
+            from plugins.vendor.fanqie_upstream import RequestHandler
+            from plugins.vendor.fanqie_reader import resolve_book_id
+            # 番茄 reader 链接里的 ID 是章节 ID，直接拼 /page/{id} 会 404；
+            # 这里统一归一化为真实 bookId，保证章节链接/口令/纯 ID 全通过。
+            real_id = resolve_book_id(str(book_id))
+            name, author, intro = RequestHandler().get_book_info(real_id)
+            return {
+                "id": real_id,
+                "title": str(name or f"书 {real_id}"),
+                "author": str(author or ""),
+                "intro": str(intro or ""),
+                "source": "fanqie",
+            }
+        from .api import get_book_info
+        info = get_book_info(str(book_id), fallback=None)
+        return {
+            "id": str(book_id),
+            "title": info.get("title", f"书 {book_id}"),
+            "author": info.get("author", ""),
+            "words_num": info.get("words_num", ""),
+            "cover": info.get("img_url", ""),
+            "intro": info.get("intro", ""),
+            "tags": info.get("tags", ""),
+            "source": "qimao",
+        }
+
+    def _load_book_by_id(self, book_id: str, source: str = "") -> None:
         """根据书 ID 直达：拉取详情并展示，无需搜索。"""
         if not book_id:
             return
         try:
-            from .api import get_book_info
-            info = get_book_info(str(book_id), fallback=None)
-            book = {
-                "id": str(book_id),
-                "title": info.get("title", f"书 {book_id}"),
-                "author": info.get("author", ""),
-                "words_num": info.get("words_num", ""),
-                "cover": info.get("img_url", ""),
-                "intro": info.get("intro", ""),
-                "tags": info.get("tags", ""),
-            }
+            book = self._book_from_id(book_id, source)
             self.current_book = book
             self._load_detail(book)
             self.log(f"已直达：《{book['title']}》(ID {book_id})")
@@ -2113,24 +2324,19 @@ class MainWindow(QMainWindow):
             log_error(f"书 ID 直达失败 {book_id}", exc, tag="link")
             QMessageBox.warning(self, "直达失败", f"无法获取该书信息：{exc}")
 
-    def _bulk_download(self, book_ids: List[str]) -> None:
-        """批量下载：把多个书 ID 依次解析后加入队列（用当前格式与默认选项）。"""
+    def _bulk_download(self, book_ids: List[str],
+                       sources: Optional[List[str]] = None) -> None:
+        """批量下载：把多个书 ID 依次解析后加入队列（支持混合书源）。"""
         if self.pm.get_downloader() is None:
             QMessageBox.information(self, "无下载内核", "当前没有可用的下载内核插件。")
             return
-        from .api import get_book_info
         dc = getattr(self, "direct_format_combo", None)
         fmt = dc.currentText() if dc is not None else self.format_combo.currentText()
         added, failed = 0, 0
-        for bid in book_ids:
+        for idx, bid in enumerate(book_ids):
             try:
-                info = get_book_info(str(bid), fallback=None)
-                book = {
-                    "id": str(bid),
-                    "title": info.get("title", f"书 {bid}"),
-                    "author": info.get("author", ""),
-                    "words_num": info.get("words_num", ""),
-                }
+                src = sources[idx] if sources and idx < len(sources) else ""
+                book = self._book_from_id(bid, src)
                 self.queue_view.add_task(book, self.default_save_dir, fmt)
                 added += 1
             except Exception as exc:  # noqa: BLE001
@@ -2178,20 +2384,28 @@ class MainWindow(QMainWindow):
             f"<b>ID：</b>{book['id']}</p>"
             f"<p style='color:{dim_c}'>正在加载详情…</p>"
         )
-        # 重建前先停掉上一次的详情请求：断开信号，避免旧请求回调串台；
-        # 运行中则等待其结束，并延迟删除，防止反复切书/切主题累积线程对象
+        # 重建前先取消上一次的详情请求：断开信号避免回调串台，协作式取消
+        # （requestInterruption）而非 terminate，线程体结束后自动回收。
         old = getattr(self, "detail_worker", None)
-        if old is not None:
+        if old is not None and self._is_alive(old):
             try:
                 old.finished.disconnect()
                 old.failed.disconnect()
             except (RuntimeError, TypeError):
                 pass
             if old.isRunning():
-                old.terminate()
-                old.wait(1000)
-            old.deleteLater()
-        self.detail_worker = DetailWorker(book["id"], book, self)
+                old.requestInterruption()
+        # 番茄书详情直接复用搜索结果（已解码），七猫仍走详情接口
+        detail_source = "fanqie" if book.get("source") == "fanqie" else "qimao"
+        self.detail_worker = DetailWorker(book["id"], book, self, source=detail_source)
+
+        def _recycle(w=self.detail_worker):
+            # 对象已结束，置空引用后再回收，避免后续访问已删除的 C++ 对象
+            if getattr(self, "detail_worker", None) is w:
+                self.detail_worker = None
+            w.deleteLater()
+
+        self.detail_worker.finished_run.connect(_recycle)
         self.detail_worker.finished.connect(lambda info: self._on_detail_done(book, info))
         self.detail_worker.failed.connect(
             lambda msg, b=book: self._on_detail_failed(b, msg)
@@ -2281,6 +2495,14 @@ class MainWindow(QMainWindow):
                 "epub_chapter_color", CHAPTER_TITLE_COLOR) or CHAPTER_TITLE_COLOR),
             volume_color=str(self.store.settings_get(
                 "epub_volume_color", VOLUME_TITLE_COLOR) or VOLUME_TITLE_COLOR),
+            colorize_dialogue=bool(self.store.settings_get("epub_colorize_dialogue", True)),
+            smart_art=bool(self.store.settings_get("epub_smart_art", True)),
+            chapter_hero=bool(self.store.settings_get("epub_chapter_hero", False)),
+            hero_mode=str(self.store.settings_get("epub_hero_mode", "rotate") or "rotate"),
+            hero_fixed=str(self.store.settings_get("epub_hero_fixed", "") or ""),
+            chapter_tail=bool(self.store.settings_get("epub_chapter_tail", False)),
+            tail_mode=str(self.store.settings_get("epub_tail_mode", "rotate") or "rotate"),
+            tail_fixed=str(self.store.settings_get("epub_tail_fixed", "") or ""),
         )
         if dlg.exec() != QDialog.Accepted:
             return
@@ -2501,7 +2723,7 @@ class MainWindow(QMainWindow):
             os.path.expanduser("~"),
             f"qimao_backup_{datetime.now():%Y%m%d_%H%M%S}.zip",
         )
-        path, _ = QFileDialog.getSaveFileName(self, "备份数据", default, "ZIP 文件 (*.zip)")
+        path = _fd.save_file(self, "备份数据", default, "ZIP 文件 (*.zip)")
         if not path:
             return
         try:
@@ -2518,7 +2740,7 @@ class MainWindow(QMainWindow):
     def _restore_data(self) -> None:
         """从 zip 备份恢复数据（覆盖前需确认）。"""
         import zipfile
-        path, _ = QFileDialog.getOpenFileName(self, "选择备份文件", "", "ZIP 文件 (*.zip)")
+        path = _fd.open_file(self, "选择备份文件", "", "ZIP 文件 (*.zip)")
         if not path:
             return
         if QMessageBox.question(
@@ -2545,9 +2767,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "恢复失败", str(exc))
 
     def _choose_save_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "选择保存目录", self.default_save_dir)
+        directory = _fd.select_directory(self, "选择保存目录", self.default_save_dir)
         if directory:
             self.default_save_dir = directory
+            # 持久化：否则重启后又会回到硬编码默认值
+            self.store.settings_set("default_save_dir", directory)
             if hasattr(self, "settings_path"):
                 self.settings_path.setText(directory)
             self.log(f"保存目录已设为：{directory}")
@@ -2578,6 +2802,27 @@ class MainWindow(QMainWindow):
             "新增：深色界面、插件扩展机制、书架、任务队列、历史记录。\n"
             "开源版本身不含章节下载内核，可通过插件提供。",
         )
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """窗口最小化 / 还原时暂停或恢复动态背景，避免后台持续重绘卡顿。"""
+        from PySide6.QtCore import QEvent
+        super().changeEvent(event)
+        if event.type() != QEvent.WindowStateChange:
+            return
+        dyn = getattr(self, "_dynamic_bg", None)
+        if dyn is None or not hasattr(dyn, "set_paused"):
+            return
+        if self.isMinimized():
+            dyn.set_paused(True)
+        else:
+            # 恢复时尊重用户手动暂停设置
+            paused = bool(self.store.settings_get("bg_anim_paused", False))
+            dyn.set_paused(paused)
+            if hasattr(dyn, "_apply_timer"):
+                try:
+                    dyn._apply_timer()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def closeEvent(self, event) -> None:
         # 最小化到托盘：下载可在后台继续

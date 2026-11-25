@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy
 
 from .style import BG_TOP, BORDER_LIGHT, TEXT_DIM, TEXT, ACCENT, ACCENT_HOVER
 from .version import VERSION_LABEL
+from .i18n import tr, manager as i18n_manager
 
 
 # 分组标题可使用的原神国徽（8 个循环分配给各功能分组）
@@ -54,6 +57,30 @@ def apply_nation_icon(widget, nation: str, color: str = ACCENT, size: int = 16) 
                               widget.text()))
     else:  # QLabel
         widget.setPixmap(icon.pixmap(size, size))
+
+
+@lru_cache(maxsize=128)
+def nation_pixmap(nation: str, color: str, size: int) -> QPixmap:
+    """带缓存的国徽 pixmap，供卡片等高频刷新处使用，避免反复染色。
+
+    与 ``nation_icon`` 同源（会走部件独立配色），仅多了 pixmap 级缓存。
+    """
+    return nation_icon(nation, color, size).pixmap(size, size)
+
+
+def goto_search_page(widget) -> None:
+    """空状态「去搜索」：把主窗口切到搜索标签页。
+
+    队列页与历史页共用；找不到搜索页时静默不动。
+    """
+    win = widget.window()
+    if not win or not hasattr(win, "tabs"):
+        return
+    for i in range(win.tabs.count()):
+        text = win.tabs.tabText(i)
+        if "搜索" in text or "search" in text.lower():
+            win.tabs.setCurrentIndex(i)
+            return
 
 
 class GroupTitleLabel(QWidget):
@@ -126,6 +153,10 @@ class TitleBar(QWidget):
         self._dark = True
         self._drag_pos = None
         self._build()
+        try:
+            i18n_manager().changed.connect(self.retranslate)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build(self) -> None:
         layout = QHBoxLayout(self)
@@ -134,7 +165,7 @@ class TitleBar(QWidget):
 
         # logo 与应用名已移至左侧导航栏；左侧放账号入口
         self.account_btn = QPushButton("登录")
-        self.account_btn.setToolTip("本地账号配置入口（七猫无公开登录 API）")
+        self.account_btn.setToolTip(tr("titlebar.account_tip"))
         self.account_btn.setStyleSheet(f"""
             QPushButton {{ background-color: {ACCENT}; color: #1a1a1a; border: none;
                            border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: bold; }}
@@ -146,16 +177,16 @@ class TitleBar(QWidget):
         layout.addStretch()
 
         # 版本号
-        ver = QLabel(f"当前版本 {VERSION_LABEL}")
-        ver.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        ver.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
-        ver.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        layout.addWidget(ver)
+        self.ver_label = QLabel(tr("titlebar.version", v=VERSION_LABEL))
+        self.ver_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.ver_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        self.ver_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        layout.addWidget(self.ver_label)
 
         # 主题切换按钮
         self.theme_btn = QPushButton("☾")
         self.theme_btn.setFixedSize(34, 30)
-        self.theme_btn.setToolTip("切换深色/浅色主题")
+        self.theme_btn.setToolTip(tr("titlebar.theme_tip"))
         self.theme_btn.setStyleSheet(f"""
             QPushButton {{ background-color: transparent; border: 1px solid {BORDER_LIGHT};
                            border-radius: 8px; color: {TEXT}; font-size: 16px; }}
@@ -179,6 +210,12 @@ class TitleBar(QWidget):
             """)
             btn.clicked.connect(slot)
             layout.addWidget(btn)
+
+    def retranslate(self, *args) -> None:
+        """界面语言切换后刷新标题栏文案。"""
+        self.account_btn.setToolTip(tr("titlebar.account_tip"))
+        self.theme_btn.setToolTip(tr("titlebar.theme_tip"))
+        self.ver_label.setText(tr("titlebar.version", v=VERSION_LABEL))
 
     def set_account_label(self, text: str) -> None:
         """根据是否已配置账号更新入口文案。"""

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
 import io
@@ -496,6 +497,83 @@ def render_filename(template: str, title: str, author: str = "", book_id: str = 
     return name or values["title"]
 
 
+class BookSource:
+    """章节源抽象：把「取详情 / 取目录 / 取章节正文」与「导出渲染」解耦。
+
+    build_txt 负责所有通用导出逻辑（文件名模板、章节范围、TXT/分章/EPUB、
+    题图尾图、字体颜色、对话着色）；具体站点只需实现本接口即可复用全部能力。
+    默认实现为 QimaoBookSource，保持七猫内核原有行为完全不变。
+
+    子类实现：
+      - source_key: 书源标识（如 qimao / fanqie）
+      - fetch_detail(book_id, session) -> {title, author, intro, cover}
+      - fetch_catalog(book_id, session) -> [{id, title, index}]
+      - context(book_id, session, report) -> 上下文管理器，产出可供
+        chapter_text 使用的 ctx（七猫用它持有缓存 ZIP）
+      - chapter_text(ctx, chapter, session, report) -> 章节正文字符串
+    """
+
+    source_key: str = ""
+    name: str = "未命名书源"
+
+    def fetch_detail(self, book_id: str, session) -> Dict:
+        raise NotImplementedError
+
+    def fetch_catalog(self, book_id: str, session) -> List[Dict]:
+        raise NotImplementedError
+
+    def context(self, book_id: str, session, report):
+        return contextlib.nullcontext(None)
+
+    def chapter_text(self, ctx, chapter: Dict, session, report) -> str:
+        raise NotImplementedError
+
+    def fetch_source_info(self, book_id: str, session) -> Dict:
+        """可选：站点专属的额外元信息（番茄简介等），默认空。"""
+        return {}
+
+
+class QimaoBookSource(BookSource):
+    """七猫章节源：缓存 ZIP + AES 解密（与原有链路逐行等价）。"""
+
+    source_key = "qimao"
+    name = "七猫小说"
+
+    def fetch_detail(self, book_id: str, session) -> Dict:
+        return get_detail(book_id, session)
+
+    def fetch_catalog(self, book_id: str, session) -> List[Dict]:
+        return get_catalog(book_id, session)
+
+    @contextlib.contextmanager
+    def context(self, book_id: str, session, report):
+        link = get_cache_zip_link(book_id, session)
+        zip_bytes = download_cache_zip(link, session, report)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            name_map = {
+                os.path.splitext(os.path.basename(n))[0]: n for n in zf.namelist()
+            }
+            yield {"zf": zf, "name_map": name_map}
+
+    def chapter_text(self, ctx, chapter: Dict, session, report) -> str:
+        member = ctx["name_map"].get(chapter["id"])
+        if not member:
+            return ""
+        return decrypt_chapter(ctx["zf"].read(member))
+
+
+def book_source_for(source_key: str = "") -> BookSource:
+    """按书源标识构造章节源；空值/未知值回退七猫（兼容旧书与旧记录）。"""
+    key = str(source_key or "").strip().lower()
+    if key == "fanqie":
+        try:
+            from plugins.fanqie_downloader_plugin import FanqieBookSource
+            return FanqieBookSource()
+        except Exception:  # noqa: BLE001
+            pass
+    return QimaoBookSource()
+
+
 def build_txt(book_id: str, save_path: str, fmt: str,
               progress_cb: Optional[Callable[[int], None]] = None,
               title_hint: str = "", max_chapters: int = 0,
@@ -508,7 +586,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
               chapter_hero: Optional[bool] = None, hero_mode: Optional[str] = None,
               hero_fixed: str = "", hero_library: str = "genshin",
               chapter_tail: Optional[bool] = None, tail_mode: Optional[str] = None,
-              tail_fixed: str = "", smart_art: Optional[bool] = None) -> Dict:
+              tail_fixed: str = "", smart_art: Optional[bool] = None,
+              source: Optional[BookSource] = None) -> Dict:
     """
     完整下载一本书并写出文件。
 
@@ -535,17 +614,16 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     :param hero_mode: 题图分配方式：rotate=按章轮换 / fixed=固定一张 / none=不用。
     :param hero_fixed: hero_mode=fixed 时指定的题图 key（如 Columbina）。
     :param hero_library: 题图图库 key（保留兼容，题图固定用 genshin 原神库）。
-    :param chapter_tail: 仅 EPUB 生效——每章正文之后插入章末尾图（火影横屏无字图，
-        底部渐隐已烘焙进 PNG）。默认 False（关闭）。
+    :param chapter_tail: 仅 EPUB 生效——每章正文之后插入章末尾图（原神地理志
+        风景图，顶部渐隐已烘焙进 PNG）。默认 False（关闭）。
     :param tail_mode: 尾图分配方式：rotate=按章轮换 / fixed=固定一张 / none=不用。
     :param tail_fixed: tail_mode=fixed 时指定的尾图 key。
-    :param smart_art: 智能选题预设：题图每本随机 30 张（必含 7 张神明），
-        尾图从 2020 年及之后高招随机 10 张。True=启用 / False=关闭 / None=读取全局设置。
-        缺省（如追更重建未传参）时，以上题图/尾图参数均自动回退到全局设置，
-        避免追更后丢失题图与尾图。
+    :param smart_art: 智能选题预设：题图每本随机 30 张（必含 7 张神明）。
+        True=启用 / False=关闭 / None=读取全局设置。
+        缺省（如追更重建未传参）时，题图参数自动回退到全局设置。
     :return: {file_path, title, chapters, ...}
     """
-    # ---- 题图/尾图参数缺省时回退到全局设置（修复追更重建丢图） ----
+    # ---- 题图参数缺省时回退到全局设置（修复追更重建丢图） ----
     def _g(key: str, default):
         try:
             from .datastore import DataStore
@@ -555,14 +633,15 @@ def build_txt(book_id: str, save_path: str, fmt: str,
 
     if chapter_hero is None:
         chapter_hero = bool(_g("epub_chapter_hero", False))
-    if chapter_tail is None:
-        chapter_tail = bool(_g("epub_chapter_tail", False))
     if hero_mode is None:
         hero_mode = str(_g("epub_hero_mode", "rotate") or "rotate")
-    if tail_mode is None:
-        tail_mode = str(_g("epub_tail_mode", "rotate") or "rotate")
     if smart_art is None:
         smart_art = bool(_g("epub_smart_art", True))
+    # 尾图参数缺省时同样回退到全局设置（与题图一致，追更重建不丢图）
+    if chapter_tail is None:
+        chapter_tail = bool(_g("epub_chapter_tail", False))
+    if tail_mode is None:
+        tail_mode = str(_g("epub_tail_mode", "rotate") or "rotate")
     hero_mode = str(hero_mode or "rotate")
     tail_mode = str(tail_mode or "rotate")
     book_seed = f"{book_id}|{title_hint}"
@@ -570,9 +649,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     # 节流：全本书上千章时，进度只在整数百分比变化时回调，避免 UI 高频刷新
     report = ProgressThrottle(progress_cb, step=1)
     session = requests.Session()
+    source = source or QimaoBookSource()
     # 详情（失败不致命，用提示书名兜底）
     try:
-        detail = get_detail(book_id, session)
+        detail = source.fetch_detail(book_id, session) or {}
         title = title_hint or detail.get("title") or f"book_{book_id}"
     except Exception:  # noqa: BLE001
         detail = {}
@@ -580,7 +660,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     title = sanitize_filename(title) or f"book_{book_id}"
 
     # 目录
-    catalog = get_catalog(book_id, session)
+    catalog = source.fetch_catalog(book_id, session)
     if not catalog:
         raise QimaoError("目录为空，无法下载")
     # 章节范围：优先用 start/end，其次 max_chapters；默认全本
@@ -608,12 +688,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         total=total_chapters,
     )
 
-    # 缓存 ZIP
-    link = get_cache_zip_link(book_id, session)
-    zip_bytes = download_cache_zip(link, session, report)
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        name_map = {os.path.splitext(os.path.basename(n))[0]: n for n in zf.namelist()}
-
+    # 章节源上下文：七猫=缓存 ZIP 解密，番茄=直连正文接口；导出逻辑完全共用
+    with source.context(book_id, session, report) as ctx:
         os.makedirs(save_path, exist_ok=True)
         chapters_written = 0
 
@@ -622,10 +698,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             book_dir = os.path.join(save_path, out_name)
             os.makedirs(book_dir, exist_ok=True)
             for i, ch in enumerate(catalog):
-                member = name_map.get(ch["id"])
-                if not member:
+                text = source.chapter_text(ctx, ch, session, report)
+                if not text:
                     continue
-                text = decrypt_chapter(zf.read(member))
                 fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
                 with open(os.path.join(book_dir, fname), "w", encoding="utf-8") as f:
                     f.write(f"{ch['title']}\n\n{text}\n")
@@ -698,8 +773,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             style_css += title_color_css("h2.chapter-title", chapter_color)
             style_css += title_color_css("span.volume-name", volume_color)
 
-            # ---- 章首题图 / 章末尾图：准备资源库与预处理后的图片 ----
-            # 题图固定用原神库，尾图固定用火影横屏库，二者互不干扰。
+            # ---- 章首题图：准备原神资源库与预处理后的图片 ----
             try:
                 from . import chapter_hero as _ch
             except ImportError:  # 顶层模块加载兜底
@@ -707,17 +781,16 @@ def build_txt(book_id: str, save_path: str, fmt: str,
 
             def _prepare_art(enabled: bool, library: str, mode: str, fixed: str,
                              uid_prefix: str, smart: bool = False) -> tuple:
-                """准备某一类插图的 (item_map, pick_fn, order, css)。失败不影响下载。"""
+                """准备题图/尾图的 (item_map, pick_fn, order, css)。失败不影响下载。"""
                 item_map: dict = {}
                 if not enabled:
                     return item_map, None, [], "", "rotate", ""
-                css = _ch.hero_css() if uid_prefix == "hero" else _ch.tail_css()
+                is_tail = (library == _ch.TAIL_LIBRARY)
+                css = _ch.tail_css() if is_tail else _ch.hero_css()
                 try:
-                    is_tail = (uid_prefix == "tail")
-                    # 智能预设：先取候选池（尾图按 2020+ 过滤），再抽固定数量
-                    all_arts = _ch.available_heroes(
-                        library, min_year=_ch.SMART_TAIL_MIN_YEAR if (smart and is_tail) else 0)
+                    all_arts = _ch.available_heroes(library)
                     if smart:
+                        # 题图=7神明智能池；尾图=地理志按地区均衡池
                         arts = (_ch.smart_tail_pool(book_seed, all_arts) if is_tail
                                 else _ch.smart_hero_pool(book_seed, all_arts))
                         pick_mode, pick_fixed = "rotate", ""  # 在智能池内按章轮换
@@ -756,11 +829,14 @@ def build_txt(book_id: str, save_path: str, fmt: str,
              hero_pick_mode, hero_pick_fixed) = _prepare_art(
                 chapter_hero, _ch.HERO_LIBRARY, hero_mode, hero_fixed, "hero",
                 smart=bool(smart_art))
+            style_css += "\n" + _hero_css
+
+            # ---- 章末尾图：准备原神地理志图库（横屏风景，顶部渐隐） ----
             (tail_item_map, _pick_tail, _tail_order, _tail_css,
              tail_pick_mode, tail_pick_fixed) = _prepare_art(
                 chapter_tail, _ch.TAIL_LIBRARY, tail_mode, tail_fixed, "tail",
                 smart=bool(smart_art))
-            style_css += "\n" + _hero_css + "\n" + _tail_css
+            style_css += "\n" + _tail_css
 
             css_item = epub.EpubItem(
                 uid="layout_style", file_name="style.css",
@@ -769,10 +845,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             book.add_item(css_item)
             epub_chapters = []
             for i, ch in enumerate(catalog):
-                member = name_map.get(ch["id"])
-                if not member:
+                raw = source.chapter_text(ctx, ch, session, report)
+                if not raw:
                     continue
-                raw = decrypt_chapter(zf.read(member))
                 if colorize_dialogue:
                     # highlight_text 内部已做 HTML 转义并生成 <br/>，直接可用
                     body_html = highlight_text(raw, dark=False)
@@ -805,15 +880,15 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             '</div>'
                         )
 
-                # 章末尾图：在正文之后插入横屏无字图（渐隐已烘焙进 PNG）
+                # 章末尾图：在正文之后插入地理志风景图（顶部渐隐已烘焙进 PNG）
                 tail_html = ""
                 if tail_item_map and _pick_tail is not None:
-                    picked = _pick_tail(i, _tail_order, mode=tail_pick_mode, fixed=tail_pick_fixed)
-                    if picked and picked["key"] in tail_item_map:
-                        img = tail_item_map[picked["key"]]
+                    picked_t = _pick_tail(i, _tail_order, mode=tail_pick_mode, fixed=tail_pick_fixed)
+                    if picked_t and picked_t["key"] in tail_item_map:
+                        img_t = tail_item_map[picked_t["key"]]
                         tail_html = (
                             '<div class="chapter-tail">'
-                            f'<img src="{img.file_name}" alt=""/>'
+                            f'<img src="{img_t.file_name}" alt=""/>'
                             '</div>'
                         )
 
@@ -843,10 +918,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 f.write(f"共 {len(catalog)} 章\n")
                 f.write("=" * 40 + "\n\n")
                 for i, ch in enumerate(catalog):
-                    member = name_map.get(ch["id"])
-                    if not member:
+                    text = source.chapter_text(ctx, ch, session, report)
+                    if not text:
                         continue
-                    text = decrypt_chapter(zf.read(member))
                     f.write(f"\n\n{ch['title']}\n\n{text}\n")
                     chapters_written += 1
                     report(40 + int((i + 1) / len(catalog) * 60))

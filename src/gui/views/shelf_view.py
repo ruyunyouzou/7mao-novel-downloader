@@ -13,10 +13,11 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QHeaderView, QLineEdit, QPushButton, QComboBox, QAbstractItemView,
-    QMenu, QMessageBox, QLabel, QFileDialog, QFrame,
+    QMenu, QMessageBox, QLabel, QFrame,
 )
 
 from ..datastore import DataStore
+from .. import filedialogs as _fd
 from ..i18n import tr
 from ..resource_path import resource_path
 from ..style import accent_color
@@ -306,7 +307,7 @@ class ShelfView(QWidget):
 
     def import_local(self) -> None:
         """导入本地 TXT/EPUB 到书架。"""
-        paths, _ = QFileDialog.getOpenFileNames(
+        paths = _fd.open_files(
             self, "选择本地小说", "", "小说文件 (*.txt *.epub);;所有文件 (*.*)"
         )
         if not paths:
@@ -405,6 +406,7 @@ class ShelfView(QWidget):
                     "id": entry.get("book_id", ""),
                     "title": entry.get("title", ""),
                     "author": entry.get("author", ""),
+                    "source": entry.get("source", ""),
                 })
             )
             act_weread = menu.addAction(tr("shelf.weread_import"))
@@ -429,6 +431,8 @@ class ShelfView(QWidget):
             "format": fmt,
             "words_num": words_num,
             "file_path": file_path,
+            # 书源随书落库：书架重新下载 / 追更要靠它选对内核
+            "source": book_info.get("source", ""),
         })
         self.refresh()
 

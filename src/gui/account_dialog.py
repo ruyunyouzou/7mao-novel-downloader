@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from .style import BG_CARD, BORDER, TEXT_DIM, ACCENT, WARN, accent_button
 from .widgets import GroupTitleLabel
+from .i18n import tr, manager as i18n_manager
 
 
 def get_account(store: Any) -> Optional[Dict[str, Any]]:
@@ -41,11 +42,15 @@ class AccountDialog(QDialog):
     def __init__(self, store: Any, parent=None) -> None:
         super().__init__(parent)
         self.store = store
-        self.setWindowTitle("账号")
+        self.setWindowTitle(tr("account.title"))
         self.resize(560, 480)
         self.setMinimumWidth(480)
         self._build()
         self._load()
+        try:
+            i18n_manager().changed.connect(self.retranslate)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------ UI
 
@@ -55,8 +60,8 @@ class AccountDialog(QDialog):
         root.setSpacing(12)
 
         # 标题
-        title = GroupTitleLabel("账号", "snezhnaya", ACCENT, font_size=20)
-        root.addWidget(title)
+        self.title_widget = GroupTitleLabel(tr("account.title"), "snezhnaya", ACCENT, font_size=20)
+        root.addWidget(self.title_widget)
 
         # 说明卡片
         notice = QFrame()
@@ -67,20 +72,15 @@ class AccountDialog(QDialog):
         nl = QVBoxLayout(notice)
         nl.setContentsMargins(14, 12, 14, 12)
         nl.setSpacing(6)
-        info = QLabel(
-            "七猫官方目前没有开放第三方账号登录接口，本下载器走的是<b>免登录</b>的缓存下载通道，"
-            "不登录也能下载全书。<br><br>"
-            "如果你有自己的七猫账号 Cookie（用于将来需要鉴权的接口），可以在下方手动填写。"
-            "这些信息<b>只保存在本机</b>，不会上传。"
-        )
-        info.setWordWrap(True)
-        info.setTextFormat(Qt.RichText)
-        info.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; line-height: 150%;")
-        nl.addWidget(info)
-        warn = QLabel("⚠ 本对话框不会向七猫服务器发起登录请求，仅作本地账号信息登记。")
-        warn.setWordWrap(True)
-        warn.setStyleSheet(f"color: {WARN}; font-size: 12px;")
-        nl.addWidget(warn)
+        self.info_label = QLabel(tr("account.notice"))
+        self.info_label.setWordWrap(True)
+        self.info_label.setTextFormat(Qt.RichText)
+        self.info_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px; line-height: 150%;")
+        nl.addWidget(self.info_label)
+        self.warn_label = QLabel(tr("account.warn"))
+        self.warn_label.setWordWrap(True)
+        self.warn_label.setStyleSheet(f"color: {WARN}; font-size: 12px;")
+        nl.addWidget(self.warn_label)
         root.addWidget(notice)
 
         # 状态
@@ -89,42 +89,40 @@ class AccountDialog(QDialog):
         root.addWidget(self.status_label)
 
         # 表单
-        form = QFormLayout()
-        form.setSpacing(10)
+        self.form = QFormLayout()
+        self.form.setSpacing(10)
 
         self.nick_edit = QLineEdit()
-        self.nick_edit.setPlaceholderText("给自己起的备注名，例如：我的七猫号")
-        form.addRow("备注昵称", self.nick_edit)
+        self.nick_edit.setPlaceholderText(tr("account.nick_ph"))
+        self.form.addRow(tr("account.form_nick"), self.nick_edit)
 
         self.phone_edit = QLineEdit()
-        self.phone_edit.setPlaceholderText("可选，仅本地记录")
-        form.addRow("手机号", self.phone_edit)
+        self.phone_edit.setPlaceholderText(tr("account.phone_ph"))
+        self.form.addRow(tr("account.form_phone"), self.phone_edit)
 
         self.imei_edit = QLineEdit()
-        self.imei_edit.setPlaceholderText("可选，某些七猫接口需要 imei")
-        form.addRow("IMEI", self.imei_edit)
+        self.imei_edit.setPlaceholderText(tr("account.imei_ph"))
+        self.form.addRow(tr("account.form_imei"), self.imei_edit)
 
         self.cookie_edit = QTextEdit()
-        self.cookie_edit.setPlaceholderText(
-            "可选：粘贴浏览器中的七猫 Cookie（如 Hm_lvt_...; token=...）"
-        )
+        self.cookie_edit.setPlaceholderText(tr("account.cookie_ph"))
         self.cookie_edit.setMinimumHeight(110)
-        form.addRow("Cookie", self.cookie_edit)
-        root.addLayout(form)
+        self.form.addRow(tr("account.form_cookie"), self.cookie_edit)
+        root.addLayout(self.form)
 
         # 按钮
         row = QHBoxLayout()
         row.addStretch()
-        btn_clear = QPushButton("清除")
-        btn_clear.clicked.connect(self._clear)
-        row.addWidget(btn_clear)
-        btn_cancel = QPushButton("取消")
-        btn_cancel.clicked.connect(self.reject)
-        row.addWidget(btn_cancel)
-        btn_save = QPushButton("保存到本机")
-        accent_button(btn_save)
-        btn_save.clicked.connect(self._save)
-        row.addWidget(btn_save)
+        self.btn_clear = QPushButton(tr("account.btn_clear"))
+        self.btn_clear.clicked.connect(self._clear)
+        row.addWidget(self.btn_clear)
+        self.btn_cancel = QPushButton(tr("account.btn_cancel"))
+        self.btn_cancel.clicked.connect(self.reject)
+        row.addWidget(self.btn_cancel)
+        self.btn_save = QPushButton(tr("account.btn_save"))
+        accent_button(self.btn_save)
+        self.btn_save.clicked.connect(self._save)
+        row.addWidget(self.btn_save)
         root.addLayout(row)
 
     # ------------------------------------------------------------------ 数据
@@ -138,9 +136,8 @@ class AccountDialog(QDialog):
         self.imei_edit.setText(str(account.get("imei", "")))
         self.cookie_edit.setPlainText(str(account.get("cookie", "")))
         updated = str(account.get("updated_at", ""))
-        self.status_label.setText(
-            f"当前状态：已配置本地账号信息{('（更新于 ' + updated + '）') if updated else ''}"
-        )
+        suffix = tr("account.status_updated", t=updated) if updated else ""
+        self.status_label.setText(tr("account.status_configured", updated=suffix))
         self.status_label.setStyleSheet(f"color: {ACCENT}; font-size: 12px;")
 
     def _save(self) -> None:
@@ -151,9 +148,9 @@ class AccountDialog(QDialog):
 
         if not any([nickname, phone, imei, cookie]):
             self.store.settings_set("account", None)
-            self.status_label.setText("当前状态：尚未配置")
+            self.status_label.setText(tr("account.status_empty"))
             self.status_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
-            QMessageBox.information(self, "已清除", "本地账号信息已清除。")
+            QMessageBox.information(self, tr("account.cleared_title"), tr("account.cleared_msg"))
             self.accept()
             return
 
@@ -166,17 +163,43 @@ class AccountDialog(QDialog):
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         })
         QMessageBox.information(
-            self, "已保存",
-            "账号信息已保存到本机。\n\n"
-            "提示：这不会向七猫服务器发起登录；下载仍然使用免登录的缓存通道。",
+            self, tr("account.saved_title"), tr("account.saved_msg"),
         )
         self.accept()
 
     def _clear(self) -> None:
         if QMessageBox.question(
-            self, "确认清除",
-            "确定清除本机保存的账号信息？",
+            self, tr("account.confirm_clear_title"),
+            tr("account.confirm_clear_msg"),
             QMessageBox.Yes | QMessageBox.No,
         ) == QMessageBox.Yes:
             self.store.settings_set("account", None)
             self.accept()
+
+    # ------------------------------------------------------------------ 语言
+
+    def retranslate(self, *args) -> None:
+        """界面语言切换后刷新所有文案。"""
+        self.setWindowTitle(tr("account.title"))
+        self.title_widget.setText(tr("account.title"))
+        self.info_label.setText(tr("account.notice"))
+        self.warn_label.setText(tr("account.warn"))
+        self.nick_edit.setPlaceholderText(tr("account.nick_ph"))
+        self.phone_edit.setPlaceholderText(tr("account.phone_ph"))
+        self.imei_edit.setPlaceholderText(tr("account.imei_ph"))
+        self.cookie_edit.setPlaceholderText(tr("account.cookie_ph"))
+        self.form.labelForField(self.nick_edit).setText(tr("account.form_nick"))
+        self.form.labelForField(self.phone_edit).setText(tr("account.form_phone"))
+        self.form.labelForField(self.imei_edit).setText(tr("account.form_imei"))
+        self.form.labelForField(self.cookie_edit).setText(tr("account.form_cookie"))
+        self.btn_clear.setText(tr("account.btn_clear"))
+        self.btn_cancel.setText(tr("account.btn_cancel"))
+        self.btn_save.setText(tr("account.btn_save"))
+        # 状态标签按是否已配置刷新（不改动已有用户输入）
+        if get_account(self.store):
+            account = get_account(self.store) or {}
+            updated = str(account.get("updated_at", ""))
+            suffix = tr("account.status_updated", t=updated) if updated else ""
+            self.status_label.setText(tr("account.status_configured", updated=suffix))
+        else:
+            self.status_label.setText(tr("account.status_empty"))

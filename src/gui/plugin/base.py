@@ -59,6 +59,14 @@ class DownloadResult:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+class DownloadCancelled(Exception):
+    """用户取消下载。
+
+    下载内核必须让此异常原样冒泡（不要用通用 ``except Exception`` 吞掉），
+    否则 DownloadWorker 无法发出 cancelled 信号，任务会被误判为失败。
+    """
+
+
 class DownloaderBase:
     """
     下载内核抽象接口。
@@ -73,6 +81,11 @@ class DownloaderBase:
 
     name: str = "未命名下载器"
     priority: int = 0  # 优先级，越高越优先被选中（真实内核应高于演示内核）
+    source_key: str = ""  # 书源标识：qimao / fanqie；空串表示通用内核
+
+    def supports(self, book_info: Dict[str, Any]) -> bool:
+        """该内核是否适用于这本书。默认适用；多站点内核按 book_info['source'] 筛选。"""
+        return True
 
     def download(
         self,
