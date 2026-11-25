@@ -40,10 +40,17 @@ class FanqieBookSource(BookSource):
             name, author, intro = self._handler.get_book_info(str(book_id))
         except Exception:  # noqa: BLE001
             name, author, intro = None, None, None
+        # 封面供 EPUB 内嵌；惰性导入避免启动期加载字体映射大表，失败不影响下载。
+        try:
+            from gui.fanqie_core.fanqie_reader import fetch_cover
+            cover = fetch_cover(str(book_id))
+        except Exception:  # noqa: BLE001
+            cover = ""
         return {
             "title": str(name or ""),
             "author": str(author or ""),
             "intro": str(intro or ""),
+            "cover": str(cover or ""),
         }
 
     def fetch_catalog(self, book_id: str, session) -> list:

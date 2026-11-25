@@ -136,6 +136,29 @@ def _initial_state(page: str) -> dict:
     return state
 
 
+@lru_cache(maxsize=128)
+def fetch_cover(book_id: str, timeout: int = 15) -> str:
+    """从番茄书籍页提取封面直链，供 EPUB 内嵌封面使用。
+
+    上游 get_book_info() 只返回书名/作者/简介，封面藏在页面
+    ``window.__INITIAL_STATE__.page.thumbUrl`` 里。该函数惰性调用、
+    按书 ID 缓存，失败返回空串，不影响下载主链路。
+    """
+    bid = str(book_id or "").strip()
+    if not bid:
+        return ""
+    try:
+        resp = requests.get(
+            f"https://fanqienovel.com/page/{bid}",
+            headers=_HEADERS, timeout=timeout,
+        )
+        resp.raise_for_status()
+        page = (_initial_state(resp.text).get("page") or {})
+        return str(page.get("thumbUrl") or page.get("thumbUri") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 # 番茄分享短链域名：/t/<token> 形态需联网跟随重定向还原为真实 bookId。
 # 只对这些白名单域名发起请求，防止把任意 URL 当短链跟随（SSRF 风险）。
 _SHORT_LINK_HOSTS = (

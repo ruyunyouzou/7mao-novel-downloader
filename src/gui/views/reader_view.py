@@ -1430,9 +1430,19 @@ class ReaderView(QWidget):
             self.btn_primary_open.setText("＋ " + tr("reader.open_local"))
             self.btn_from_shelf.setText(tr("reader.from_shelf"))
             self.btn_drop_hint.setText(tr("reader.drop_file"))
+        # 封面墙重建较慢，后台页面延后到真正进入阅读页时再刷新
+        if self.isVisible():
             self._refresh_cover_wall()
+        else:
+            self._cover_wall_lang_dirty = True
         if not self.chapters:
             self.status_label.setText(tr("reader.status_empty"))
+
+    def flush_lang_dirty(self) -> None:
+        """进入阅读页时补做延后的封面墙刷新。"""
+        if getattr(self, "_cover_wall_lang_dirty", False):
+            self._cover_wall_lang_dirty = False
+            self._refresh_cover_wall()
 
     def closeEvent(self, event) -> None:
         try:

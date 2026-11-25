@@ -19,12 +19,16 @@ __all__ = [
     "resolve_book_id",
     "resolve_short_link",
     "search_fanqie",
+    "fetch_cover",
     "RequestHandler",
 ]
 
 
 def __getattr__(name: str):
     """惰性导入，避免仅为取一个符号就加载字体映射大表 / 网络依赖。"""
+    if name == "fetch_cover":
+        from .fanqie_reader import fetch_cover
+        return fetch_cover
     if name in ("decode_chapter", "resolve_book_id", "resolve_short_link"):
         from . import fanqie_reader
         return getattr(fanqie_reader, name)

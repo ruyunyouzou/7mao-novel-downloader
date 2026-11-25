@@ -216,6 +216,9 @@ class SmoothWheelFilter(QObject):
         super().__init__(area if parent is None else parent)
         self._area = area
         self._anim: Optional[QPropertyAnimation] = None
+        # 连续滚轮的累积目标：动画未走完时在新目标上叠加，而不是从当前值重算，
+        # 否则快速连滚的后续增量会被“吃掉”，手感发黏。
+        self._target: int = 0
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if event.type() != QEvent.Wheel or not enabled():
@@ -234,8 +237,12 @@ class SmoothWheelFilter(QObject):
                 return False
 
             step = -(delta.y() if bar is vbar else delta.x())
-            target = max(bar.minimum(), min(bar.maximum(), bar.value() + int(step)))
-            if self._anim is not None and self._anim.state() == QPropertyAnimation.Running:
+            running = (self._anim is not None
+                       and self._anim.state() == QPropertyAnimation.Running)
+            base = self._target if running else bar.value()
+            target = max(bar.minimum(), min(bar.maximum(), base + int(step)))
+            self._target = target
+            if running:
                 self._anim.stop()
             self._anim = QPropertyAnimation(bar, b"value")
             self._anim.setDuration(_duration("scroll", 240))

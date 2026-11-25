@@ -390,6 +390,8 @@ class MainWindow(QMainWindow):
 
         # 左侧导航栏 + 右侧页面
         self.tabs = SideNavWidget(tr("app.name"), self)
+        # 语言切换后若不在设置页，延后到进入设置页时再重建两张动态卡片，避免卡顿
+        self.tabs.currentChanged.connect(self._on_page_changed_for_lang)
         root.addWidget(self.tabs, 1)
 
         self.setCentralWidget(central)
@@ -722,6 +724,7 @@ class MainWindow(QMainWindow):
     def _build_settings_page(self) -> None:
         """设置页：下载、外观、语言、数据管理、关于。"""
         page = QWidget()
+        page.setObjectName("settingsPage")
         outer = QVBoxLayout(page)
         outer.setContentsMargins(16, 12, 16, 12)
 
@@ -1983,8 +1986,8 @@ class MainWindow(QMainWindow):
             self._load_detail(self.current_book)
         self._retranslate_new_features()
 
-    def _retranslate_new_features(self) -> None:
-        """刷新本轮新增功能控件的文案（不重建，保留用户输入）。"""
+    def _rebuild_setting_hosts(self) -> None:
+        """重建设置页两张动态卡片（语言变化时同步文案）。"""
         # 扩展功能卡片（含界面抗锯齿开关）：整体重建以同步文案
         if hasattr(self, "extras_host") and self.extras_host is not None:
             try:
@@ -2013,6 +2016,33 @@ class MainWindow(QMainWindow):
                 self.more_host = new_host
             except Exception:  # noqa: BLE001
                 pass
+
+    def _on_page_changed_for_lang(self, index: int) -> None:
+        """语言切换期间不在设置页时，进入设置页再补做重建。"""
+        if not getattr(self, "_settings_lang_dirty", False):
+            return
+        page = self.tabs.widget(index) if hasattr(self, "tabs") else None
+        if page is not None:
+            if page.objectName() == "settingsPage":
+                self._rebuild_setting_hosts()
+                self._settings_lang_dirty = False
+            # 阅读封面墙 / 统计卡片的语言刷新同样延后到进入对应页
+            for view in (getattr(self, "reader_view", None),
+                         getattr(self, "stats_view", None)):
+                flush = getattr(view, "flush_lang_dirty", None)
+                if callable(flush):
+                    flush()
+
+    def _retranslate_new_features(self) -> None:
+        """刷新本轮新增功能控件的文案（不重建，保留用户输入）。"""
+        # 两张设置卡片整体重建约 90ms，仅当设置页可见时立即重建；否则标记脏，
+        # 等用户真正进入设置页时再重建，避免切换语言瞬间的可感知卡顿。
+        cur = self.tabs.currentWidget() if hasattr(self, "tabs") else None
+        if cur is not None and cur.objectName() == "settingsPage":
+            self._rebuild_setting_hosts()
+            self._settings_lang_dirty = False
+        else:
+            self._settings_lang_dirty = True
         # 书架工具栏文案由 ShelfView.retranslate() 统一处理（含更多菜单 action）
         # 详情收藏按钮
         if hasattr(self, "btn_bookmark") and self.current_book:

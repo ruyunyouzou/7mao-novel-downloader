@@ -272,7 +272,17 @@ class StatsView(QWidget):
         self.btn_refresh.setText(tr("search.refresh"))
         self.chart_label.setText(tr("extras.stat_daily"))
         self.top_label.setText(tr("extras.stat_top"))
-        self.refresh()
+        # 统计卡片重建较慢，后台页面延后到进入统计页时再刷新
+        if self.isVisible():
+            self.refresh()
+        else:
+            self._stats_lang_dirty = True
+
+    def flush_lang_dirty(self) -> None:
+        """进入统计页时补做延后的卡片刷新。"""
+        if getattr(self, "_stats_lang_dirty", False):
+            self._stats_lang_dirty = False
+            self.refresh()
 
     def refresh(self) -> None:
         s = build_stats(self.store)
