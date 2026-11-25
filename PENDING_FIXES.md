@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v5.0.0（已发布，2026-11-25，Windows 安装包已上传 GitHub Release）
-- **已修未发版**：**5 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
+- **已修未发版**：**6 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
 - **下一个待发布版本**：v5.0.1（满 10 条或用户明确发版指令才启用）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -68,6 +68,8 @@
 | 26 | **（用户追加项，不计入本轮 10 条）** 全项目全面体检：覆盖 93 文件 / 3.3 万行 / 全部功能 / 全部代码 / 全部接口。①静态检查全绿——compileall 通过、pyflakes 0 告警、三语 725/725/725 对齐无空值、90 模块逐个导入（仅上游 `request_handler.py` 直导报错属预期，须经隔离包装加载）、隔离包装正常、`collect_submodules` 19 模块含 10 番茄子模块。②GUI 实测——主窗口构造 OK、14 页全切换 OK、深浅主题切换 OK、三语切换 OK。③插件内核——8 插件全加载 0 错误、内核自动选择矩阵正确、`DownloadCancelled` 真源可导入。④接口实测（真实网络）——七猫搜索 11 本/详情/目录 712 章/TXT 19126 字节/EPUB 有效；番茄搜索 10 本/详情/目录 276 章/正文解密可读/TXT 26190 字节/EPUB 有效/章节 ID 归一化正确/追更 276/2→新增 274。⑤数据存储——书架/历史/书签/追更四类 source 透传全验证正确。⑥辅助——CSV 导出、build_stats 九项指标、normalize_notebook_book 嵌套提升、协议自检双路均衡、filedialogs 原生+目录记忆、sync_upstream 就位、取消链路 raise+2 捕获+2 内核 re-raise 严谨。⑦边界——空/坏输入、空结果、超页码均不崩。⑧收尾——清理 6 core 转储（529MB）+175 .pyc+12 __pycache__、清除测试脏数据保留真实数据、回归 4/4 通过。**结论：无遗留缺陷，版本仍 4.1.6，未打 tag、未上传、未发版** | `（全项目体检，无功能改动）` | 2026-11-25 |
 
 | 27 | **（用户追加项，不计入本轮 10 条）** 修复启动时的终端黑框 / 两个一闪而过的空白框：用户从桌面快捷方式打开软件、且本机装了 Calibre，启动瞬间先弹黑框与两个空白框再进主界面。根因是 Windows 下 `subprocess` 调控制台程序未传 `CREATE_NO_WINDOW`——启动时 `CalibreView.__init__` 同步 `_detect()` → `detect_calibre()` → `subprocess.run([calibredb, "--version"])` 必然弹控制台窗口。修复：`calibre_core.py` 新增 `_no_window_flags()`（Windows 返回 `CREATE_NO_WINDOW=0x08000000`，带硬编码兜底；非 Windows 返回 0），应用到全部 3 处子进程调用（--version / `_run` / `open_editor`）；`epub_check.py` 的 java epubcheck 调用同样加 `creationflags`。主程序 `build.spec` 本就 `console=False`，弹框纯来自子进程。验证：模拟 Windows 返回 0x08000000、非 Windows 返回 0，pyflakes + compileall 通过。**版本仍 5.0.0，未打 tag、未上传、未发版** | `calibre_core.py`、`epub_check.py` | 2026-11-25 |
+
+| 33 | **（v5.0.0 后新周期第 6 条，用户要求先不发版）** 链接搜索框占位文案去掉书源限定词：用户反馈占位符「粘贴七猫分享链接 / 书 ID，回车直达…」里的「七猫」不合适——软件已支持七猫 + 番茄多书源，占位文案不应只写七猫。改 `i18n.py`：`zh_CN` 改为「粘贴分享链接 / 书 ID，回车直达…」，`en_US` 同步去掉 `Qimao` 改为「Paste a share link / book ID, Enter to open...」，`ru_RU` 原本即为通用写法保持不变。**验证**：编译 + pyflakes 通过、三语 727/727/727 对齐、新文案生效。**版本仍 5.0.0，未打 tag、未发版** | `i18n.py` | 2026-11-25 |
 
 | 32 | **（v5.0.0 后新周期第 5 条，用户要求先不发版）** 修复番茄分享短链无法直达：用户粘贴口令 `推荐一部好书《邻家妹妹恋上我》https://changdunovel.com/t/4NZeXnfTfY/` 点「直达」报「未识别书籍 ID」。根因两处：①`detect_source`/`_FANQIE_HINT` 只认 `fanqienovel.com`，不认 App 分享短链域名 `changdunovel.com`/`fqnovel.com`；②`/t/<token>` 的 token 是字母数字混合（非书籍 ID），现有正则只抓纯数字，必须联网跟随重定向还原。修复：①`_FANQIE_HINT` 加 short-link 域名，`detect_source` 判为 fanqie；②`fanqie_reader.py` 新增 `resolve_short_link()`——仅白名单域名（changdunovel/fanqie/fqnovel）跟随 302，从最终 URL 的 `book_id=`/`/page/<id>` 或响应正文提取真实 bookId，带 SSRF 防护；`resolve_book_id()` 开头先过短链还原；③`book_link.extract_book_id()` 检测 `/t/<token>` 时延迟导入调用还原函数（带容错，离线走原路径）；④**短链失效回退**：新增 `extract_book_title()` 提取口令里的《书名》，`search_tools._goto()` 在解析不到 ID 且为番茄时，按书名调 `search_fanqie` 取第一条直达（用户这条短链已 404 失效，但书名能搜到真实 ID 7435502585588501529）。⑤`tests/test_book_link.py` 补 3 条短链/书名用例（6 测试全过）。**验证**：短链还原 mock 5 场景（302→page/query、正文提取、非白名单拒绝、resolve_book_id 直吃短链）全通过、端到端口令文本→书名回退→真实 ID 一致、回归 6/6、compileall+pyflakes 0 告警。**版本仍 5.0.0，未打 tag、未发版** |
 
