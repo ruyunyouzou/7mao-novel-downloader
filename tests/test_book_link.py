@@ -98,8 +98,7 @@ class ResolveTestCase(unittest.TestCase):
     """真实网络：章节 ID 反查 + 端到端书名。"""
 
     def setUp(self):
-        sys.path.insert(0, os.path.join(ROOT, "src", "plugins", "vendor"))
-        from fanqie_reader import resolve_book_id
+        from gui.fanqie_core.fanqie_reader import resolve_book_id
         self.resolve = resolve_book_id
 
     def test_resolve(self):
@@ -112,7 +111,7 @@ class ResolveTestCase(unittest.TestCase):
                 self.assertEqual(self.resolve(value, timeout=25), BOOK)
 
     def test_end_to_end(self):
-        from plugins.vendor.fanqie_upstream import RequestHandler
+        from gui.fanqie_core.fanqie_upstream import RequestHandler
         for text in (f"https://fanqienovel.com/page/{BOOK}",
                      f"https://fanqienovel.com/reader/{CHAP}",
                      CHAP):

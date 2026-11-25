@@ -4,7 +4,7 @@
 映射表来源：
   - https://github.com/zhoulianglen/fanqiexiaoshuo-Download （FONT_MAP 原样收录）
   - 该表源自 https://github.com/romcere/fanqienovel-decryptor / RChow 博客
-逻辑按本项目风格重写，放入 vendor 隔离目录，不耦合 GUI 代码。
+逻辑按本项目风格重写，作为 GUI 层内置核心，与 qimao_core.py 平级。
 
 原理：番茄把常用汉字替换为 PUA 私用区字符；页面 CSS 里的 woff2 字体
 把 PUA 码点映射到 glyph（如 gid58611），再用本映射表还原为真实字符。

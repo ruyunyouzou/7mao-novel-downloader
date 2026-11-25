@@ -11,7 +11,7 @@
 ## 同步方式
 
 ```bash
-python3 src/plugins/vendor/fanqie_upstream/sync_upstream.py
+python3 src/gui/fanqie_core/fanqie_upstream/sync_upstream.py
 ```
 
 脚本只覆盖 `request_handler.py` / `config.py`，适配层 `__init__.py` 和 `../fanqie_downloader_plugin.py` 不会被修改。

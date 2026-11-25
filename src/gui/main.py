@@ -14,7 +14,7 @@ from . import render_quality
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("星弦小说下载器（七猫版）GUI")
+    app.setApplicationName("GUI-novel下载器")
     # Qt 标准控件文案（文本右键菜单、消息框按钮、文件对话框等）默认中文。
     # MainWindow 绑定语言设置后会再按用户实际语言同步一次。
     from . import qt_translator

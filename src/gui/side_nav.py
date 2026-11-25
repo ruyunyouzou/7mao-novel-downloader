@@ -384,7 +384,7 @@ class SideNavWidget(QWidget):
 
     currentChanged = Signal(int)
 
-    def __init__(self, app_name: str = "七猫小说下载器", parent=None) -> None:
+    def __init__(self, app_name: str = "GUI-novel下载器", parent=None) -> None:
         super().__init__(parent)
         self._buttons: List[NavButton] = []
         self._stack = QStackedWidget()

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller 打包配置：星隅小说下载器（七猫版）GUI
+PyInstaller 打包配置：GUI-novel下载器（七猫版）GUI
 在 Windows 上执行： pyinstaller build.spec --clean --noconfirm
 
 说明：
@@ -48,7 +48,7 @@ hiddenimports = [
     "PySide6.QtNetwork.QLocalServer", "PySide6.QtNetwork.QLocalSocket",  # 单实例保护
 ]
 
-# 递归收集 gui / SLQimao / plugins 的所有子模块（views、plugin、vendor 番茄内核与搜索等），
+# 递归收集 gui / SLQimao / plugins 的所有子模块（views、plugin、gui/fanqie_core 内置番茄内核等），
 # 避免只收顶层包、子模块仍缺失。
 import sys as _sys
 _sys.path.insert(0, "src")  # 让 collect_submodules 能定位到 src 下的本地包
@@ -80,7 +80,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="星隅小说下载器",
+    name="GUI-novel下载器",
     icon="main.ico",
     debug=False,
     bootloader_ignore_signals=False,
@@ -101,5 +101,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
+    # COLLECT 目录名保持旧名，与 GitHub Actions workflow 的 Compress-Archive 路径一致；
+    # 用户实际运行的 exe 已更名为 GUI-novel下载器.exe（见上方 EXE name）。
     name="星隅小说下载器",
 )

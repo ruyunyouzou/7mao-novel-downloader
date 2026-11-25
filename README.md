@@ -1,9 +1,11 @@
+> 本仓库的桌面 GUI 版本名为 **GUI-novel下载器**（七猫 / 番茄双书源内置核心）。
+
 # 本项目停止维护
 请使用https://github.com/shing-yu/swiftcat-downloader-flutter （Windows, Mac, Linux, Android, iOS, Web）  
 或https://github.com/shing-yu/swiftcat-downloader （Windows, Mac, Linux）
 
 ## SL-Novel-Downloader(Qimao Edition)
-**星弦小说下载器（七猫版）**  
+**GUI-novel下载器（原星弦小说下载器七猫版）**  
 支持下载几乎所有七猫免费小说app/网站的小说，支持txt与epub格式，拥有极快的下载速度。  
 QQ： 外1群：149050832  外2群：667146297  Discord：https://discord.gg/TbxQxxT4ph  
 感谢贡献（赞助）者们对本项目的支持，你可以在[此处](https://github.com/shing-yu/7mao-novel-downloader/blob/main/CONTRIBUTORS.md)获取贡献和赞助者名单。  

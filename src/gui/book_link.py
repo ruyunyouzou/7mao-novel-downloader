@@ -9,7 +9,7 @@
 - 带参数：    "https://www.qimao.com/book/12345678" / "?id=12345678" / "?bookId=..."
 - 口令文本里嵌入的 ID
 
-番茄（解析出 ID 后需二次归一化，见 plugins.vendor.fanqie_reader.resolve_book_id）：
+番茄（解析出 ID 后需二次归一化，见 gui.fanqie_core.fanqie_reader.resolve_book_id）：
 - 书籍页：    "https://fanqienovel.com/page/{bookId}"
 - 章节页：    "https://fanqienovel.com/reader/{chapterId}"（章节 ID ≠ 书籍 ID）
 - 多域名：    fanqienovel.com / m. / www. / 任意 *.fanqienovel.com / 无 scheme
@@ -105,7 +105,7 @@ def extract_book_id(text: str) -> str:
     """从任意输入提取目标 ID；失败返回空串。
 
     番茄 reader 链接返回的是章节 ID，调用方需经
-    ``plugins.vendor.fanqie_reader.resolve_book_id`` 归一化为书籍 ID。
+    ``gui.fanqie_core.fanqie_reader.resolve_book_id`` 归一化为书籍 ID。
     """
     text = (text or "").strip()
     if not text:
@@ -117,7 +117,7 @@ def extract_book_id(text: str) -> str:
     short = _FANQIE_SHORT_LINK.search(text)
     if short:
         try:
-            from plugins.vendor.fanqie_reader import resolve_short_link
+            from gui.fanqie_core.fanqie_reader import resolve_short_link
             real = resolve_short_link(short.group(0))
             if real:
                 return real

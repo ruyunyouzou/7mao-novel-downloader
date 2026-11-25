@@ -17,7 +17,7 @@ def _search_by_source(keyword: str, tab: str = "0", page: int = 1,
                       source: str = "qimao") -> list:
     """按书源分发搜索：七猫关键词接口 / 番茄官方搜索接口。"""
     if source == "fanqie":
-        from plugins.vendor.fanqie_search import search_fanqie
+        from gui.fanqie_core.fanqie_search import search_fanqie
         return search_fanqie(keyword, page=page)
     return search_books(keyword, tab=tab, page=page)
 

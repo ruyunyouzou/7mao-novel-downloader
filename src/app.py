@@ -341,7 +341,7 @@ eula_date:
     @staticmethod
     def _print_usage():
         print("欢迎使用", end=" ")
-        print(yellow + "星弦小说下载器七猫版")
+        print(yellow + "GUI-novel下载器")
         print("""用户须知：
 此程序开源免费，如果您付费获取，请您立即举报商家。
 此程序开源部分使用AGPL-3.0许可证，详情到更多中查看。

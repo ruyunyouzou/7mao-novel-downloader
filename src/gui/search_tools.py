@@ -149,7 +149,7 @@ def _goto(win) -> None:
         title = extract_book_title(text)
         if title:
             try:
-                from plugins.vendor.fanqie_search import search_fanqie
+                from gui.fanqie_core.fanqie_search import search_fanqie
                 results = search_fanqie(title, page=1) or []
                 if results:
                     bid = str(results[0].get("id", "") or "").strip()

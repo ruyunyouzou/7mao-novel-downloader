@@ -28,7 +28,7 @@ LANGUAGES: List[Tuple[str, str]] = [
 # 每个 key 三语齐全；缺 key 时回退中文，再回退 key 本身。
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     LANG_ZH: {
-        "app.name": "七猫小说下载器",
+        "app.name": "GUI-novel下载器",
         "tray.show": "显示主窗口",
         "tray.quit": "退出程序",
         # 导航
@@ -60,6 +60,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "plugins.uninstall": "卸载",
         "plugins.empty": "未加载任何插件，将 .py 文件放入插件目录后刷新。",
         "plugins.builtin_no_uninstall": "这是内置插件，不可卸载。",
+        "plugins.core_builtin": "内置核心",
+        "plugins.core_no_disable": "核心内核不可禁用，否则双书源下载将失效。",
         "plugins.confirm_uninstall": "确定要卸载插件「{name}」吗？",
         "plugins.only_py": "请选择 .py 格式的插件文件。",
         "plugins.syntax_error": "插件语法错误，无法安装：\n{msg}",
@@ -379,7 +381,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "正在检查…",
         "set.protocol_hint": "检测下载依赖的搜索与目录接口是否仍可用，判断上游协议是否已变更。",
         "set.about_text": (
-            "七猫小说下载器 · GUI 版\n"
+            "GUI-novel下载器\n"
             "基于 shing-yu/7mao-novel-downloader（AGPL-3.0）\n"
             "新增：深色界面 / 插件机制 / 书架 / 阅读器 / 任务队列 / 历史记录 / 备份恢复"
         ),
@@ -776,7 +778,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "cb.load_failed": "加载书库失败",
     },
     LANG_EN: {
-        "app.name": "Qimao Novel Downloader",
+        "app.name": "GUI-novel Downloader",
         "tray.show": "Show window",
         "tray.quit": "Quit",
         "nav.search": "Search",
@@ -807,6 +809,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "plugins.uninstall": "Uninstall",
         "plugins.empty": "No plugins loaded. Drop a .py file into the plugin folder and refresh.",
         "plugins.builtin_no_uninstall": "This is a built-in plugin and cannot be uninstalled.",
+        "plugins.core_builtin": "Built-in core",
+        "plugins.core_no_disable": "Core cannot be disabled, or dual-source downloading will stop working.",
         "plugins.confirm_uninstall": "Uninstall plugin \"{name}\"?",
         "plugins.only_py": "Please select a .py plugin file.",
         "plugins.syntax_error": "Plugin syntax error, cannot install:\n{msg}",
@@ -1123,7 +1127,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "Checking…",
         "set.protocol_hint": "Test whether the search and catalog APIs are still reachable, to detect upstream protocol changes.",
         "set.about_text": (
-            "Qimao Novel Downloader · GUI Edition\n"
+            "GUI-novel Downloader\n"
             "Based on shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
             "Added: dark UI / plugin system / bookshelf / reader / task queue / history / backup"
         ),
@@ -1515,7 +1519,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "cb.load_failed": "Failed to load library",
     },
     LANG_RU: {
-        "app.name": "Загрузчик романов Qimao",
+        "app.name": "GUI-novel Загрузчик",
         "tray.show": "Показать окно",
         "tray.quit": "Выйти",
         "nav.search": "Поиск",
@@ -1546,6 +1550,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "plugins.uninstall": "Удалить",
         "plugins.empty": "Плагины не загружены. Поместите .py файл в папку плагинов и обновите.",
         "plugins.builtin_no_uninstall": "Это встроенный плагин, его нельзя удалить.",
+        "plugins.core_builtin": "Встроенное ядро",
+        "plugins.core_no_disable": "Ядро нельзя отключить — иначе загрузка из двух источников перестанет работать.",
         "plugins.confirm_uninstall": "Удалить плагин «{name}»?",
         "plugins.only_py": "Выберите файл плагина .py.",
         "plugins.syntax_error": "Синтаксическая ошибка плагина:\n{msg}",
@@ -1862,7 +1868,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "Проверка…",
         "set.protocol_hint": "Проверка доступности API поиска и каталога для обнаружения изменений протокола.",
         "set.about_text": (
-            "Загрузчик романов Qimao · GUI версия\n"
+            "GUI-novel Загрузчик\n"
             "На базе shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
             "Добавлено: тёмная тема / плагины / книжная полка / ридер / очередь / история / резерв"
         ),

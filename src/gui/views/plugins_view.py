@@ -56,6 +56,7 @@ _PLUGIN_META: Dict[str, Tuple[str, str, str]] = {
     "Calibre 书库": ("extension", "fontaine", "📚"),
     "微信读书接入": ("extension", "natlan", "💬"),
     "七猫真实下载内核": ("core", "mondstadt", "🐱"),
+    "番茄真实下载内核": ("core", "snezhnaya", "🍅"),
     "使用说明": ("doc", "liyue", "📖"),
     "功能说明": ("doc", "inazuma", "📋"),
     "背景美化": ("beauty", "sumeru", "🌙"),
@@ -188,6 +189,8 @@ class PluginCard(QFrame):
         self.enabled = enabled
         self.builtin = builtin
         self.source_path = source_path
+        # 核心内核（七猫 / 番茄）为内置核心，不允许禁用，否则双书源下载失效
+        self.core_builtin = bool(category == "core" and builtin)
         self._accent = "#9b8ce8"
 
         lay = QHBoxLayout(self)
@@ -209,6 +212,9 @@ class PluginCard(QFrame):
         title_row.addWidget(self.name_lbl)
         self.ver_lbl = _lbl(f"v{meta.version}", "", 10)
         title_row.addWidget(self.ver_lbl)
+        self.core_badge = _lbl(tr("plugins.core_builtin"), "", 10, bold=True)
+        self.core_badge.setVisible(self.core_builtin)
+        title_row.addWidget(self.core_badge)
         title_row.addStretch()
         info.addLayout(title_row)
 
@@ -227,6 +233,9 @@ class PluginCard(QFrame):
         self.toggle_btn.setObjectName("plugToggle")
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
         self.toggle_btn.setFixedWidth(76)
+        if self.core_builtin:
+            self.toggle_btn.setEnabled(False)
+            self.toggle_btn.setToolTip(tr("plugins.core_no_disable"))
         ops.addWidget(self.toggle_btn, 0, Qt.AlignRight)
         self.uninstall_btn = QPushButton(tr("plugins.uninstall"))
         self.uninstall_btn.setObjectName("plugUninstall")
@@ -261,6 +270,9 @@ class PluginCard(QFrame):
         self.ver_lbl.setStyleSheet(
             f"color:{p['badge_text']};font-size:10px;background-color:{p['badge_bg']};"
             "border-radius:8px;padding:1px 7px;")
+        self.core_badge.setStyleSheet(
+            f"color:{p['accent']};font-size:10px;font-weight:bold;"
+            f"background-color:{p['badge_bg']};border-radius:8px;padding:1px 7px;")
         self.author_lbl.setStyleSheet(
             f"color:{p['dim']};font-size:10px;background:transparent;border:none;padding:0;")
         self.desc_lbl.setStyleSheet(
@@ -530,6 +542,9 @@ class PluginsView(QWidget):
             self.apply_colors()
 
     def _toggle_plugin(self, card: PluginCard) -> None:
+        if card.core_builtin:
+            QMessageBox.information(self, tr("plugins.title"), tr("plugins.core_no_disable"))
+            return
         card.enabled = not card.enabled
         m = self._enabled_map()
         m[card.meta.name] = card.enabled

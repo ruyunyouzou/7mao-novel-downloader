@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         _set_qt_language(i18n_manager().current)
         i18n_manager().changed.connect(_set_qt_language)
 
-        self.setWindowTitle(f"{tr('app.name')} · GUI")
+        self.setWindowTitle(tr("app.name"))
         self.resize(1180, 760)
         # 窗口图标（与托盘、任务栏一致）
         from .resource_path import resource_path
@@ -1792,7 +1792,7 @@ class MainWindow(QMainWindow):
     def _retranslate(self, code: str = "") -> None:
         """语言切换后刷新主窗口可翻译文案（由 i18n 信号触发）。"""
         # 窗口与应用名
-        self.setWindowTitle(f"{tr('app.name')} · GUI")
+        self.setWindowTitle(tr("app.name"))
         self.tabs.set_app_name(tr("app.name"))
         for i, (key, icon) in enumerate(self._nav_tab_specs):
             self.tabs.setTabText(i, f"{icon}  {tr(key)}")
@@ -2303,8 +2303,8 @@ class MainWindow(QMainWindow):
             from .book_link import detect_source
             source = detect_source(str(book_id))
         if source == "fanqie":
-            from plugins.vendor.fanqie_upstream import RequestHandler
-            from plugins.vendor.fanqie_reader import resolve_book_id
+            from gui.fanqie_core.fanqie_upstream import RequestHandler
+            from gui.fanqie_core.fanqie_reader import resolve_book_id
             # 番茄 reader 链接里的 ID 是章节 ID，直接拼 /page/{id} 会 404；
             # 这里统一归一化为真实 bookId，保证章节链接/口令/纯 ID 全通过。
             real_id = resolve_book_id(str(book_id))
@@ -2831,7 +2831,7 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         QMessageBox.about(
             self, "关于",
-            "七猫小说下载器 · GUI 版\n\n"
+            "GUI-novel下载器\n\n"
             "基于 shing-yu/7mao-novel-downloader（AGPL-3.0）\n\n"
             "新增：深色界面、插件扩展机制、书架、任务队列、历史记录。\n"
             "开源版本身不含章节下载内核，可通过插件提供。",

@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-title 星隅小说下载器 - Windows 一键打包
+title GUI-novel下载器 - Windows 一键打包
 echo ============================================================
-echo   星隅小说下载器（七猫版）GUI  -  Windows 一键打包
+echo   GUI-novel下载器（七猫版）GUI  -  Windows 一键打包
 echo ============================================================
 echo.
 cd /d "%~dp0"
@@ -34,15 +34,15 @@ if errorlevel 1 (
 
 REM ---- 4. 生成绿色版压缩包 ----
 echo [3/4] 打包完成，整理输出...
-if exist "星隅小说下载器_Windows.zip" del "星隅小说下载器_Windows.zip"
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\星隅小说下载器\*' -DestinationPath '星隅小说下载器_Windows.zip' -Force"
+if exist "GUI-novel下载器_Windows.zip" del "GUI-novel下载器_Windows.zip"
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\GUI-novel下载器\*' -DestinationPath 'GUI-novel下载器_Windows.zip' -Force"
 
 echo [4/4] 完成！
 echo.
 echo ============================================================
 echo   打包成功！
-echo   可执行文件: dist\星隅小说下载器\星隅小说下载器.exe
-echo   绿色版压缩包: 星隅小说下载器_Windows.zip
+echo   可执行文件: dist\GUI-novel下载器\GUI-novel下载器.exe
+echo   绿色版压缩包: GUI-novel下载器_Windows.zip
 echo   双击 exe 即可运行，无需安装 Python。
 echo ============================================================
 echo.

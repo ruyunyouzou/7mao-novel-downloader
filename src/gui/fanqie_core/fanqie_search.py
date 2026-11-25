@@ -7,7 +7,7 @@
 
 搜索专用字体映射（SEARCH_MAP）与正文映射（FONT_MAP）不同，切勿混用：
   - 搜索/列表：fanqie_search_upstream/searchmap.py
-  - 正文：fanqie_reader.FONT_MAP
+  - 正文：gui.fanqie_core.fanqie_reader.FONT_MAP
 
 输出字典字段与 gui.api.search_books 对齐，便于搜索页通用渲染：
   id / title / author / words_num / score / cover / tags / intro /

@@ -33,7 +33,7 @@ def load_manual() -> str:
                 return f.read()
         except OSError:
             pass
-    return """# 星隅小说下载器使用说明
+    return """# GUI-novel下载器使用说明
 
 内置说明书文件未找到。源码运行时请确认项目根目录存在 `使用说明书.md`；
 打包运行请确认打包配置已收集该文件。

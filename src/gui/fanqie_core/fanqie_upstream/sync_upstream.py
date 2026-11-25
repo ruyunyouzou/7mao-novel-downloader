@@ -3,7 +3,7 @@
 """一键同步 xiaocse/Fanqie-novel-Downloader 上游实现。
 
 用法：
-    python3 src/plugins/vendor/fanqie_upstream/sync_upstream.py
+    python3 src/gui/fanqie_core/fanqie_upstream/sync_upstream.py
 
 行为：
     1. 查询上游 main 分支最新 commit；
@@ -88,7 +88,7 @@ def main() -> int:
         f"- 最近同步：{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n"
         "## 同步方式\n\n"
         "```bash\n"
-        "python3 src/plugins/vendor/fanqie_upstream/sync_upstream.py\n"
+        "python3 src/gui/fanqie_core/fanqie_upstream/sync_upstream.py\n"
         "```\n\n"
         "脚本只覆盖 `request_handler.py` / `config.py`，适配层 `__init__.py` "
         "和 `../fanqie_downloader_plugin.py` 不会被修改。\n\n"

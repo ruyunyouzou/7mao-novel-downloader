@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """番茄小说真实下载内核插件。
 
-上游实现：xiaocse/Fanqie-novel-Downloader（MIT，commit 见 vendor 目录 UPSTREAM_INFO.md）。
-上游核心源码原样保存在 plugins/vendor/fanqie_upstream/，本文件只是薄适配层：
-把上游的「书籍信息 / 目录 / 正文」包装成本项目的 BookSource，
+内置核心内核：xiaocse/Fanqie-novel-Downloader（MIT，commit 见 UPSTREAM_INFO.md）。
+番茄内核已提升为 GUI 层一等核心（src/gui/fanqie_core/），与 qimao_core.py 平级；
+本文件只保留插件薄适配层：把核心的「书籍信息 / 目录 / 正文」包装成本项目的 BookSource，
 再交给 qimao_core.build_txt 复用全部导出能力（TXT / 分章 / EPUB、
 章节范围、文件名模板、题图尾图、字体颜色、对话着色）。
 
 上游更新时运行：
-    python3 src/plugins/vendor/fanqie_upstream/sync_upstream.py
+    python3 src/gui/fanqie_core/fanqie_upstream/sync_upstream.py
 通常不需要改动本文件。
 """
 
@@ -22,7 +22,7 @@ from gui.plugin.base import (
     Plugin, PluginMeta, DownloaderBase, DownloadResult, DownloadCancelled,
 )
 from gui.qimao_core import BookSource, build_txt
-from plugins.vendor.fanqie_upstream import RequestHandler
+from gui.fanqie_core.fanqie_upstream import RequestHandler
 
 
 class FanqieBookSource(BookSource):
@@ -64,7 +64,7 @@ class FanqieBookSource(BookSource):
         默认走番茄官网读者页 + 字体解密（上游第三方 API 域名已失效）；
         设置 fanqie_text_backend=upstream 可切回上游原实现。
         """
-        from plugins.vendor.fanqie_reader import decode_chapter
+        from gui.fanqie_core.fanqie_reader import decode_chapter
 
         backend = "official"
         try:

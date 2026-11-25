@@ -167,7 +167,7 @@ def run_update_mode(argv: List[str]) -> None:
     src = arg("--src")
     dst = arg("--dst")
     pid = int(arg("--pid", "0") or 0)
-    app_exe = arg("--exe", "星隅小说下载器.exe")
+    app_exe = arg("--exe", "GUI-novel下载器.exe")
 
     _log("=" * 56)
     _log("更新模式启动")
