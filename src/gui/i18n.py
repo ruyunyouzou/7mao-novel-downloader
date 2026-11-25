@@ -215,6 +215,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.chapter_color": "章名",
         "dlg.volume_color": "卷名",
         "dlg.color_title": "选择标题颜色",
+        "dlg.epub_hint": "以下选项仅对本次下载生效，不会修改全局设置；非 EPUB 格式自动忽略。",
         # 设置页
         "set.download": "下载与保存",
         "set.default_dir": "默认保存目录",
@@ -869,6 +870,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.chapter_color": "Chapter",
         "dlg.volume_color": "Volume",
         "dlg.color_title": "Choose title color",
+        "dlg.epub_hint": "These options apply only to this download; global settings are unchanged. Ignored for non-EPUB formats.",
         "set.download": "Download & Save",
         "set.default_dir": "Default save folder",
         "set.choose_dir": "Choose folder...",
@@ -1517,6 +1519,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.chapter_color": "Глава",
         "dlg.volume_color": "Том",
         "dlg.color_title": "Выберите цвет заголовка",
+        "dlg.epub_hint": "Эти параметры действуют только для этой загрузки и не меняют глобальные настройки. Для не-EPUB форматов игнорируются.",
         "set.download": "Загрузка и сохранение",
         "set.default_dir": "Папка сохранения по умолчанию",
         "set.choose_dir": "Выбрать папку…",

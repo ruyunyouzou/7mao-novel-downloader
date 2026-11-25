@@ -2350,6 +2350,14 @@ class MainWindow(QMainWindow):
                 "epub_chapter_color", CHAPTER_TITLE_COLOR) or CHAPTER_TITLE_COLOR),
             volume_color=str(self.store.settings_get(
                 "epub_volume_color", VOLUME_TITLE_COLOR) or VOLUME_TITLE_COLOR),
+            colorize_dialogue=bool(self.store.settings_get("epub_colorize_dialogue", True)),
+            smart_art=bool(self.store.settings_get("epub_smart_art", True)),
+            chapter_hero=bool(self.store.settings_get("epub_chapter_hero", False)),
+            hero_mode=str(self.store.settings_get("epub_hero_mode", "rotate") or "rotate"),
+            hero_fixed=str(self.store.settings_get("epub_hero_fixed", "") or ""),
+            chapter_tail=bool(self.store.settings_get("epub_chapter_tail", False)),
+            tail_mode=str(self.store.settings_get("epub_tail_mode", "rotate") or "rotate"),
+            tail_fixed=str(self.store.settings_get("epub_tail_fixed", "") or ""),
         )
         if dlg.exec() != QDialog.Accepted:
             return

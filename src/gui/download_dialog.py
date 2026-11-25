@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""下载选项对话框：选择章节范围、格式，并预览输出文件名。"""
+"""下载选项对话框：选择章节范围、格式，并预览输出文件名。
+
+EPUB 排版选项只影响本次下载（临时覆盖全局设置），不修改设置页的持久化值。
+"""
 
 from __future__ import annotations
 
@@ -7,8 +10,9 @@ from typing import Any, Dict
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QSpinBox, QCheckBox, QLineEdit, QColorDialog, QGroupBox, QMenu,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QSpinBox, QCheckBox, QLineEdit, QColorDialog, QGroupBox,
+    QScrollArea, QFrame,
 )
 
 from .qimao_core import (render_filename, font_combo_items,
@@ -19,25 +23,42 @@ from .i18n import tr
 
 
 class DownloadDialog(QDialog):
-    """让用户确认下载范围与输出文件名。
+    """确认下载范围、文件名，并临时设置 EPUB 排版参数。
 
-    接受 book 字典与全局默认（格式、模板）， confirms 后通过 options() 取参数。
+    接受 book 字典与全局默认（格式、模板、EPUB 各项），确认后通过
+    options() 取参数；这些参数会透传给下载插件/内核，只影响本次下载。
     """
 
     def __init__(self, book: Dict[str, Any], fmt: str = "txt",
                  template: str = "", parent=None,
                  chapter_font: str = "", volume_font: str = "",
-                 chapter_color: str = "", volume_color: str = "") -> None:
+                 chapter_color: str = "", volume_color: str = "",
+                 colorize_dialogue: bool = True, smart_art: bool = True,
+                 chapter_hero: bool = False, hero_mode: str = "rotate",
+                 hero_fixed: str = "", chapter_tail: bool = False,
+                 tail_mode: str = "rotate", tail_fixed: str = "") -> None:
         super().__init__(parent)
         self.book = book
         self.setWindowTitle(tr("dlg.title"))
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(500)
+
         # EPUB 排版默认值（来自全局设置，可在本次下载临时改）
         self._default_chapter_font = chapter_font or "builtin:mashan"
         self._default_volume_font = volume_font or "builtin:zhimang"
         self._default_chapter_color = chapter_color or CHAPTER_TITLE_COLOR
         self._default_volume_color = volume_color or VOLUME_TITLE_COLOR
-        lay = QVBoxLayout(self)
+        self.dlg_chapter_color = self._default_chapter_color
+        self.dlg_volume_color = self._default_volume_color
+
+        # 内容较多：整体放进滚动区，保证底部按钮始终可见
+        outer = QVBoxLayout(self)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
         title = book.get("title", "")
         lay.addWidget(QLabel(tr("dlg.book", title=title)))
@@ -76,7 +97,7 @@ class DownloadDialog(QDialog):
         self.range_check.toggled.connect(self.start_spin.setEnabled)
         self.range_check.toggled.connect(self.end_spin.setEnabled)
 
-        # 文件名模板（可在此临时修改）
+        # 文件名模板
         row_tpl = QHBoxLayout()
         row_tpl.addWidget(QLabel(tr("dlg.filename")))
         self.template_edit = QLineEdit(template or "{title}")
@@ -84,9 +105,14 @@ class DownloadDialog(QDialog):
         lay.addLayout(row_tpl)
         lay.addWidget(QLabel(tr("dlg.placeholders")))
 
-        # ===== EPUB 排版选项（仅 EPUB 生效，只影响书本身）=====
+        # ===== EPUB 排版选项（仅 EPUB 生效，只影响本次下载）=====
         epub_group = QGroupBox(tr("dlg.epub_group"))
         epub_lay = QVBoxLayout(epub_group)
+        hint = QLabel(tr("dlg.epub_hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        epub_lay.addWidget(hint)
+
         # 章名字体
         row_ch_font = QHBoxLayout()
         row_ch_font.addWidget(QLabel(tr("dlg.chapter_font")))
@@ -98,6 +124,7 @@ class DownloadDialog(QDialog):
             self.dlg_chapter_font.setCurrentIndex(idx)
         row_ch_font.addWidget(self.dlg_chapter_font, 1)
         epub_lay.addLayout(row_ch_font)
+
         # 卷名字体
         row_vol_font = QHBoxLayout()
         row_vol_font.addWidget(QLabel(tr("dlg.volume_font")))
@@ -110,19 +137,82 @@ class DownloadDialog(QDialog):
             self.dlg_volume_font.setCurrentIndex(idx)
         row_vol_font.addWidget(self.dlg_volume_font, 1)
         epub_lay.addLayout(row_vol_font)
-        # 颜色
-        row_color = QHBoxLayout()
-        row_color.addWidget(QLabel(tr("dlg.title_color")))
-        self.dlg_chapter_color = self._default_chapter_color
-        self.dlg_volume_color = self._default_volume_color
-        self.btn_chapter_color = QPushButton()
-        self.btn_volume_color = QPushButton()
-        self.btn_chapter_color.clicked.connect(lambda: self._pick_color("chapter"))
-        self.btn_volume_color.clicked.connect(lambda: self._pick_color("volume"))
-        row_color.addWidget(self.btn_chapter_color, 1)
-        row_color.addWidget(self.btn_volume_color, 1)
-        epub_lay.addLayout(row_color)
-        self._refresh_color_buttons()
+
+        # 章名 / 卷名颜色：改为与字体一致的下拉框（预设色块 + 自定义）
+        row_ch_color = QHBoxLayout()
+        row_ch_color.addWidget(QLabel(tr("set.chapter_color")))
+        self.dlg_chapter_color_combo = self._build_color_combo(
+            self._default_chapter_color)
+        self.dlg_chapter_color_combo.currentIndexChanged.connect(
+            lambda _: self._on_color_changed("chapter"))
+        row_ch_color.addWidget(self.dlg_chapter_color_combo, 1)
+        epub_lay.addLayout(row_ch_color)
+
+        row_vol_color = QHBoxLayout()
+        row_vol_color.addWidget(QLabel(tr("set.volume_color")))
+        self.dlg_volume_color_combo = self._build_color_combo(
+            self._default_volume_color)
+        self.dlg_volume_color_combo.currentIndexChanged.connect(
+            lambda _: self._on_color_changed("volume"))
+        row_vol_color.addWidget(self.dlg_volume_color_combo, 1)
+        epub_lay.addLayout(row_vol_color)
+
+        # 人物对话彩色高亮
+        self.colorize_check = QCheckBox(tr("set.epub_colorize"))
+        self.colorize_check.setChecked(bool(colorize_dialogue))
+        self.colorize_check.setToolTip(tr("set.epub_colorize_tip"))
+        epub_lay.addWidget(self.colorize_check)
+
+        # 智能选题预设
+        self.smart_art_check = QCheckBox(tr("set.epub_smart_art"))
+        self.smart_art_check.setChecked(bool(smart_art))
+        self.smart_art_check.setToolTip(tr("set.epub_smart_art_tip"))
+        epub_lay.addWidget(self.smart_art_check)
+        smart_hint = QLabel(tr("set.epub_smart_art_hint"))
+        smart_hint.setWordWrap(True)
+        smart_hint.setStyleSheet("color: #888;")
+        epub_lay.addWidget(smart_hint)
+
+        # 章首题图（原神祈愿立绘）
+        self.hero_check = QCheckBox(tr("set.epub_hero"))
+        self.hero_check.setChecked(bool(chapter_hero))
+        self.hero_check.setToolTip(tr("set.epub_hero_tip"))
+        self.hero_check.toggled.connect(self._sync_hero_ui)
+        epub_lay.addWidget(self.hero_check)
+        row_hero = QHBoxLayout()
+        row_hero.addWidget(QLabel(tr("set.epub_hero_mode")))
+        self.hero_mode_combo = QComboBox()
+        self.hero_mode_combo.addItem(tr("set.epub_hero_rotate"), "rotate")
+        self.hero_mode_combo.addItem(tr("set.epub_hero_fixed"), "fixed")
+        mi = self.hero_mode_combo.findData(str(hero_mode or "rotate"))
+        self.hero_mode_combo.setCurrentIndex(max(0, mi))
+        self.hero_fixed_combo = self._build_fixed_combo("genshin", hero_fixed)
+        self.hero_mode_combo.currentIndexChanged.connect(self._sync_hero_ui)
+        row_hero.addWidget(self.hero_mode_combo)
+        row_hero.addWidget(self.hero_fixed_combo, 1)
+        epub_lay.addLayout(row_hero)
+
+        # 章末尾图（原神地理志风景）
+        self.tail_check = QCheckBox(tr("set.epub_tail"))
+        self.tail_check.setChecked(bool(chapter_tail))
+        self.tail_check.setToolTip(tr("set.epub_tail_tip"))
+        self.tail_check.toggled.connect(self._sync_tail_ui)
+        epub_lay.addWidget(self.tail_check)
+        row_tail = QHBoxLayout()
+        row_tail.addWidget(QLabel(tr("set.epub_tail_mode")))
+        self.tail_mode_combo = QComboBox()
+        self.tail_mode_combo.addItem(tr("set.epub_tail_rotate"), "rotate")
+        self.tail_mode_combo.addItem(tr("set.epub_tail_fixed"), "fixed")
+        ti = self.tail_mode_combo.findData(str(tail_mode or "rotate"))
+        self.tail_mode_combo.setCurrentIndex(max(0, ti))
+        self.tail_fixed_combo = self._build_fixed_combo("genshin_geo", tail_fixed)
+        self.tail_mode_combo.currentIndexChanged.connect(self._sync_tail_ui)
+        row_tail.addWidget(self.tail_mode_combo)
+        row_tail.addWidget(self.tail_fixed_combo, 1)
+        epub_lay.addLayout(row_tail)
+
+        self._sync_hero_ui()
+        self._sync_tail_ui()
         lay.addWidget(epub_group)
 
         # 预览
@@ -146,45 +236,84 @@ class DownloadDialog(QDialog):
         btns.addStretch()
         btns.addWidget(cancel)
         btns.addWidget(ok)
-        lay.addLayout(btns)
+        outer.addLayout(btns)
 
-    def _refresh_color_buttons(self) -> None:
-        """把当前颜色显示在按钮上（色块图标 + 标签）；渐变显示图标而非色值文本。"""
-        for btn, color, label in (
-            (self.btn_chapter_color, self.dlg_chapter_color, tr("dlg.chapter_color")),
-            (self.btn_volume_color, self.dlg_volume_color, tr("dlg.volume_color")),
-        ):
-            btn.setIcon(color_swatch_icon(color))
-            btn.setText(f" {label}")
-            btn.setStyleSheet("padding: 3px 8px;")
+    # ---------- 标题颜色下拉 ----------
+    @staticmethod
+    def _build_color_combo(value: str) -> QComboBox:
+        """构建颜色下拉：预设色块 + 自定义项，并回填当前值。"""
+        combo = QComboBox()
+        for preset, i18n_key in TITLE_COLOR_PRESETS:
+            combo.addItem(color_swatch_icon(preset), tr(i18n_key), preset)
+        combo.addItem(tr("set.color_custom"), "__custom__")
+        DownloadDialog._set_color_combo(combo, value)
+        return combo
 
-    def _pick_color(self, which: str) -> None:
-        """弹出颜色菜单：预设纯色/渐变 + 自定义取色器。"""
-        menu = QMenu(self)
-        current = self.dlg_chapter_color if which == "chapter" else self.dlg_volume_color
-        for value, i18n_key in TITLE_COLOR_PRESETS:
-            action = menu.addAction(color_swatch_icon(value), tr(i18n_key))
-            action.triggered.connect(
-                lambda _=False, v=value: self._apply_color(which, v))
-        menu.addSeparator()
-        custom = menu.addAction(tr("set.color_custom"))
-        custom.triggered.connect(lambda _=False: self._pick_custom_color(which, current))
-        menu.exec(self.sender().mapToGlobal(self.sender().rect().center()))
+    @staticmethod
+    def _set_color_combo(combo: QComboBox, value: str) -> None:
+        """回填颜色下拉；预设外的值动态插一项（放在“自定义”之前）。"""
+        idx = combo.findData(value)
+        if idx < 0:
+            combo.insertItem(combo.count() - 1,
+                             color_swatch_icon(value), value, value)
+            idx = combo.findData(value)
+        combo.blockSignals(True)
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
 
-    def _pick_custom_color(self, which: str, fallback: str) -> None:
-        """自定义取色器（仅纯色）；渐变请用预设。"""
-        base = fallback if not fallback.startswith("linear:") else "#c62828"
-        c = QColorDialog.getColor(QColor(base), self, tr("dlg.color_title"))
-        if c.isValid():
-            self._apply_color(which, c.name())
-
-    def _apply_color(self, which: str, value: str) -> None:
+    def _on_color_changed(self, which: str) -> None:
+        """颜色下拉变更；选“自定义”则弹取色器。"""
+        if which == "chapter":
+            combo = self.dlg_chapter_color_combo
+            fallback = self._default_chapter_color
+        else:
+            combo = self.dlg_volume_color_combo
+            fallback = self._default_volume_color
+        value = str(combo.currentData() or "")
+        if value == "__custom__":
+            base = fallback if not fallback.startswith("linear:") else "#c62828"
+            c = QColorDialog.getColor(QColor(base), self, tr("set.color_pick_title"))
+            if not c.isValid():
+                current = (self.dlg_chapter_color if which == "chapter"
+                           else self.dlg_volume_color)
+                self._set_color_combo(combo, current)
+                return
+            value = c.name()
+            self._set_color_combo(combo, value)
         if which == "chapter":
             self.dlg_chapter_color = value
         else:
             self.dlg_volume_color = value
-        self._refresh_color_buttons()
 
+    # ---------- 固定题图 / 尾图下拉 ----------
+    @staticmethod
+    def _build_fixed_combo(library: str, selected: str) -> QComboBox:
+        combo = QComboBox()
+        try:
+            from . import chapter_hero as _hero
+            for item in _hero.available_heroes(library):
+                combo.addItem(item["zh"], item["key"])
+        except Exception:  # noqa: BLE001 - 图库缺失时留空下拉，不影响下载
+            pass
+        idx = combo.findData(str(selected or ""))
+        combo.setCurrentIndex(max(0, idx))
+        return combo
+
+    def _sync_hero_ui(self) -> None:
+        """题图开启且方式为“固定一张”时，才启用固定图下拉。"""
+        on = self.hero_check.isChecked()
+        fixed = self.hero_mode_combo.currentData() == "fixed"
+        self.hero_mode_combo.setEnabled(on)
+        self.hero_fixed_combo.setEnabled(on and fixed)
+
+    def _sync_tail_ui(self) -> None:
+        """尾图开启且方式为“固定一张”时，才启用固定图下拉。"""
+        on = self.tail_check.isChecked()
+        fixed = self.tail_mode_combo.currentData() == "fixed"
+        self.tail_mode_combo.setEnabled(on)
+        self.tail_fixed_combo.setEnabled(on and fixed)
+
+    # ---------- 预览与输出 ----------
     def _update_preview(self) -> None:
         start = self.start_spin.value() if self.range_check.isChecked() else 0
         end = self.end_spin.value() if self.range_check.isChecked() else 0
@@ -202,18 +331,26 @@ class DownloadDialog(QDialog):
             self.preview.setText(tr("dlg.preview_file", name=name, ext=ext))
 
     def options(self) -> Dict[str, Any]:
-        """返回下载选项：range/template + EPUB 排版（字体/颜色）。"""
+        """返回本次下载的全部选项；EPUB 排版参数会透传给内核。"""
         scoped = self.range_check.isChecked()
         vol = str(self.dlg_volume_font.currentData() or "__auto__")
         return {
             "start_chapter": self.start_spin.value() if scoped else 0,
             "end_chapter": self.end_spin.value() if scoped else 0,
             "filename_template": self.template_edit.text().strip(),
-            # 仅 EPUB 生效；非 EPUB 格式下载核心会忽略这些参数
+            # 以下仅 EPUB 生效；非 EPUB 格式下载核心会忽略这些参数
             "chapter_font": str(self.dlg_chapter_font.currentData() or ""),
             "volume_font": "" if vol == "__auto__" else vol,
             "chapter_color": self.dlg_chapter_color,
             "volume_color": self.dlg_volume_color,
+            "colorize_dialogue": self.colorize_check.isChecked(),
+            "smart_art": self.smart_art_check.isChecked(),
+            "chapter_hero": self.hero_check.isChecked(),
+            "hero_mode": str(self.hero_mode_combo.currentData() or "rotate"),
+            "hero_fixed": str(self.hero_fixed_combo.currentData() or ""),
+            "chapter_tail": self.tail_check.isChecked(),
+            "tail_mode": str(self.tail_mode_combo.currentData() or "rotate"),
+            "tail_fixed": str(self.tail_fixed_combo.currentData() or ""),
         }
 
     def format(self) -> str:
