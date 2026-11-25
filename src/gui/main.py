@@ -27,12 +27,27 @@ def main() -> None:
     pm = PluginManager(plugin_dir(), app=None)
     pm.load_all()
 
+    # 单实例保护：若已有实例在运行，请求其激活窗口后本进程直接退出，
+    # 避免反复双击 exe 累积多个常驻进程、锁定安装目录导致旧版本无法删除。
+    from .single_instance import SingleInstance
+    guard = SingleInstance()
+    if not guard.acquire():
+        # 已有实例；activate 请求已在 acquire 内发出，本进程无需创建窗口
+        sys.exit(0)
+
     window = MainWindow(pm)
+    # 第二个实例请求激活时，恢复并显示本窗口
+    guard.activated.connect(window._restore_from_tray)
     window.show()
     # 窗口首次显示淡入（动效关闭时为 no-op）
     from . import motion
     motion.fade_in_window(window)
-    sys.exit(app.exec())
+    try:
+        code = app.exec()
+    finally:
+        # 无论正常退出还是异常，都释放单实例 server，避免僵尸连接
+        guard.release()
+    sys.exit(code)
 
 
 if __name__ == "__main__":

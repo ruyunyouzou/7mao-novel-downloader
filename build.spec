@@ -45,6 +45,7 @@ hiddenimports = [
     "fontTools", "fontTools.ttLib", "brotli",
     "gmssl", "gmssl.sm3", "gmssl.func", "Cryptodome",
     "PySide6.QtMultimedia", "PySide6.QtTextToSpeech", "PySide6.QtNetwork",
+    "PySide6.QtNetwork.QLocalServer", "PySide6.QtNetwork.QLocalSocket",  # 单实例保护
 ]
 
 # 递归收集 gui / SLQimao / plugins 的所有子模块（views、plugin、vendor 番茄内核与搜索等），

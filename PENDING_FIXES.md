@@ -7,7 +7,7 @@
 ## 当前状态
 
 - **基线版本**：v5.0.0（已发布，2026-11-25，Windows 安装包已上传 GitHub Release）
-- **已修未发版**：**3 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
+- **已修未发版**：**4 / 10**（新周期从 v5.0.0 之后重新计数；用户要求先不发版）
 - **下一个待发布版本**：v5.0.1（满 10 条或用户明确发版指令才启用）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -68,6 +68,8 @@
 | 26 | **（用户追加项，不计入本轮 10 条）** 全项目全面体检：覆盖 93 文件 / 3.3 万行 / 全部功能 / 全部代码 / 全部接口。①静态检查全绿——compileall 通过、pyflakes 0 告警、三语 725/725/725 对齐无空值、90 模块逐个导入（仅上游 `request_handler.py` 直导报错属预期，须经隔离包装加载）、隔离包装正常、`collect_submodules` 19 模块含 10 番茄子模块。②GUI 实测——主窗口构造 OK、14 页全切换 OK、深浅主题切换 OK、三语切换 OK。③插件内核——8 插件全加载 0 错误、内核自动选择矩阵正确、`DownloadCancelled` 真源可导入。④接口实测（真实网络）——七猫搜索 11 本/详情/目录 712 章/TXT 19126 字节/EPUB 有效；番茄搜索 10 本/详情/目录 276 章/正文解密可读/TXT 26190 字节/EPUB 有效/章节 ID 归一化正确/追更 276/2→新增 274。⑤数据存储——书架/历史/书签/追更四类 source 透传全验证正确。⑥辅助——CSV 导出、build_stats 九项指标、normalize_notebook_book 嵌套提升、协议自检双路均衡、filedialogs 原生+目录记忆、sync_upstream 就位、取消链路 raise+2 捕获+2 内核 re-raise 严谨。⑦边界——空/坏输入、空结果、超页码均不崩。⑧收尾——清理 6 core 转储（529MB）+175 .pyc+12 __pycache__、清除测试脏数据保留真实数据、回归 4/4 通过。**结论：无遗留缺陷，版本仍 4.1.6，未打 tag、未上传、未发版** | `（全项目体检，无功能改动）` | 2026-11-25 |
 
 | 27 | **（用户追加项，不计入本轮 10 条）** 修复启动时的终端黑框 / 两个一闪而过的空白框：用户从桌面快捷方式打开软件、且本机装了 Calibre，启动瞬间先弹黑框与两个空白框再进主界面。根因是 Windows 下 `subprocess` 调控制台程序未传 `CREATE_NO_WINDOW`——启动时 `CalibreView.__init__` 同步 `_detect()` → `detect_calibre()` → `subprocess.run([calibredb, "--version"])` 必然弹控制台窗口。修复：`calibre_core.py` 新增 `_no_window_flags()`（Windows 返回 `CREATE_NO_WINDOW=0x08000000`，带硬编码兜底；非 Windows 返回 0），应用到全部 3 处子进程调用（--version / `_run` / `open_editor`）；`epub_check.py` 的 java epubcheck 调用同样加 `creationflags`。主程序 `build.spec` 本就 `console=False`，弹框纯来自子进程。验证：模拟 Windows 返回 0x08000000、非 Windows 返回 0，pyflakes + compileall 通过。**版本仍 5.0.0，未打 tag、未上传、未发版** | `calibre_core.py`、`epub_check.py` | 2026-11-25 |
+
+| 31 | **（v5.0.0 后新周期第 4 条，用户要求先不发版）** 新增单实例保护，根治「反复启动累积多个残留进程占用安装目录」：用户反馈禁用托盘后仍看到多个同名进程——排查确认 Qt 退出流程干净（退出后 0 存活 QThread / 0 活跃 QTimer），根因是用户历史多次「关闭窗口=最小化托盘」后又双击 exe，每次累积一个常驻实例，旧进程锁定 `_internal/*.dll`。新增 `gui/single_instance.py`，基于 `QLocalServer`/`QLocalSocket`（跨平台无第三方依赖、server 名带用户名 hash 防多会话串扰）：启动时探测固定 server，连得上则发 `activate` 请求让已有实例显示窗口、本实例 `sys.exit(0)` 直接退出；连不上则清理僵尸 server 后监听成为主实例；退出时 `release()` 关闭 server 防残留。`main.py` 在创建主窗口前 acquire，失败即退出；主实例把 `activated` 连到 `_restore_from_tray`；`app.exec()` 用 try/finally 保证 release。`build.spec` 显式加 QtNetwork QLocalServer/QLocalSocket 隐藏导入。**验证**：两实例测试通过（首实例 True、第二实例 False 被拒、主实例收到 activated）、编译 + pyflakes 0 告警。**版本仍 5.0.0，未打 tag、未发版** |
 
 | 30 | **（v5.0.0 后新周期第 3 条，用户要求先不发版）** 修复「关闭窗口后仍有后台进程、占用安装目录导致旧版本无法删除」：根因是 `MainWindow.closeEvent` 默认走「最小化到系统托盘」分支（`tray_enabled` 默认 True），窗口隐藏但进程常驻，Windows 下进程持有 `_internal/*.dll` 使目录被锁定；反复启动又最小化会累积多个残留进程。修复：①新增设置 `quit_on_close`（默认 True），关闭窗口默认走「真正退出」分支，仅当用户主动关闭此项且托盘开启时才退化为最小化到托盘；②`closeEvent` 真正退出分支补齐——置 `_force_quit`、托盘 `hide`+`setParent(None)`+`deleteLater` 彻底断开、`findChildren(QTimer)` 全停（覆盖动态背景/队列/自动翻章/微信读书刷新/预览动画等所有后台定时器）、原有 worker 停止逻辑保留；③退出末尾 `QTimer.singleShot(0, app.quit)` 兜底强制结束事件循环，避免隐藏对象阻止自动退出；④设置页新增「关闭窗口时彻底退出程序」复选框，`retranslate` 加映射，三语各 +2 key（725→727 对齐）。**验证**：离屏两分支通过（默认 accept+force_quit+timer 停+托盘断；关开关+托盘则 ignore 且窗口隐藏）、compileall + pyflakes 0 告警、三语 727/727/727 对齐。注：需随下个版本打包才在 exe 生效；当前 v5.0.0 用户可先用任务管理器结束同名进程后再删目录 | `main_window.py`、`settings_extras.py`、`i18n.py` | 2026-11-25 |
 
