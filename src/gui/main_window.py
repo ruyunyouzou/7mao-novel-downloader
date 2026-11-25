@@ -20,6 +20,13 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QTextCursor, QIcon, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QFileDialog, QMessageBox, QComboBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
 
+try:
+    from shiboken6 import isValid as _qt_is_valid
+except Exception:  # noqa: BLE001
+    def _qt_is_valid(obj) -> bool:  # type: ignore
+        return True
+
+
 from .plugin import PluginManager, Hook, DownloadResult
 from .workers import SearchWorker, DownloadWorker, DetailWorker
 from . import filedialogs as _fd
@@ -1978,6 +1985,11 @@ class MainWindow(QMainWindow):
 
     # ---------------- 搜索页：搜索 / 推荐 / 卡片选择 ----------------
 
+    @staticmethod
+    def _is_alive(obj) -> bool:
+        """判断 QObject 包装的 C++ 对象是否仍有效（避免访问已回收对象）。"""
+        return obj is not None and _qt_is_valid(obj)
+
     def _next_recommend_keyword(self) -> str:
         """轮询推荐关键词，返回本次要加载的热门词。"""
         self._recommend_index = (self._recommend_index + 1) % len(RECOMMEND_KEYWORDS)
@@ -1986,18 +1998,45 @@ class MainWindow(QMainWindow):
 
     def _start_search(self, keyword: str, tab: str = "0", page: int = 1,
                       tag: str = "search") -> None:
-        """统一发起搜索请求：推荐与手动搜索共用同一条异步链路。"""
-        if self.search_worker is not None and self.search_worker.isRunning():
-            self.search_worker.terminate()
-            self.search_worker.wait(500)
+        """统一发起搜索请求：推荐与手动搜索共用同一条异步链路。
+
+        连续点击时不再 terminate 旧线程（Qt 禁止，会丢信号/崩溃），而是：
+        1. 协作式请求旧线程取消（requestInterruption），让它自然跑完网络超时；
+        2. 断开旧线程的信号，避免其回调污染界面；
+        3. 用递增代次校验，只接受最新一次搜索的结果。
+        """
+        old = self.search_worker
+        if old is not None and self._is_alive(old):
+            try:
+                old.finished.disconnect()
+                old.failed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            if old.isRunning():
+                # 协作式取消：标记后线程体会自然跑完网络超时再退出，
+                # 结果由 run() 内部丢弃，不发信号。绝不 terminate。
+                old.requestInterruption()
+
         self._last_search_tag = tag
+        self._search_gen = getattr(self, "_search_gen", 0) + 1
+        gen = self._search_gen
         self.search_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
         self.log(f"正在搜索：{keyword} …")
         self.pm.emit(Hook.ON_SEARCH, keyword, [])
         self.search_worker = SearchWorker(keyword, self, tab=tab, page=page, tag=tag)
-        self.search_worker.finished.connect(self._on_search_done)
-        self.search_worker.failed.connect(self._on_search_failed)
+
+        def _recycle(w=self.search_worker):
+            if getattr(self, "search_worker", None) is w:
+                self.search_worker = None
+            w.deleteLater()
+
+        # 线程体真正结束后再回收对象，避免销毁仍在运行的线程报警
+        self.search_worker.finished_run.connect(_recycle)
+        self.search_worker.finished.connect(
+            lambda results, g=gen: self._on_search_done(results, g))
+        self.search_worker.failed.connect(
+            lambda msg, g=gen: self._on_search_failed(msg, g))
         self.search_worker.start()
 
     def do_search(self) -> None:
@@ -2047,7 +2086,10 @@ class MainWindow(QMainWindow):
             self.btn_bookmark.setText(self._bookmark_label(book.get("id", "")))
         self.log(f"已选择：《{book.get('title', '')}》")
 
-    def _on_search_done(self, results: List[Dict[str, Any]]) -> None:
+    def _on_search_done(self, results: List[Dict[str, Any]], gen: Optional[int] = None) -> None:
+        # 代次校验：丢弃被取消的旧请求回调，避免覆盖最新结果
+        if gen is not None and gen != getattr(self, "_search_gen", 0):
+            return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
         keyword = self.search_edit.text().strip()
@@ -2062,8 +2104,12 @@ class MainWindow(QMainWindow):
             self.result_table.setItem(row, 2, QTableWidgetItem(str(item["words_num"])))
             self.result_table.setItem(row, 3, QTableWidgetItem(item["id"]))
 
-        # 卡片列表（用户实际看到的区域）
-        self.card_list.set_books(results)
+        # 卡片列表（用户实际看到的区域）：暂停重绘，避免 clear→重建的闪烁
+        self.card_list.setUpdatesEnabled(False)
+        try:
+            self.card_list.set_books(results)
+        finally:
+            self.card_list.setUpdatesEnabled(True)
 
         if self._last_search_tag == "recommend":
             self.result_title.setText("小说推荐")
@@ -2079,7 +2125,10 @@ class MainWindow(QMainWindow):
 
         self.log(f"搜索完成，共 {len(results)} 条结果")
 
-    def _on_search_failed(self, message: str) -> None:
+    def _on_search_failed(self, message: str, gen: Optional[int] = None) -> None:
+        # 代次校验：被取消的旧请求失败不应弹窗干扰用户
+        if gen is not None and gen != getattr(self, "_search_gen", 0):
+            return
         self.search_btn.setEnabled(True)
         self.refresh_btn.setEnabled(True)
         self.log(f"搜索失败：{message}")
@@ -2182,20 +2231,26 @@ class MainWindow(QMainWindow):
             f"<b>ID：</b>{book['id']}</p>"
             f"<p style='color:{dim_c}'>正在加载详情…</p>"
         )
-        # 重建前先停掉上一次的详情请求：断开信号，避免旧请求回调串台；
-        # 运行中则等待其结束，并延迟删除，防止反复切书/切主题累积线程对象
+        # 重建前先取消上一次的详情请求：断开信号避免回调串台，协作式取消
+        # （requestInterruption）而非 terminate，线程体结束后自动回收。
         old = getattr(self, "detail_worker", None)
-        if old is not None:
+        if old is not None and self._is_alive(old):
             try:
                 old.finished.disconnect()
                 old.failed.disconnect()
             except (RuntimeError, TypeError):
                 pass
             if old.isRunning():
-                old.terminate()
-                old.wait(1000)
-            old.deleteLater()
+                old.requestInterruption()
         self.detail_worker = DetailWorker(book["id"], book, self)
+
+        def _recycle(w=self.detail_worker):
+            # 对象已结束，置空引用后再回收，避免后续访问已删除的 C++ 对象
+            if getattr(self, "detail_worker", None) is w:
+                self.detail_worker = None
+            w.deleteLater()
+
+        self.detail_worker.finished_run.connect(_recycle)
         self.detail_worker.finished.connect(lambda info: self._on_detail_done(book, info))
         self.detail_worker.failed.connect(
             lambda msg, b=book: self._on_detail_failed(b, msg)
