@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QPushButton, QFrame, QSizePolicy
 
-from .style import BG_TOP, BORDER_LIGHT, TEXT_DIM, TEXT, ACCENT, ACCENT_HOVER
+from .style import BG_TOP, BORDER_LIGHT, TEXT_DIM, TEXT, ACCENT, ACCENT_HOVER, ACCENT_DARK
 from .version import VERSION_LABEL
 from .i18n import tr, manager as i18n_manager
 
@@ -139,6 +139,7 @@ class TitleBar(QWidget):
 
     theme_toggled = Signal(bool)  # True=深色
     account_clicked = Signal()    # 点击「账号」入口
+    wenku8_clicked = Signal()     # 点击「文库8登录」入口
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -173,6 +174,18 @@ class TitleBar(QWidget):
         """)
         self.account_btn.clicked.connect(self.account_clicked.emit)
         layout.addWidget(self.account_btn)
+
+        # 文库8登录入口（紧邻账号按钮，点击弹 Cookie 登录对话框）
+        self.wenku8_btn = QPushButton(tr("titlebar.wenku8_login"))
+        self.wenku8_btn.setToolTip(tr("titlebar.wenku8_tip"))
+        self.wenku8_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: transparent; color: {ACCENT};
+                           border: 1px solid {ACCENT}; border-radius: 8px;
+                           padding: 5px 12px; font-size: 12px; font-weight: bold; }}
+            QPushButton:hover {{ background-color: {ACCENT}; color: #1a1a1a; }}
+        """)
+        self.wenku8_btn.clicked.connect(self.wenku8_clicked.emit)
+        layout.addWidget(self.wenku8_btn)
 
         layout.addStretch()
 
@@ -214,12 +227,18 @@ class TitleBar(QWidget):
     def retranslate(self, *args) -> None:
         """界面语言切换后刷新标题栏文案。"""
         self.account_btn.setToolTip(tr("titlebar.account_tip"))
+        self.wenku8_btn.setText(tr("titlebar.wenku8_login"))
+        self.wenku8_btn.setToolTip(tr("titlebar.wenku8_tip"))
         self.theme_btn.setToolTip(tr("titlebar.theme_tip"))
         self.ver_label.setText(tr("titlebar.version", v=VERSION_LABEL))
 
     def set_account_label(self, text: str) -> None:
         """根据是否已配置账号更新入口文案。"""
         self.account_btn.setText(text)
+
+    def set_wenku8_label(self, text: str) -> None:
+        """根据文库8登录态更新入口文案（已登录/登录）。"""
+        self.wenku8_btn.setText(text)
 
     def refresh_theme(self, dark: bool) -> None:
         """标题栏跟随深浅主题（自身内联样式表优先级高于全局 QSS）。"""
@@ -240,6 +259,13 @@ class TitleBar(QWidget):
             QPushButton:hover {{ background-color: {hover}; }}
         """)
         self.theme_btn.setText("☾" if dark else "☀")
+        accent = ACCENT if dark else ACCENT_DARK
+        self.wenku8_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: transparent; color: {accent};
+                           border: 1px solid {accent}; border-radius: 8px;
+                           padding: 5px 12px; font-size: 12px; font-weight: bold; }}
+            QPushButton:hover {{ background-color: {accent}; color: #1a1a1a; }}
+        """)
 
     def _toggle_theme(self) -> None:
         self._dark = not self._dark

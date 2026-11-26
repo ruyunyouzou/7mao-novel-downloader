@@ -36,6 +36,8 @@ preview_*.png
 # 本地登录凭据（含 cookie，禁止入库）
 cookie.json
 cookie*.json
+# 内置登录态模块含用户本人账号 Cookie，禁止入库（但随 exe 打包分发给本人使用）
+src/gui/wenku8_core/_builtin_cookie.py
 
 # 本地打包产物与预览稿（交付物走 GitHub Release，不入库）
 *.zip

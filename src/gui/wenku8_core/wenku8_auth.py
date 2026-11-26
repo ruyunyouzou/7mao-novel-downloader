@@ -20,10 +20,22 @@ _UA = (
 
 
 def get_cookie() -> str:
-    """读取用户配置的文库8 Cookie 字符串。"""
+    """读取文库8 Cookie：用户设置优先，未配置时回退到软件内置登录态。
+
+    内置值来自用户本人账号的 Cookie，随软件打包，开箱即有登录态；
+    用户在设置页填写的新值始终优先，Cookie 过期后可直接覆盖，无需改代码。
+    """
     try:
         from gui.datastore import DataStore
-        return str(DataStore().settings_get("wenku8_cookie", "") or "").strip()
+        custom = str(DataStore().settings_get("wenku8_cookie", "") or "").strip()
+        if custom:
+            return custom
+    except Exception:  # noqa: BLE001
+        pass
+    # 用户未配置 → 用内置登录态
+    try:
+        from ._builtin_cookie import BUILTIN_WENKU8_COOKIE
+        return str(BUILTIN_WENKU8_COOKIE or "").strip()
     except Exception:  # noqa: BLE001
         return ""
 

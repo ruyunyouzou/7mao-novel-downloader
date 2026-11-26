@@ -428,7 +428,9 @@ class MainWindow(QMainWindow):
         self.title_bar.theme_toggled.connect(
             lambda dark: self.set_theme_mode("dark" if dark else "light"))
         self.title_bar.account_clicked.connect(self._open_account_dialog)
+        self.title_bar.wenku8_clicked.connect(self._open_wenku8_login)
         self._refresh_account_button()
+        self._refresh_wenku8_button()
         root.addWidget(self.title_bar)
 
         # 左侧导航栏 + 右侧页面
@@ -1316,6 +1318,27 @@ class MainWindow(QMainWindow):
             label = tr("account.login")
         self.title_bar.set_account_label(label)
 
+    def _refresh_wenku8_button(self) -> None:
+        """根据文库8登录态更新标题栏入口文案（已登录/登录）。"""
+        from .wenku8_core.wenku8_auth import get_cookie
+        label = (tr("titlebar.wenku8_logged")
+                 if get_cookie().strip() else tr("titlebar.wenku8_login"))
+        self.title_bar.set_wenku8_label(label)
+
+    def _open_wenku8_login(self) -> None:
+        """打开文库8登录对话框（Cookie 登录 + 验证 + 保存）。"""
+        from .wenku8_login_dialog import Wenku8LoginDialog
+        dlg = Wenku8LoginDialog(self)
+        dlg.exec()
+        self._refresh_wenku8_button()
+        # 同步设置页 Cookie 输入框
+        try:
+            from .wenku8_core.wenku8_auth import get_cookie
+            if hasattr(self, "settings_wenku8_cookie"):
+                self.settings_wenku8_cookie.setText(get_cookie().strip())
+        except Exception:  # noqa: BLE001
+            pass
+
     def _open_account_dialog(self) -> None:
         """打开账号本地配置对话框（非真实登录）。"""
         from .account_dialog import AccountDialog
@@ -2095,6 +2118,7 @@ class MainWindow(QMainWindow):
         if self.status_label.text() in {"就绪", "Ready", "Готово"}:
             self.status_label.setText(tr("status.ready"))
         self._refresh_account_button()
+        self._refresh_wenku8_button()
 
         # 子视图各自刷新（如有实现）
         for view in (self.shelf_view, self.queue_view, self.history_view,
