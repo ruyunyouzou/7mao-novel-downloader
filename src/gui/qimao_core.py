@@ -539,11 +539,10 @@ class QimaoBookSource(BookSource):
         # 归一层级：绝大多数七猫标题是纯「第X章」→ 保持一层零回归；
         # 极少数标题自带「第X卷」前缀 → 解析成卷+章两级。
         try:
-            from .hierarchy import normalize_catalog
-            catalog = normalize_catalog(catalog)
-        except Exception:  # noqa: BLE001
-            pass
-        return catalog
+            from .hierarchy import normalize_catalog_safe
+        except ImportError:  # 插件以顶层模块加载时的兜底（与其他核心一致）
+            from gui.hierarchy import normalize_catalog_safe
+        return normalize_catalog_safe(catalog)
 
     @contextlib.contextmanager
     def context(self, book_id: str, session, report):
@@ -735,7 +734,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                     report(40 + int((i + 1) / len(catalog) * 60))
                     continue
                 fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
-                with open(os.path.join(book_dir, fname), "w", encoding="utf-8") as f:
+                # 与单文件 TXT 统一带 BOM：微信读书等阅读器对无 BOM 的中文 TXT
+                # 偶发误判为 GBK 导致乱码。三源共用本导出函数，分章格式同样受益。
+                with open(os.path.join(book_dir, fname), "w", encoding="utf-8-sig") as f:
                     # 分章 TXT：章文件内写卷/集归属，导入微信读书后可识别层级
                     hdr = ""
                     if _hierarchy:

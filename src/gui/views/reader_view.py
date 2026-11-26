@@ -996,9 +996,16 @@ class ReaderView(QWidget):
             for tag in soup(["script", "style", "nav"]):
                 tag.decompose()
 
-            # 1) 优先取 h1~h6 的第一个非空文本作为章节名
+            # 1) 优先取 h1~h6 的第一个非空文本作为章节名。
+            # 层级 EPUB（卷 h1 / 集 h2 / 章 h3）里第一个 h 是卷名，必须优先取
+            # class=chapter-title 的章标题，否则整本目录都会显示成同一个卷名。
             title = ""
-            for h in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+            headings = soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"])
+            chapter_head = next(
+                (h for h in headings if "chapter-title" in (h.get("class") or [])),
+                None,
+            )
+            for h in ([chapter_head] if chapter_head is not None else headings):
                 t = " ".join(h.get_text(" ", strip=True).split())
                 if t:
                     title = t
@@ -1201,6 +1208,10 @@ class ReaderView(QWidget):
         self.text.setFont(f)
         # document 默认字体决定全文字号，Qt 内部增量重排，无需重建 HTML
         self.text.document().setDefaultFont(f)
+        # 缩进按新字高重算：保证任意字号下都精确等于两个中文字，
+        # 对三源导出与本地导入的所有书一致生效（无需重建 HTML）。
+        if self.chapters:
+            self._apply_indent(bool(self.store.settings_get("reader_indent", True)))
         # 写盘防抖：拖动过程中不落盘，停手后再写一次
         self._font_save_timer.start()
 

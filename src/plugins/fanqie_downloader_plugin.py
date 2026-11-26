@@ -153,12 +153,8 @@ class FanqieBookSource(BookSource):
                 item["vol"] = str(ch.get("vol"))
             catalog.append(item)
         # 归一为「卷/集/章」：title 精简为纯章名，vol/sub 记录分组
-        try:
-            from gui.hierarchy import normalize_catalog
-            catalog = normalize_catalog(catalog)
-        except Exception:  # noqa: BLE001
-            pass
-        return catalog
+        from gui.hierarchy import normalize_catalog_safe
+        return normalize_catalog_safe(catalog)
 
     def chapter_text(self, ctx, chapter: dict, session, report) -> str:
         """逐章取正文；把 2%~40% 的进度段分摊给章节下载阶段。

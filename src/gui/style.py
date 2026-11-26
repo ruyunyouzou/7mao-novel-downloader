@@ -568,6 +568,25 @@ QMessageBox {{ background: #fff; }}
 """
 
 
+# 玻璃质感的表面参数：全局 QSS 补丁与书卡内联样式共用同一份定义，
+# 避免两处硬编码漂移（用户之前遇到过的"选色后错位"正源于样式多头维护）。
+GLASS_SURFACE = {
+    True: {
+        "page": "rgba(36, 36, 36, 0.74)",       # BG_CARD 同色半透
+        "accent": "rgba(42, 39, 51, 0.74)",     # queueConcurrentCard 同色半透
+        "edge": "rgba(255, 255, 255, 0.10)",
+        "selected": "rgba(43, 40, 51, 0.86)",
+    },
+    False: {
+        "page": "rgba(255, 255, 255, 0.82)",
+        "accent": "rgba(250, 250, 250, 0.86)",
+        "edge": "rgba(60, 50, 40, 0.09)",
+        "selected": "rgba(243, 238, 251, 0.90)",
+    },
+}
+GLASS_RADIUS = 14
+
+
 def glass_effect_enabled() -> bool:
     """玻璃质感开关是否开启（默认开）。
 
@@ -594,16 +613,9 @@ def glass_effect_qss(dark: bool, enabled: bool = True) -> str:
     """
     if not enabled:
         return ""
-    if dark:
-        page = "rgba(36, 36, 36, 0.74)"          # BG_CARD #242424 同色半透
-        accent_card = "rgba(42, 39, 51, 0.74)"   # queueConcurrentCard #2a2733 同色半透
-        edge = "rgba(255, 255, 255, 0.10)"
-        sel = "rgba(43, 40, 51, 0.86)"
-    else:
-        page = "rgba(255, 255, 255, 0.82)"
-        accent_card = "rgba(250, 250, 250, 0.86)"
-        edge = "rgba(60, 50, 40, 0.09)"
-        sel = "rgba(243, 238, 251, 0.90)"
+    g = GLASS_SURFACE[bool(dark)]
+    page, accent_card = g["page"], g["accent"]
+    edge, sel = g["edge"], g["selected"]
     return f"""
 /* ===== 玻璃质感层（仅质感，不改配色方案）===== */
 QFrame#shelfGroupCard, QFrame#queueTaskCard, QFrame#histTaskCard {{

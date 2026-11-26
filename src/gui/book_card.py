@@ -77,12 +77,11 @@ class BookCard(QFrame):
     def _apply_style(self) -> None:
         # 玻璃质感（ui_glass 开关）：开启时卡片同色相半透明 + 柔光边 + 大圆角；
         # 关闭时恢复原实心卡片。hover 始终用原强调色（主题色圆点/重染逻辑不变）。
-        from .style import glass_effect_enabled
+        from .style import glass_effect_enabled, GLASS_SURFACE, GLASS_RADIUS
         hover = ACCENT if self._dark else ACCENT_DARK
         if glass_effect_enabled():
-            bg = "rgba(36, 36, 36, 0.74)" if self._dark else "rgba(255, 255, 255, 0.82)"
-            bd = "rgba(255, 255, 255, 0.10)" if self._dark else "rgba(60, 50, 40, 0.09)"
-            radius = 14
+            surface = GLASS_SURFACE[bool(self._dark)]
+            bg, bd, radius = surface["page"], surface["edge"], GLASS_RADIUS
         else:
             bg = BG_CARD if self._dark else "#ffffff"
             bd = BORDER if self._dark else "#e5e5e5"

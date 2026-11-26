@@ -142,6 +142,18 @@ def normalize_catalog(catalog: List[Dict],
     return out
 
 
+def normalize_catalog_safe(catalog: List[Dict],
+                           explicit_vol: Optional[str] = None) -> List[Dict]:
+    """容错归一：层级解析异常时原样返回目录，保证下载主流程永不因层级失败。
+
+    七猫 / 番茄 / 文库8 三源统一调用本函数，避免各自重复 try/except 且行为不一致。
+    """
+    try:
+        return normalize_catalog(catalog, explicit_vol)
+    except Exception:  # noqa: BLE001 - 层级解析失败不影响原始目录
+        return catalog
+
+
 def group_levels(catalog: List[Dict]) -> int:
     """返回目录实际层数：1=纯章 / 2=卷章 / 3=卷集章。用于导出时自动适配。"""
     has_vol = any(_clean(c.get("vol")) for c in catalog)
