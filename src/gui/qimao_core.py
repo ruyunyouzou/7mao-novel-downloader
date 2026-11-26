@@ -17,11 +17,9 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import html
 import io
 import os
-import random
 import re
 import zipfile
 from base64 import b64decode
@@ -30,6 +28,9 @@ from typing import Callable, Dict, List, Optional
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+
+# 七猫接口签名（全项目唯一实现，与 SLQimao 内核逐位等价）
+from . import qimao_sign as _qimao_sign
 
 # 字体资源目录（随软件分发的内置字体，OFL 授权；兼容源码运行与 PyInstaller 打包）
 from .resource_path import resource_path as _resource_path
@@ -180,17 +181,17 @@ def split_volume_title(title: str):
         return None, title
     return vol, ch
 
-SIGN_KEY = "d3dGiJc651gSQ8w1"
+# 签名与请求头统一由 gui.qimao_sign 提供（与 SLQimao 内核逐位等价，306 个
+# 书号实测零差异）。这里以具名绑定再导出，既有调用点与外部引用都不受影响。
+SIGN_KEY = _qimao_sign.SIGN_KEY
+VERSION_LIST = _qimao_sign.VERSION_LIST
+sign_params = _qimao_sign.sign_params
+get_headers = _qimao_sign.get_headers
+
 AES_KEY_HEX = "32343263636238323330643730396531"
 AES_KEY = bytes.fromhex(AES_KEY_HEX)
 BASE_BC = "https://api-bc.wtzw.com"
 BASE_KS = "https://api-ks.wtzw.com"
-
-VERSION_LIST = [
-    "73720", "73700", "73620", "73600", "73500", "73420", "73400",
-    "73328", "73325", "73320", "73300", "73220", "73200", "73100",
-    "73000", "72900", "72820", "72800", "70720", "62010", "62112",
-]
 
 
 class QimaoError(Exception):
@@ -220,33 +221,6 @@ def clean_html(text: str) -> str:
     if not text:
         return ""
     return re.sub(r"<[^>]+>", "", str(text)).strip()
-
-
-def sign_params(params: Dict) -> Dict:
-    """对参数字典签名（字典序拼接 key=value + SIGN_KEY，取 MD5）。"""
-    params = dict(params)
-    sign_str = "".join(f"{k}={params[k]}" for k in sorted(params)) + SIGN_KEY
-    params["sign"] = hashlib.md5(sign_str.encode()).hexdigest()
-    return params
-
-
-def get_headers(book_id: str) -> Dict[str, str]:
-    """按书籍 ID 生成带签名的请求头。"""
-    random.seed(str(book_id))
-    version = random.choice(VERSION_LIST)
-    headers = {
-        "AUTHORIZATION": "",
-        "app-version": version,
-        "application-id": "com.****.reader",
-        "channel": "unknown",
-        "net-env": "1",
-        "platform": "android",
-        "qm-params": "",
-        "reg": "0",
-    }
-    sign_str = "".join(f"{k}={headers[k]}" for k in sorted(headers)) + SIGN_KEY
-    headers["sign"] = hashlib.md5(sign_str.encode()).hexdigest()
-    return headers
 
 
 def _get(session: requests.Session, url: str, params: Dict, book_id: str,

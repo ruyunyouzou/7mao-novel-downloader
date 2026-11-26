@@ -281,10 +281,10 @@ class HistoryView(QWidget):
     def retry_selected_failed(self) -> None:
         rec = next((r for r in self._records if r.get("id") == self._selected_id), None)
         if not rec:
-            QMessageBox.information(self, "提示", "请先选中一条失败记录")
+            QMessageBox.information(self, tr("common.tip"), tr("hist.select_failed"))
             return
         if rec.get("success"):
-            QMessageBox.information(self, "提示", "该记录是成功的下载，无需重试")
+            QMessageBox.information(self, tr("common.tip"), tr("hist.retry_not_needed"))
             return
         self.request_retry.emit({
             "id": rec.get("book_id", ""),
@@ -310,13 +310,14 @@ class HistoryView(QWidget):
                         tr("hist.success") if r.get("success") else tr("hist.failed"),
                         r.get("elapsed", ""), r.get("message", ""),
                     ])
-            QMessageBox.information(self, "导出成功", f"历史记录已导出到：\n{path}")
+            QMessageBox.information(self, tr("common.export_success"),
+                                    tr("hist.exported_to", path=path))
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "导出失败", str(exc))
 
     def clear_all(self) -> None:
         if QMessageBox.question(
-            self, "确认", "确定清空所有历史记录？此操作不可撤销。",
+            self, tr("common.confirm"), tr("hist.confirm_clear_body"),
             QMessageBox.Yes | QMessageBox.No,
         ) == QMessageBox.Yes:
             self.store.history_clear()

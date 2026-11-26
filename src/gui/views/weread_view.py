@@ -1659,7 +1659,7 @@ class WereadView(QWidget):
         self.store.settings_set("weread_api_key", self.api_key_edit.text().strip())
         self.store.settings_set("weread_cookie", self.cookie_edit.toPlainText().strip())
         self.log("凭据已保存到本机")
-        QMessageBox.information(self, "已保存", "微信读书凭据已保存到本机，不会上传。")
+        QMessageBox.information(self, tr("common.saved_title"), tr("weread.cred_saved"))
 
     # ------------------------------------------------------------------ 扫码登录
 
@@ -1843,9 +1843,9 @@ class WereadView(QWidget):
         oversized = [p for p in paths if os.path.getsize(p) / (1024 * 1024) > MAX_SIZE_MB]
         if oversized:
             QMessageBox.warning(
-                self, "文件过大",
-                f"以下文件超过 {MAX_SIZE_MB} MB，已跳过：\n"
-                + "\n".join(os.path.basename(p) for p in oversized),
+                self, tr("weread.too_large_title"),
+                tr("weread.too_large_body", max=MAX_SIZE_MB,
+                   files="\n".join(os.path.basename(p) for p in oversized)),
             )
             paths = [p for p in paths if p not in oversized]
         if not paths:
@@ -1870,10 +1870,8 @@ class WereadView(QWidget):
                      f"{os.path.basename(r.get('file', ''))}: {r.get('message')}")
         self.status_lbl.setText(f"导入已提交：成功 {ok}/{len(results)} 本，入架由微信读书异步完成。")
         QMessageBox.information(
-            self, "导入已提交",
-            f"成功提交 {ok}/{len(results)} 本。\n\n"
-            "提交成功不代表立即入架，微信读书会在后台解析，请稍后到官方书架查看；"
-            "不要重复导入同一本书。",
+            self, tr("weread.import_submitted_title"),
+            tr("weread.import_submitted_body", ok=ok, total=len(results)),
         )
 
     # ------------------------------------------------------------------ 工具
@@ -1897,7 +1895,7 @@ class WereadView(QWidget):
             and os.path.splitext(e["file_path"])[1].lower() in SUPPORTED_FORMATS
         ]
         if not paths:
-            QMessageBox.information(self, "提示", "所选书籍没有可导入的本地文件")
+            QMessageBox.information(self, tr("common.tip"), tr("weread.no_import_file"))
             return
         mobile_session = self._active_upload_session()
         cookie = self.cookie_edit.toPlainText().strip()

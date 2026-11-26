@@ -294,11 +294,12 @@ class ShelfView(QWidget):
         """在内置阅读器中打开选中书籍。"""
         entry = self._current_entry()
         if not entry:
-            QMessageBox.information(self, "提示", "请先选中一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("common.select_book"))
             return
         path = entry.get("file_path", "")
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "无法阅读", f"文件不存在：\n{path}")
+            QMessageBox.warning(self, tr("shelf.cant_read_title"),
+                                  tr("common.file_missing", path=path))
             return
         key = entry.get("book_id") or path
         prog = self.store.progress_get(key)
@@ -323,28 +324,29 @@ class ShelfView(QWidget):
             })
             count += 1
         self.refresh()
-        QMessageBox.information(self, "导入完成", f"已导入 {count} 本到本地书架")
+        QMessageBox.information(self, tr("common.import_done"),
+                                    tr("common.imported_n", count=count))
 
     def open_selected(self) -> None:
         entry = self._current_entry()
         if not entry:
-            QMessageBox.information(self, "提示", "请先选中一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("common.select_book"))
             return
         path = entry.get("file_path", "")
         if not path or not os.path.exists(path):
-            QMessageBox.warning(self, "无法打开", f"文件不存在：\n{path}")
+            QMessageBox.warning(self, tr("common.open_failed"), tr("common.file_missing", path=path))
             return
         self._open_path(path)
 
     def open_folder(self) -> None:
         entry = self._current_entry()
         if not entry:
-            QMessageBox.information(self, "提示", "请先选中一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("common.select_book"))
             return
         path = entry.get("file_path", "")
         folder = os.path.dirname(path) if os.path.isfile(path) else path
         if not folder or not os.path.isdir(folder):
-            QMessageBox.warning(self, "无法打开", f"目录不存在：\n{folder}")
+            QMessageBox.warning(self, tr("common.open_failed"), tr("shelf.dir_missing", folder=folder))
             return
         self._open_path(folder)
 
@@ -364,7 +366,7 @@ class ShelfView(QWidget):
         """为选中书设置标签（逗号分隔）。"""
         entry = self._current_entry()
         if not entry:
-            QMessageBox.information(self, "提示", "请先选中一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("common.select_book"))
             return
         from PySide6.QtWidgets import QInputDialog
         current = ", ".join(entry.get("tags") or [])
@@ -379,10 +381,11 @@ class ShelfView(QWidget):
     def remove_selected(self) -> None:
         entry = self._current_entry()
         if not entry:
-            QMessageBox.information(self, "提示", "请先选中一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("common.select_book"))
             return
         if QMessageBox.question(
-            self, "确认", f"确定从书架移除《{entry.get('title')}》？\n（不会删除本地文件）",
+            self, tr("common.confirm"),
+            tr("shelf.confirm_remove", title=entry.get("title")),
             QMessageBox.Yes | QMessageBox.No,
         ) == QMessageBox.Yes:
             self.store.shelf_remove(entry["id"])

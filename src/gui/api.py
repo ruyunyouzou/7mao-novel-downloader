@@ -12,8 +12,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-# 从项目核心模块复用签名函数（保证与官方逻辑一致）
-from SLQimao.book import sign_url, get_headers, Book
+# 签名与请求头走统一实现（与 SLQimao 内核逐位等价，避免两份逻辑漂移）；
+# Book 仍用内核自带的目录解析，保证与 CLI 行为一致。
+from SLQimao.book import Book
+from .qimao_sign import get_headers, sign_params as sign_url
 
 
 class ApiError(Exception):

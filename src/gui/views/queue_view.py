@@ -559,7 +559,7 @@ class QueueView(QWidget):
     def pause_selected(self) -> None:
         task = self._current_task()
         if not task or task.get("status") != "downloading":
-            QMessageBox.information(self, "提示", "请选中一个正在下载的任务")
+            QMessageBox.information(self, tr("common.tip"), tr("queue.select_downloading"))
             return
         runner = self._runners.get(task["id"])
         if runner:
@@ -570,7 +570,7 @@ class QueueView(QWidget):
     def resume_selected(self) -> None:
         task = self._current_task()
         if not task or task.get("status") != "paused":
-            QMessageBox.information(self, "提示", "请选中一个已暂停的任务")
+            QMessageBox.information(self, tr("common.tip"), tr("queue.select_paused"))
             return
         runner = self._runners.get(task["id"])
         if runner:
@@ -584,7 +584,7 @@ class QueueView(QWidget):
     def cancel_selected(self) -> None:
         task = self._current_task()
         if not task or task.get("status") not in ("downloading", "paused", "waiting"):
-            QMessageBox.information(self, "提示", "请选中一个可取消的任务")
+            QMessageBox.information(self, tr("common.tip"), tr("queue.select_cancelable"))
             return
         runner = self._runners.get(task["id"])
         if runner:
@@ -596,7 +596,7 @@ class QueueView(QWidget):
     def retry_selected(self) -> None:
         task = self._current_task()
         if not task or task.get("status") not in ("failed", "cancelled", "interrupted"):
-            QMessageBox.information(self, "提示", "请选中一个失败/取消的任务")
+            QMessageBox.information(self, tr("common.tip"), tr("queue.select_failed"))
             return
         self.store.queue_update(task["id"], {
             "status": "waiting", "progress": 0, "message": "",

@@ -21,9 +21,17 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 # 注：本文件的更新检查仍走上游 gitee 接口，与 GUI 的 GitHub 渠道互相独立。
 
 import os
+import sys
 import time
 from sys import exit
 import platform
+
+# 本文件已归档到 src/legacy/：仍可 `python src/legacy/app.py` 运行，
+# 需把上一级 src/ 放进搜索路径才能导入 SLQimao 与 gui 包。
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 from SLQimao import book
 from SLQimao import clear_screen, red, yellow, green, nullproxies
 import SLQimao

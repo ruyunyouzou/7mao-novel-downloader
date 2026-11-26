@@ -2274,7 +2274,7 @@ class MainWindow(QMainWindow):
     def do_search(self) -> None:
         keyword = self.search_edit.text().strip()
         if not keyword:
-            QMessageBox.warning(self, "提示", "请输入搜索关键词")
+            QMessageBox.warning(self, tr("common.tip"), tr("search.need_keyword"))
             return
         # 搜书 tab=0，搜作者 tab=1（番茄搜索不支持搜作者，统一按搜书处理）
         combo = getattr(self, "source_combo", None)
@@ -2402,7 +2402,7 @@ class MainWindow(QMainWindow):
         self.refresh_btn.setEnabled(True)
         self._update_pager_ui(True)
         self.log(f"搜索失败：{message}")
-        QMessageBox.critical(self, "搜索失败", message)
+        QMessageBox.critical(self, tr("search.failed_title"), message)
 
     def _on_row_selected(self) -> None:
         row = self.result_table.currentRow()
@@ -2467,13 +2467,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             from .logutil import log_error
             log_error(f"书 ID 直达失败 {book_id}", exc, tag="link")
-            QMessageBox.warning(self, "直达失败", f"无法获取该书信息：{exc}")
+            QMessageBox.warning(self, tr("search.direct_failed_title"),
+                              tr("search.direct_failed_body", exc=exc))
 
     def _bulk_download(self, book_ids: List[str],
                        sources: Optional[List[str]] = None) -> None:
         """批量下载：把多个书 ID 依次解析后加入队列（支持混合书源）。"""
         if self.pm.get_downloader() is None:
-            QMessageBox.information(self, "无下载内核", "当前没有可用的下载内核插件。")
+            QMessageBox.information(self, tr("common.no_kernel_title"), tr("common.no_kernel_body"))
             return
         dc = getattr(self, "direct_format_combo", None)
         fmt = dc.currentText() if dc is not None else self.format_combo.currentText()
@@ -2489,7 +2490,8 @@ class MainWindow(QMainWindow):
                 log_error(f"批量下载解析失败 {bid}", exc, tag="bulk")
                 failed += 1
         self.log(f"批量下载：已加入 {added} 本，失败 {failed} 本")
-        QMessageBox.information(self, "批量下载", f"已加入队列 {added} 本，失败 {failed} 本")
+        QMessageBox.information(self, tr("queue.batch_title"),
+                                tr("queue.batch_body", added=added, failed=failed))
         if added:
             self.tabs.setCurrentWidget(self.queue_view)
 
@@ -2620,15 +2622,12 @@ class MainWindow(QMainWindow):
 
     def do_download(self) -> None:
         if self.current_book is None:
-            QMessageBox.warning(self, "提示", "请先搜索并选中一本书")
+            QMessageBox.warning(self, tr("common.tip"), tr("search.select_book_prompt"))
             return
         if self.pm.get_downloader() is None:
             QMessageBox.information(
-                self, "无下载内核",
-                "当前没有插件提供下载内核。\n\n"
-                "开源版源码中的章节下载逻辑被作者移除（私有内核），"
-                "请安装提供下载内核的插件后再试。\n"
-                "示例插件提供的是一个模拟内核，可用来体验流程。",
+                self, tr("common.no_kernel_title"),
+                tr("common.no_kernel_body_long"),
             )
             return
         from PySide6.QtWidgets import QDialog
@@ -2781,7 +2780,7 @@ class MainWindow(QMainWindow):
 
     def _on_request_redownload(self, book: Dict[str, Any]) -> None:
         if self.pm.get_downloader() is None:
-            QMessageBox.information(self, "无下载内核", "当前没有可用的下载内核插件。")
+            QMessageBox.information(self, tr("common.no_kernel_title"), tr("common.no_kernel_body"))
             return
         fmt = self.format_combo.currentText()
         self.queue_view.add_task(book, self.resolve_save_dir(book.get("source", "")), fmt)
@@ -2800,7 +2799,8 @@ class MainWindow(QMainWindow):
         """书架右键「导入到微信读书」：切到微信读书页并执行导入。"""
         view = getattr(self, "weread_view", None)
         if view is None:
-            QMessageBox.information(self, "微信读书未接入", "未检测到微信读书插件。")
+            QMessageBox.information(self, tr("weread.not_connected_title"),
+                                tr("weread.not_connected_body"))
             return
         self.tabs.setCurrentWidget(view)
         view.import_from_shelf(entries)
@@ -2809,7 +2809,8 @@ class MainWindow(QMainWindow):
         """书架右键「用 Calibre 编辑 EPUB」。"""
         view = getattr(self, "calibre_view", None)
         if view is None:
-            QMessageBox.information(self, "Calibre 未接入", "未检测到 Calibre 插件。")
+            QMessageBox.information(self, tr("calibre.not_connected_title"),
+                                tr("calibre.not_connected_body"))
             return
         view.open_external_file(file_path)
 
@@ -2930,7 +2931,8 @@ class MainWindow(QMainWindow):
                     fp = os.path.join(self.store.base_dir, name)
                     if os.path.exists(fp):
                         zf.write(fp, name)
-            QMessageBox.information(self, "备份完成", f"数据已备份到：\n{path}")
+            QMessageBox.information(self, tr("set.backup_done_title"),
+                                tr("set.backup_done_body", path=path))
             self.log(f"数据已备份：{path}")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "备份失败", str(exc))
@@ -2942,8 +2944,8 @@ class MainWindow(QMainWindow):
         if not path:
             return
         if QMessageBox.question(
-            self, "确认恢复",
-            "恢复将覆盖当前的书架/历史/进度等数据，确定继续？\n（建议先备份当前数据）",
+            self, tr("set.restore_confirm_title"),
+            tr("set.restore_confirm_body"),
             QMessageBox.Yes | QMessageBox.No,
         ) != QMessageBox.Yes:
             return
@@ -2959,7 +2961,8 @@ class MainWindow(QMainWindow):
             self.history_view.refresh()
             if hasattr(self.history_view, "refresh"):
                 pass
-            QMessageBox.information(self, "恢复完成", "数据已从备份恢复，请重启程序以确保全部生效。")
+            QMessageBox.information(self, tr("set.restore_done_title"),
+                                tr("set.restore_done_body"))
             self.log("数据已从备份恢复")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "恢复失败", str(exc))

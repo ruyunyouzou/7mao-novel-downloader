@@ -4,6 +4,7 @@
 注意：这是早期命令行版本的手动测试脚本，GUI 版本请改用 tests/test_book_link.py。
 加 main 保护，避免静态检查 / 模块枚举时误触发子进程。
 """
+import os
 import sys
 import time
 
@@ -13,7 +14,9 @@ def main() -> None:
 
     test_book_url = "https://www.qimao.com/shuku/1815772/"
 
-    process = pexpect.spawn("python3 app.py", encoding="utf-8", timeout=10)
+    # 与被测脚本同目录启动，从任意 cwd 运行都能找到 app.py
+    here = os.path.dirname(os.path.abspath(__file__))
+    process = pexpect.spawn("python3 app.py", cwd=here, encoding="utf-8", timeout=10)
     process.logfile = sys.stdout
     process.expect("按Enter键继续...")
     process.sendline("")

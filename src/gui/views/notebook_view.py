@@ -874,7 +874,7 @@ class NotebookView(QWidget):
     def _open_detail(self, book: Dict[str, Any]) -> None:
         key = str(self.store.settings_get("weread_api_key", "")).strip()
         if not key:
-            QMessageBox.information(self, "提示", "请先填写微信读书 API Key")
+            QMessageBox.information(self, tr("common.tip"), tr("nb.need_api_key"))
             return
         dlg = NotebookDetailDialog(key, book, self)
         dlg.exec()
@@ -885,11 +885,11 @@ class NotebookView(QWidget):
         if self._export_worker is not None and self._export_worker.isRunning():
             return
         if not self.books:
-            QMessageBox.information(self, "提示", "没有可导出的笔记")
+            QMessageBox.information(self, tr("common.tip"), tr("nb.no_notes"))
             return
         key = str(self.store.settings_get("weread_api_key", "")).strip()
         if not key:
-            QMessageBox.information(self, "提示", "请先填写微信读书 API Key")
+            QMessageBox.information(self, tr("common.tip"), tr("nb.need_api_key"))
             return
         path = _fd.save_file(
             self, "导出笔记", os.path.expanduser("~/微信读书笔记.md"),
@@ -908,7 +908,7 @@ class NotebookView(QWidget):
     def _on_export_done(self, path: str) -> None:
         self.btn_export.setEnabled(True)
         self.status_lbl.setText(f"✓ 笔记已导出：{path}")
-        QMessageBox.information(self, "导出完成", f"笔记已导出到：\n{path}")
+        QMessageBox.information(self, tr("common.export_done"), tr("nb.exported_to", path=path))
 
     def _on_export_failed(self, message: str) -> None:
         self.btn_export.setEnabled(True)

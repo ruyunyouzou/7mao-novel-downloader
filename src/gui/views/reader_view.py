@@ -849,7 +849,7 @@ class ReaderView(QWidget):
                   chapter_index: Optional[int] = None) -> None:
         """打开一本书。key 为书架 book_id，用于进度关联。"""
         if not os.path.exists(path):
-            QMessageBox.warning(self, "无法打开", f"文件不存在：\n{path}")
+            QMessageBox.warning(self, tr("common.open_failed"), tr("common.file_missing", path=path))
             return
         try:
             if path.lower().endswith(".epub"):
@@ -857,10 +857,11 @@ class ReaderView(QWidget):
             else:
                 chapters = self._parse_txt(path)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "解析失败", f"无法解析该书籍：\n{exc}")
+            QMessageBox.critical(self, tr("reader.parse_failed_title"),
+                                  tr("reader.parse_failed_body", exc=exc))
             return
         if not chapters:
-            QMessageBox.warning(self, "无内容", "未能从文件中解析出章节内容")
+            QMessageBox.warning(self, tr("reader.no_content_title"), tr("reader.no_content_body"))
             return
 
         self.current_path = path

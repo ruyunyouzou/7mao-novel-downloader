@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gui.plugin.base import (
     Plugin, PluginMeta, DownloaderBase, DownloadResult, declare_nav,
 )
+from gui.i18n import tr
 from gui.widgets import nation_icon
 from gui.style import accent_color
 
@@ -217,12 +218,13 @@ class ExampleDemoView(QWidget):
     # ---------------------------------------------------------------- 行为
     def _on_try(self) -> None:
         QMessageBox.information(
-            self, "示例插件",
-            "示例插件的标签页按钮被点击了！\n\n这一页由 register_tabs 挂载点注入。")
+            self, tr("plugins.example_title"),
+            tr("plugins.example_tab_body"))
 
     def _on_summary(self) -> None:
         pm = getattr(self._mw, "pm", None)
-        QMessageBox.information(self, "插件摘要", pm.summary() if pm else "无插件管理器")
+        QMessageBox.information(self, tr("plugins.summary_title"),
+                                pm.summary() if pm else tr("plugins.no_manager"))
 
 
 class ExamplePlugin(Plugin):
@@ -245,15 +247,15 @@ class ExamplePlugin(Plugin):
         action.triggered.connect(
             lambda: QMessageBox.information(
                 main_window,
-                "示例插件",
-                "这是通过插件的 register_menus 挂载点动态添加的菜单项。\n\n"
-                "插件机制支持：菜单、标签页、搜索/下载事件、下载内核接管。",
+                tr("plugins.example_title"),
+                tr("plugins.example_menu_body"),
             )
         )
 
         action2 = menu.addAction("查看插件摘要")
         action2.triggered.connect(
-            lambda: QMessageBox.information(main_window, "插件摘要", self.manager.summary())
+            lambda: QMessageBox.information(main_window, tr("plugins.summary_title"),
+                                    self.manager.summary())
         )
 
     def register_tabs(self, main_window):

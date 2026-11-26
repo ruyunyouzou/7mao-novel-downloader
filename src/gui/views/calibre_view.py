@@ -600,7 +600,7 @@ class CalibreView(QWidget):
         self.store.settings_set("calibre_bin_dir", self.bin_edit.text().strip())
         self.store.settings_set("calibre_library", self.lib_edit.text().strip())
         self._detect()
-        QMessageBox.information(self, "已保存", "Calibre 路径已保存到本机。")
+        QMessageBox.information(self, tr("common.saved_title"), tr("calibre.path_saved"))
 
     def _detect(self) -> None:
         # 每次检测都写日志，让用户明确知道按钮生效了（否则界面看似“没反应”）
@@ -736,11 +736,11 @@ class CalibreView(QWidget):
     def edit_selected(self) -> None:
         book = self._selected_book()
         if not book:
-            QMessageBox.information(self, "提示", "请先选择一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("calibre.select_book"))
             return
         path = book_file(book, (".epub",))
         if not path:
-            QMessageBox.warning(self, "无法编辑", "这本书没有可用的 EPUB 文件")
+            QMessageBox.warning(self, tr("calibre.cant_edit_title"), tr("calibre.cant_edit_body"))
             return
         try:
             open_editor(self.install, path)
@@ -751,17 +751,18 @@ class CalibreView(QWidget):
     def convert_selected(self) -> None:
         book = self._selected_book()
         if not book:
-            QMessageBox.information(self, "提示", "请先选择一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("calibre.select_book"))
             return
         src = book_file(book, (".epub", ".mobi", ".azw3", ".pdf"))
         if not src:
-            QMessageBox.warning(self, "无法转换", "这本书没有可用的源文件")
+            QMessageBox.warning(self, tr("calibre.cant_convert_title"), tr("calibre.cant_convert_body"))
             return
         cur_ext = os.path.splitext(src)[1].lower()
         targets = [e for e in (".epub", ".mobi", ".azw3", ".pdf", ".txt") if e != cur_ext]
         from PySide6.QtWidgets import QInputDialog
         target, ok = QInputDialog.getItem(
-            self, "转换格式", f"将《{book.title}》转为：",
+            self, tr("calibre.convert_title"),
+            tr("calibre.convert_label", title=book.title),
             targets, 0, False,
         )
         if not ok:
@@ -775,7 +776,7 @@ class CalibreView(QWidget):
             convert_format(self.install, src, dst)
             self.progress.setValue(100)
             self.log(f"✓ 转换完成：{dst}")
-            QMessageBox.information(self, "转换完成", f"已生成：\n{dst}")
+            QMessageBox.information(self, tr("common.convert_done"), tr("common.generated", path=dst))
         except CalibreError as exc:
             self.progress.setValue(0)
             QMessageBox.critical(self, "转换失败", str(exc))
@@ -783,7 +784,7 @@ class CalibreView(QWidget):
     def add_to_lib(self) -> None:
         lib = self.lib_edit.text().strip()
         if not lib or not os.path.isfile(os.path.join(lib, "metadata.db")):
-            QMessageBox.warning(self, "书库无效", "请先设置有效的 Calibre 书库目录")
+            QMessageBox.warning(self, tr("calibre.invalid_lib_title"), tr("calibre.invalid_lib_body"))
             return
         paths = _fd.open_files(
             self, "选择要加入 Calibre 书库的电子书",
@@ -800,13 +801,13 @@ class CalibreView(QWidget):
                 self.log(f"✓ 已加入书库：{os.path.basename(p)}")
             except CalibreError as exc:
                 self.log(f"✗ 加入失败：{os.path.basename(p)} - {exc}")
-        QMessageBox.information(self, "完成", f"成功加入 {ok}/{len(paths)} 本")
+        QMessageBox.information(self, tr("common.done"), tr("calibre.added_n", ok=ok, total=len(paths)))
         self.reload_books()
 
     def export_selected(self) -> None:
         book = self._selected_book()
         if not book:
-            QMessageBox.information(self, "提示", "请先选择一本书")
+            QMessageBox.information(self, tr("common.tip"), tr("calibre.select_book"))
             return
         lib = self.lib_edit.text().strip()
         out_dir = _fd.select_directory(self, "选择导出目录", lib)
@@ -815,7 +816,7 @@ class CalibreView(QWidget):
         try:
             export_from_library(self.install, lib, book.book_id, out_dir)
             self.log(f"✓ 已导出《{book.title}》到 {out_dir}")
-            QMessageBox.information(self, "导出完成", f"已导出到：\n{out_dir}")
+            QMessageBox.information(self, tr("common.export_done"), tr("common.export_to", path=out_dir))
         except CalibreError as exc:
             QMessageBox.critical(self, "导出失败", str(exc))
 
@@ -824,7 +825,7 @@ class CalibreView(QWidget):
         if not self.install.available:
             self._detect()
         if not self.install.available:
-            QMessageBox.warning(self, "未检测到 Calibre", "请先安装 Calibre 或在设置中指定路径")
+            QMessageBox.warning(self, tr("calibre.not_found_title"), tr("calibre.not_found_body"))
             return
         try:
             open_editor(self.install, path)
