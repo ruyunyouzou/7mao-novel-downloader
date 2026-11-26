@@ -105,6 +105,38 @@ class DownloadDialog(QDialog):
         lay.addLayout(row_tpl)
         lay.addWidget(QLabel(tr("dlg.placeholders")))
 
+        # ===== 官方信息修正（仅番茄书；App 端书名/封面比 Web 端新）=====
+        self._official_group = None
+        self.official_title_edit = None
+        self.official_cover_edit = None
+        self._official_cleared = False
+        if str(book.get("source", "") or "") == "fanqie":
+            from .fanqie_core.meta_override import get_override
+            override = get_override(str(book.get("id", "") or ""))
+            grp = QGroupBox(tr("dlg.official_group"))
+            g_lay = QVBoxLayout(grp)
+            hint = QLabel(tr("dlg.official_hint"))
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #888;")
+            g_lay.addWidget(hint)
+            row_ot = QHBoxLayout()
+            row_ot.addWidget(QLabel(tr("dlg.official_title")))
+            self.official_title_edit = QLineEdit(override.get("title", ""))
+            self.official_title_edit.setPlaceholderText(str(book.get("title", "") or ""))
+            row_ot.addWidget(self.official_title_edit, 1)
+            g_lay.addLayout(row_ot)
+            row_oc = QHBoxLayout()
+            row_oc.addWidget(QLabel(tr("dlg.official_cover")))
+            self.official_cover_edit = QLineEdit(override.get("cover_url", ""))
+            self.official_cover_edit.setPlaceholderText("https://...")
+            row_oc.addWidget(self.official_cover_edit, 1)
+            g_lay.addLayout(row_oc)
+            clear_btn = QPushButton(tr("dlg.official_clear"))
+            clear_btn.clicked.connect(self._clear_official)
+            g_lay.addWidget(clear_btn)
+            lay.addWidget(grp)
+            self._official_group = grp
+
         # ===== EPUB 排版选项（仅 EPUB 生效，只影响本次下载）=====
         epub_group = QGroupBox(tr("dlg.epub_group"))
         epub_lay = QVBoxLayout(epub_group)
@@ -313,6 +345,14 @@ class DownloadDialog(QDialog):
         self.tail_mode_combo.setEnabled(on)
         self.tail_fixed_combo.setEnabled(on and fixed)
 
+    def _clear_official(self) -> None:
+        """清空官方信息修正输入，并标记删除持久化的覆盖表记录。"""
+        if self.official_title_edit is not None:
+            self.official_title_edit.clear()
+        if self.official_cover_edit is not None:
+            self.official_cover_edit.clear()
+        self._official_cleared = True
+
     # ---------- 预览与输出 ----------
     def _update_preview(self) -> None:
         start = self.start_spin.value() if self.range_check.isChecked() else 0
@@ -334,7 +374,7 @@ class DownloadDialog(QDialog):
         """返回本次下载的全部选项；EPUB 排版参数会透传给内核。"""
         scoped = self.range_check.isChecked()
         vol = str(self.dlg_volume_font.currentData() or "__auto__")
-        return {
+        opts: Dict[str, Any] = {
             "start_chapter": self.start_spin.value() if scoped else 0,
             "end_chapter": self.end_spin.value() if scoped else 0,
             "filename_template": self.template_edit.text().strip(),
@@ -352,6 +392,14 @@ class DownloadDialog(QDialog):
             "tail_mode": str(self.tail_mode_combo.currentData() or "rotate"),
             "tail_fixed": str(self.tail_fixed_combo.currentData() or ""),
         }
+        # 番茄官方信息修正（透传给内核写入覆盖表）
+        if self._official_group is not None:
+            opts["official_title"] = (self.official_title_edit.text().strip()
+                                      if self.official_title_edit else "")
+            opts["official_cover_url"] = (self.official_cover_edit.text().strip()
+                                          if self.official_cover_edit else "")
+            opts["official_clear"] = self._official_cleared
+        return opts
 
     def format(self) -> str:
         return self.fmt_combo.currentText()

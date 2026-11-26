@@ -36,16 +36,35 @@ class FanqieBookSource(BookSource):
         self._total = 0
 
     def fetch_detail(self, book_id: str, session) -> dict:
+        bid = str(book_id or "").strip()
+        # 覆盖表优先：下载对话框里用户粘贴的 App 官方书名/封面网址，
+        # 覆盖 Web 端滞后的旧书名/旧封面。只影响落盘产物，不改搜索展示。
+        override = {}
         try:
-            name, author, intro = self._handler.get_book_info(str(book_id))
+            from gui.fanqie_core.meta_override import get_override
+            override = get_override(bid)
         except Exception:  # noqa: BLE001
-            name, author, intro = None, None, None
+            override = {}
+
+        name, author, intro, cover = "", "", "", ""
         # 封面供 EPUB 内嵌；惰性导入避免启动期加载字体映射大表，失败不影响下载。
-        try:
-            from gui.fanqie_core.fanqie_reader import fetch_cover
-            cover = fetch_cover(str(book_id))
-        except Exception:  # noqa: BLE001
-            cover = ""
+        if not (override.get("title") and override.get("cover_url")):
+            # 没有完整覆盖时才请求 Web 详情，避免无谓网络开销
+            try:
+                name, author, intro = self._handler.get_book_info(bid)
+            except Exception:  # noqa: BLE001
+                name, author, intro = None, None, None
+            try:
+                from gui.fanqie_core.fanqie_reader import fetch_cover
+                cover = fetch_cover(bid)
+            except Exception:  # noqa: BLE001
+                cover = ""
+
+        # 用覆盖值逐字段覆盖（空字段仍回退 Web）
+        if override.get("title"):
+            name = override["title"]
+        if override.get("cover_url"):
+            cover = override["cover_url"]
         return {
             "title": str(name or ""),
             "author": str(author or ""),
@@ -108,6 +127,30 @@ class FanqieDownloader(DownloaderBase):
 
     def download(self, book_id, save_path, fmt="txt", progress_cb=None, **kwargs):
         title = kwargs.get("title", "") or ""
+        bid = str(book_id or "").strip()
+
+        # 下载对话框即时修正：把用户粘贴的官方书名/封面网址写入覆盖表并持久化，
+        # 之后同书再下载自动沿用，无需重复填写。
+        off_title = str(kwargs.get("official_title", "") or "").strip()
+        off_cover = str(kwargs.get("official_cover_url", "") or "").strip()
+        try:
+            from gui.fanqie_core.meta_override import set_override, remove_override
+            if kwargs.get("official_clear"):
+                remove_override(bid)
+                off_title, off_cover = "", ""
+            elif off_title or off_cover:
+                set_override(bid, off_title, off_cover)
+        except Exception:  # noqa: BLE001
+            pass
+        # 官方书名覆盖搜索页的旧别名（文件名 / EPUB 标题 / 题图种子均据此）
+        try:
+            from gui.fanqie_core.meta_override import get_override
+            override = get_override(bid)
+            if override.get("title"):
+                title = override["title"]
+        except Exception:  # noqa: BLE001
+            pass
+
         from gui.datastore import DataStore
         store = DataStore()
 

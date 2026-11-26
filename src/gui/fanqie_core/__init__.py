@@ -5,6 +5,7 @@
 
 - fanqie_reader.py          官网正文读取 + woff2 字体解码 + 全形态链接/ID 归一化
 - fanqie_search.py          关键词搜索（官方接口 + a_bogus 签名 + SEARCH_MAP 解码）
+- meta_override.py          官方书名/封面元数据覆盖表（下载对话框修正入口写入）
 - fanqie_upstream/          xiaocse/Fanqie-novel-Downloader 上游实现（原样隔离，可一键同步）
 - fanqie_search_upstream/   搜索签名与字体映射上游实现（原样隔离）
 
@@ -21,6 +22,9 @@ __all__ = [
     "search_fanqie",
     "fetch_cover",
     "RequestHandler",
+    "get_override",
+    "set_override",
+    "remove_override",
 ]
 
 
@@ -38,4 +42,7 @@ def __getattr__(name: str):
     if name == "RequestHandler":
         from .fanqie_upstream import RequestHandler
         return RequestHandler
+    if name in ("get_override", "set_override", "remove_override", "all_overrides"):
+        from . import meta_override
+        return getattr(meta_override, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
