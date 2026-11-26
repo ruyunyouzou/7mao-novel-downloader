@@ -75,12 +75,14 @@ class BookCard(QFrame):
     # ------------------------------------------------------------------ 样式
 
     def _apply_style(self) -> None:
-        bg = BG_CARD if self._dark else "#ffffff"
-        bd = BORDER if self._dark else "#e5e5e5"
+        # 玻璃质感：卡片改为同色相半透明 + 柔光边 + 大圆角；
+        # hover 仍用原强调色（主题色圆点/重染逻辑不变）。
+        bg = "rgba(36, 36, 36, 0.74)" if self._dark else "rgba(255, 255, 255, 0.82)"
+        bd = "rgba(255, 255, 255, 0.10)" if self._dark else "rgba(60, 50, 40, 0.09)"
         hover = ACCENT if self._dark else ACCENT_DARK
         self.setStyleSheet(f"""
             QFrame#bookCard {{ background-color: {bg}; border: 1px solid {bd};
-                               border-radius: 8px; }}
+                               border-radius: 14px; }}
             QFrame#bookCard:hover {{ border: 1px solid {hover}; }}
         """)
 

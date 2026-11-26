@@ -1360,6 +1360,10 @@ class MainWindow(QMainWindow):
             except Exception:  # noqa: BLE001
                 extra = ""
         combined = base + ("\n" + extra if extra else "")
+        # 玻璃质感补丁：仅调卡片圆角/半透明/柔光边，放在自定义卡片色之前，
+        # 保证用户配色中心的颜色仍能覆盖；不改任何主题色/背景/强调色。
+        from .style import glass_effect_qss
+        combined += "\n" + glass_effect_qss(self._dark_theme)
         # 功能背景色（用户自定义）：只覆盖卡片类容器，不动整页背景/按钮/输入框
         from . import nation_theme as _nt
         custom_card = _nt.card_bg_color()

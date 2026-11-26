@@ -568,6 +568,46 @@ QMessageBox {{ background: #fff; }}
 """
 
 
+def glass_effect_qss(dark: bool) -> str:
+    """玻璃质感补丁：只调整卡片容器的圆角、半透明背景与柔光边框。
+
+    严格不改任何主题色相 / 强调色锚点 / 用户配色方案：
+      - 仅把默认卡片底色换成「同色相的半透明版本」；
+      - 边框换成低透明柔光边；圆角从 8-10px 统一放大到 14px。
+    本函数作为补丁追加在基础 QSS 之后、用户自定义卡片色覆盖之前，
+    因此用户若在配色中心设过卡片色，仍以用户色为准（配色方案优先）。
+    QSS 不支持 backdrop-filter，半透明透出背景渐变即为可实现的最佳玻璃感。
+    """
+    if dark:
+        page = "rgba(36, 36, 36, 0.74)"          # BG_CARD #242424 同色半透
+        accent_card = "rgba(42, 39, 51, 0.74)"   # queueConcurrentCard #2a2733 同色半透
+        edge = "rgba(255, 255, 255, 0.10)"
+        sel = "rgba(43, 40, 51, 0.86)"
+    else:
+        page = "rgba(255, 255, 255, 0.82)"
+        accent_card = "rgba(250, 250, 250, 0.86)"
+        edge = "rgba(60, 50, 40, 0.09)"
+        sel = "rgba(243, 238, 251, 0.90)"
+    return f"""
+/* ===== 玻璃质感层（仅质感，不改配色方案）===== */
+QFrame#shelfGroupCard, QFrame#queueTaskCard, QFrame#histTaskCard {{
+    background-color: {page};
+    border: 1px solid {edge};
+    border-radius: 14px;
+}}
+QFrame#queueConcurrentCard {{
+    background-color: {accent_card};
+    border: 1px solid {edge};
+    border-radius: 14px;
+}}
+QFrame#queueTaskCard[selected="true"], QFrame#histTaskCard[selected="true"] {{
+    background-color: {sel};
+    border-radius: 14px;
+}}
+QGroupBox {{ border-radius: 12px; }}
+"""
+
+
 def accent_button(button) -> None:
     """把按钮标记为强调色（淡紫主按钮）。"""
     button.setProperty("accent", "true")
