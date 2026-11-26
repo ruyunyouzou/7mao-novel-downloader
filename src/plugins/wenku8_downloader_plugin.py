@@ -54,6 +54,12 @@ class Wenku8BookSource(BookSource):
         meta = fetch_book_meta(book_id, sess)
         self._prefix = meta.get("novel_prefix", "")
         raw = fetch_catalog(book_id, sess)
+        # 归一为「卷/集/章」层级：title 精简为纯章名，vol/sub 记录分组。
+        try:
+            from gui.hierarchy import normalize_catalog
+            raw = normalize_catalog(raw)
+        except Exception:  # noqa: BLE001 - 层级解析失败不影响原始目录
+            pass
         self._total = len(raw)
         return raw
 

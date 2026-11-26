@@ -118,33 +118,46 @@ class FanqieBookSource(BookSource):
         }
 
     def fetch_catalog(self, book_id: str, session) -> list:
-        # 智能加固：番茄偶发对目录请求返回验证/拦截页，extract_chapters 解析不到
-        # div.chapter-item 就返回空列表，导致「目录为空，无法下载」偶发失败。
-        # 换 UA（重建 handler 的 session 头）+ 递增延时重试，最多 3 次。
-        import time as _time
-        raw = []
-        for attempt in range(3):
-            raw = self._handler.extract_chapters(str(book_id)) or []
-            if raw:
-                break
-            if attempt < 2:
-                # 轮换 UA：直接改 handler 的 user_agents 配置首项，下次 get_headers 生效
-                try:
-                    from gui.fanqie_core.fanqie_reader import _UA_POOL
-                    uas = self._handler.config.get("user_agents")
-                    if isinstance(uas, list) and _UA_POOL:
-                        uas.insert(0, _UA_POOL[(attempt + 1) % len(_UA_POOL)])
-                except Exception:  # noqa: BLE001
-                    pass
-                _time.sleep(0.8 * (attempt + 1))
+        # 优先用带卷层级的解析（番茄 chapterListWithVolume 显式给出 volume_name）。
+        # 失败则回退到上游扁平目录，保证任何情况下都不会因层级解析导致目录为空。
+        from gui.fanqie_core.fanqie_reader import fetch_catalog_with_volumes
+        raw = fetch_catalog_with_volumes(str(book_id))
+
+        if not raw:
+            # 智能加固：番茄偶发对目录请求返回验证/拦截页，extract_chapters 解析不到
+            # div.chapter-item 就返回空列表，导致「目录为空，无法下载」偶发失败。
+            # 换 UA（重建 handler 的 session 头）+ 递增延时重试，最多 3 次。
+            import time as _time
+            for attempt in range(3):
+                raw = self._handler.extract_chapters(str(book_id)) or []
+                if raw:
+                    break
+                if attempt < 2:
+                    try:
+                        from gui.fanqie_core.fanqie_reader import _UA_POOL
+                        uas = self._handler.config.get("user_agents")
+                        if isinstance(uas, list) and _UA_POOL:
+                            uas.insert(0, _UA_POOL[(attempt + 1) % len(_UA_POOL)])
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _time.sleep(0.8 * (attempt + 1))
         self._total = len(raw)
         catalog = []
         for i, ch in enumerate(raw):
-            catalog.append({
+            item = {
                 "id": str(ch.get("id", "")),
                 "title": str(ch.get("title", f"第{i + 1}章")),
                 "index": int(ch.get("index", i)),
-            })
+            }
+            if ch.get("vol"):
+                item["vol"] = str(ch.get("vol"))
+            catalog.append(item)
+        # 归一为「卷/集/章」：title 精简为纯章名，vol/sub 记录分组
+        try:
+            from gui.hierarchy import normalize_catalog
+            catalog = normalize_catalog(catalog)
+        except Exception:  # noqa: BLE001
+            pass
         return catalog
 
     def chapter_text(self, ctx, chapter: dict, session, report) -> str:

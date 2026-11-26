@@ -151,23 +151,49 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     # 文库8把插图作为独立章节（正文容器为空，只有图片），下载后是空章。
     # 这类章节标题为纯图片标记，过滤掉以免产出空章节。
     _image_only = {"插图", "插画", "图片", "图", "封面", "彩页"}
-    for a in soup.select("a[href]"):
-        href = a.get("href", "").strip()
-        title = a.get_text(" ", strip=True)
-        if not re.fullmatch(r"\d+\.htm", href):
+    # 文库8目录结构：<td class="vcss" vid="...">第一卷</td> 是卷标题行，
+    # 后续 <td class="ccss"><a href="数字.htm">章名</a></td> 是该卷下的章节。
+    # 按文档顺序遍历，遇到 vcss 更新当前卷，遇到章节链接继承它 → 保留层级。
+    current_vol = ""
+    for tr in soup.select("tr"):
+        vol_td = tr.select_one("td.vcss")
+        if vol_td is not None:
+            current_vol = vol_td.get_text(" ", strip=True)
             continue
-        if title in _image_only:
-            continue
-        cid = href[:-4]
-        if not cid.isdigit() or cid in seen:
-            continue
-        seen.add(cid)
-        catalog.append({
-            "id": cid,
-            "title": title or f"第{len(catalog) + 1}章",
-            "index": len(catalog),
-            "url": urljoin(catalog_url, href),
-        })
+        for a in tr.select("a[href]"):
+            href = a.get("href", "").strip()
+            title = a.get_text(" ", strip=True)
+            if not re.fullmatch(r"\d+\.htm", href):
+                continue
+            if title in _image_only:
+                continue
+            cid = href[:-4]
+            if not cid.isdigit() or cid in seen:
+                continue
+            seen.add(cid)
+            catalog.append({
+                "id": cid,
+                "title": title or f"第{len(catalog) + 1}章",
+                "index": len(catalog),
+                "url": urljoin(catalog_url, href),
+                "vol": current_vol,
+            })
+    # 兜底：若页面结构异常（vcss 未识别）导致全部卷为空，退回扁平遍历，
+    # 保证任何情况下章节都不丢失（零回归）。
+    if not catalog:
+        for a in soup.select("a[href]"):
+            href = a.get("href", "").strip()
+            title = a.get_text(" ", strip=True)
+            if not re.fullmatch(r"\d+\.htm", href) or title in _image_only:
+                continue
+            cid = href[:-4]
+            if not cid.isdigit() or cid in seen:
+                continue
+            seen.add(cid)
+            catalog.append({
+                "id": cid, "title": title or f"第{len(catalog) + 1}章",
+                "index": len(catalog), "url": urljoin(catalog_url, href),
+            })
     return catalog
 
 

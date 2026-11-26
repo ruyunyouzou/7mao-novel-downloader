@@ -108,6 +108,15 @@ def follow_txt(rec: Dict[str, Any], path: str,
     appended = 0
     # 部分场景（如追更）没有进度回调，统一给空实现，避免内核内 report(None) 崩溃
     cb = progress_cb or (lambda _p: None)
+    # 层级追更：三源目录已归一带卷/集元数据时，新章跨卷/跨集也要写标题行，
+    # 保持与首次下载一致、微信读书导入后目录层级不丢。前一章取已下载的最后一章。
+    try:
+        from .hierarchy import has_hierarchy, txt_heading_lines
+        tiered = has_hierarchy(catalog)
+    except Exception:  # noqa: BLE001
+        tiered = False
+        txt_heading_lines = None
+    prev = catalog[local_total - 1] if local_total > 0 else None
     # 七猫：缓存 ZIP + AES 解密；番茄：官网正文 + 字体解密；追加逻辑完全共用
     with source.context(bid, session, cb) as ctx:
         with open(path, "a", encoding="utf-8") as f:
@@ -119,7 +128,11 @@ def follow_txt(rec: Dict[str, Any], path: str,
                     continue
                 if not text:
                     continue
-                f.write(f"\n\n{ch['title']}\n\n{text}\n")
+                heads = ""
+                if tiered and txt_heading_lines is not None:
+                    heads = txt_heading_lines([ch], 0, prev)
+                f.write(f"{heads}\n\n{ch['title']}\n\n{text}\n")
+                prev = ch
                 appended += 1
     if progress_cb:
         progress_cb(100)

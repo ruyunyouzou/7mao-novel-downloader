@@ -411,3 +411,47 @@ def decode_chapter(item_id: str) -> str:
     if title and lines and title.replace(" ", "") in lines[0].replace(" ", ""):
         lines = lines[1:]
     return "\n".join("    " + ln for ln in lines)
+
+
+def fetch_catalog_with_volumes(book_id: str, timeout: int = 12) -> list:
+    """取番茄目录并保留卷层级。
+
+    番茄页面 __INITIAL_STATE__.page.chapterListWithVolume 是按卷分组的二维列表，
+    每章带 volume_name 字段（如「第一卷：默认」「番外篇」）。上游 extract_chapters
+    只抓 div.chapter-item 把卷拍平，故这里独立解析 state 还原层级。
+
+    返回与上游 extract_chapters 同构的 [{id, title, index, url, vol}]：
+      - id 用 itemId（与正文接口一致），url 用 /reader/{itemId}
+      - title 保留站点原标题（交由 hierarchy 归一为纯章名）
+      - vol 取 volume_name；番外类原样保留（hierarchy 会提升为卷级）
+    失败返回 []，由调用方回退到上游扁平目录（零回归）。
+    """
+    bid = str(book_id or "").strip()
+    if not bid:
+        return []
+    try:
+        sess = _get_session()
+        page = fetch_page(f"https://fanqienovel.com/page/{bid}", retries=2, timeout=timeout)
+        state = _initial_state(page)
+        pg = state.get("page", {}) or {}
+        groups = pg.get("chapterListWithVolume") or []
+        out = []
+        for group in groups:
+            if not isinstance(group, list):
+                continue
+            for c in group:
+                cid = str(c.get("itemId", "") or "").strip()
+                if not cid:
+                    continue
+                title = str(c.get("title", "") or "").strip()
+                vol = str(c.get("volume_name", "") or "").strip()
+                out.append({
+                    "id": cid,
+                    "title": title,
+                    "index": len(out),
+                    "url": f"https://fanqienovel.com/reader/{cid}",
+                    "vol": vol,
+                })
+        return out
+    except Exception:  # noqa: BLE001 - 任何失败都回退上游扁平目录
+        return []

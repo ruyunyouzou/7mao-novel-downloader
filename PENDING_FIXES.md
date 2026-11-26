@@ -7,12 +7,12 @@
 ## 当前状态
 
 - **基线版本**：**v5.0.4**（2026-11-26，用户明确要求升版发版；版本真源 `APP_VERSION`、`update-manifest.json`、CLI fallback 均已升至 5.0.4，含第 57–64 条全部改动：队列移除/封面预览/读者页失败根治、卡 85%与2%根治、番茄并发预取+智能自适应、风控优化+多源框架、App 渠道真实第二源、下载产物适配微信读书导入）
-- **已修未发版**：**1 / 10**（新周期第 1 条：接入文库8作为第三书源，用户要求先本地验证不发版）
+- **已修未发版**：**2 / 10**（新周期第 1 条：接入文库8作为第三书源；第 2 条：三源目录层级化「卷/集/章」自动适配 + 番外当卷 + 微信读书导入保层级，均按用户要求先本地验证不发版）
 - **发版说明**：v5.0.4 按用户明确发版指令启用（当时 8/10），第 57–64 条全部随本版发布；本周期已清零
 - **队列移除任务 / 清除未完成 / 番茄选封面预览 / 封面路径兜底 / 读者页缺少数据根治**：见下方第 54–56 条，已随 v5.0.3 发布
 - **发版包含**：v5.0.2 后新周期第 54–56 条（队列移除、番茄封面预览与本地封面兜底、完整浏览器头 + 重试根治读者页缺少数据失败）随 v5.0.3 发布
 - **六轮体检（第 52 条，追加项）**：静态与死代码 / 三语 / GUI 冒烟 / 双内核数据链路 / 线程与退出 / 结构冗余各一轮；已修 9 类问题（详见第 52 条），3 项待拍板重构已按推荐全部落地（见第 53 条）：弹窗 58 处国际化、七猫签名单一实现、CLI 归档 `src/legacy/`
-- **下一个待发布版本**：v5.0.5（满 10 条或用户明确发版指令才启用；当前新周期第 1 条为文库8第三书源）
+- **下一个待发布版本**：v5.0.5（满 10 条或用户明确发版指令才启用；当前新周期已 2 条：文库8第三书源、三源目录层级化）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
 - **阅读器补充**：阅读器专注模式退出入口 + EPUB 章节名 + 字号即时生效修复为用户追加项，另行登记于下方第 15 条，不计入本轮 10 条
@@ -35,6 +35,7 @@
 
 | 编号 | 简述 | 涉及文件 | 修复日期 |
 |------|------|----------|----------|
+| 66 | **（新周期第 2 条，用户要求三源目录层级化）** 根因：三源目录在导出时被拍平——番茄卷信息在 `page.chapterListWithVolume`/`volume_name` 但上游 `extract_chapters` 只抓 `div.chapter-item` 全丢；文库8卷是 `<td class="vcss">` 分组行但旧解析器只抓章节链接全丢；七猫卷在章节标题前缀但目录树不认。落地：①新增 `gui/hierarchy.py`——统一层级模型 `{vol, sub, title(纯章名)}`，`parse_title` 按标记位置切分支持「篇→集→章」内嵌三级并自动适配实际层数（三级/两级/一级），`normalize_catalog` 三源归一（显式卷优先、番外类提升为「番外篇」卷、连续番外聚一组），`build_nested_toc` 构造 ebooklib 嵌套目录并给分组节点补 href=首章，`txt_heading_lines` 仅在层级变化时写卷/集标题行，`has_hierarchy` 零回归开关；②文库8 `fetch_catalog` 按文档顺序遍历 `tr`，遇 `td.vcss` 更新当前卷、章节继承，异常回退扁平遍历；③番茄新增 `fanqie_reader.fetch_catalog_with_volumes()` 解析 `__INITIAL_STATE__.page.chapterListWithVolume`，插件优先用它、失败回退上游（零回归）；④七猫 `QimaoBookSource.fetch_catalog` 接入归一（绝大多数纯章标题→保持一层）；⑤`build_txt` EPUB：有层级时 `book.toc` 用嵌套 Section（卷h1/集h2/章h3 标题双保险），无层级维持原扁平；TXT/分章：有层级写卷/集归属与标题行；⑥追更 `follow_core` 跨卷/跨集新章也写层级标题行。**自动适配**：数据有几级做几级（文库8两卷=两层、番茄14卷=两层、内嵌篇/集/章=三层、纯章=一层）。**验证**：文库8真实 21 章 EPUB nav 双层嵌套+卷标题、TXT 带卷标题；番茄真实 1441 章/14 卷、范围下载 EPUB 卷目录正确；七猫 643 章纯章层数=1 标题未变（零回归）；层级/范围切片/纯章零回归用例全过；compileall PASS、pytest 4 passed+23 subtests、三语未动 | `hierarchy.py`(新增)、`qimao_core.py`、`wenku8_reader.py`、`fanqie_reader.py`、`wenku8_downloader_plugin.py`、`fanqie_downloader_plugin.py`、`follow_core.py` | 2026-11-26 |
 | 65 | **（v5.0.4 后新周期第 1 条，用户「开始做我这个下载器起点小说的部分」→ 起点因版权/风控放弃，改为接入文库8作为第三书源）** 调查：GitHub `mikufoxxx/Wenku8_Flutter`（★2958/GPL）的在线内核未开源（`LegacyWenkuRepository` 全为 `unavailableOnline()` 空壳、README 明说无法独立构建），故自研内核。实测文库8站点全链路：详情页 `/book/{id}.htm`、目录 `/novel/{n}/{id}/index.htm`（章节相对链接 `{cid}.htm`）、正文 `#content` 明文、**无 PUA/woff 字体混淆**，全站 GBK；站点强制登录（未登录跳 `login.php`），由用户自己账号的 Cookie 提供登录态。站内 `so.php` 被 WAF 拦（403）、`search.php` 返回空，故搜索走「14 分类列表页并发抓取 + 本地书名过滤」（实测「魔女」命中 11 本、1.6s）。落地：①新增 `gui/wenku8_core/`（自研，零新依赖）——`wenku8_auth.py`（Cookie 管理/登录态 Session/校验）、`wenku8_reader.py`（URL 归一化/详情/目录/正文，过滤纯插图空章）、`wenku8_search.py`（分类本地过滤）、`__init__.py`（惰性导出）；②新增 `plugins/wenku8_downloader_plugin.py`（`Wenku8BookSource` + `Wenku8Downloader` + Plugin 三件套，8 线程并发预取+失败补抓），复用 `build_txt` 全部导出能力；③接入第三书源：`book_source_for`/`_search_by_source`/`DetailWorker`/`_book_from_id` 分流、`book_link` 识别文库8链接、主窗口下拉框 2→3 项（统一 `_SOURCE_KEYS` 映射）、独立 `wenku8_save_dir` 保存目录、设置页 Cookie 输入框（异步校验登录态）；④**修复七猫 `supports()` 只排 fanqie 的 bug**（否则 wenku8 书落到七猫内核），改为排除所有第三方源；⑤i18n 三语各 +3 键（832→835 对齐）。**重点：只下载账号能正常阅读的内容，不做绕过付费/VIP、不碰盗版站**（用户普通会员 Vip=0）。**验证**：沙箱真实全本 TXT 21/21 章（628KB、带 BOM、无空章）、EPUB 23 xhtml/47 图（题图尾图生效）、耗时 8.4s/14.1s、进度 100%；追更检测（本地5章→线上23章报18新章）正确；三书源下载器选择全对（wenku8/fanqie/qimao/空/unknown）；compileall PASS、pyflakes 0 告警、三语 835 对齐、book_link 4 passed+2 skipped+23 subtests、GUI 回归 27/27、七猫番茄零回归。**按用户要求先本地验证不发版** | `wenku8_core/`(新增)、`wenku8_downloader_plugin.py`(新增)、`qimao_core.py`、`workers.py`、`book_link.py`、`main_window.py`、`qimao_downloader_plugin.py`、`i18n.py` | 2026-11-26 |
 | 1 | 搜索页硬编码中文纳入 i18n：推荐标题、详情提示、模式提示、推荐/分页结果提示改为 `tr()`，新增 `search.detail_hint` / `search.result_hint_tpl` / `search.mode_hint` / `search.recommend_result_hint` 等三语键 | `main_window.py`、`i18n.py` | 2026-11-25 |
 | 2 | 阅读器听书/对话识别/自动阅读按钮 tooltip 与文案纳入 i18n，自动阅读按钮去掉 emoji、文字随状态在 `reader.auto` / `reader.auto_stop` 间切换，新增 `reader.speak_no_engine` / `reader.dialogue_tip` / `reader.auto_tip` | `reader_view.py`、`i18n.py` | 2026-11-25 |

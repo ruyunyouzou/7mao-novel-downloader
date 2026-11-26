@@ -535,7 +535,15 @@ class QimaoBookSource(BookSource):
         return get_detail(book_id, session)
 
     def fetch_catalog(self, book_id: str, session) -> List[Dict]:
-        return get_catalog(book_id, session)
+        catalog = get_catalog(book_id, session)
+        # 归一层级：绝大多数七猫标题是纯「第X章」→ 保持一层零回归；
+        # 极少数标题自带「第X卷」前缀 → 解析成卷+章两级。
+        try:
+            from .hierarchy import normalize_catalog
+            catalog = normalize_catalog(catalog)
+        except Exception:  # noqa: BLE001
+            pass
+        return catalog
 
     @contextlib.contextmanager
     def context(self, book_id: str, session, report):
@@ -679,6 +687,14 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         effective_end = total_chapters
     report(2)
 
+    # 目录层级开关：章节带 vol/sub 元数据时启用「卷/集/章」分级导出；
+    # 纯章目录（旧七猫/未归一的书源）保持原样，零回归。
+    try:
+        from .hierarchy import has_hierarchy as _has_hierarchy
+        _hierarchy = _has_hierarchy(catalog)
+    except Exception:  # noqa: BLE001
+        _hierarchy = False
+
     # 渲染输出文件名（章节范围写入 {start}/{end}）
     out_name = render_filename(
         filename_template, title,
@@ -720,7 +736,14 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                     continue
                 fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
                 with open(os.path.join(book_dir, fname), "w", encoding="utf-8") as f:
-                    f.write(f"{ch['title']}\n\n{text}\n")
+                    # 分章 TXT：章文件内写卷/集归属，导入微信读书后可识别层级
+                    hdr = ""
+                    if _hierarchy:
+                        bits = [p.strip() for p in (
+                            str(ch.get("vol") or ""), str(ch.get("sub") or "")) if p.strip()]
+                        if bits:
+                            hdr = " › ".join(bits) + "\n\n"
+                    f.write(f"{hdr}{ch['title']}\n\n{text}\n")
                 chapters_written += 1
                 report(40 + int((i + 1) / len(catalog) * 60))
             result_path = book_dir
@@ -783,16 +806,25 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 # 标题(h2/卷名)只禁边框，背景留给渐变文字(background-clip:text)使用。
                 "p, div.titlecss, .titlecss { "
                 "background: transparent !important; border: none !important; }\n"
-                "h2.chapter-title, span.volume-name { border: none !important; }\n"
-                "h2.chapter-title { font-family: %s; font-size: 1em; font-weight: normal; "
-                "text-align: center; margin: 1.6em 0 1.2em; letter-spacing: 0.08em; }\n"
-                "span.volume-name { font-family: %s; }\n"
+                "h2.chapter-title, h3.chapter-title, span.volume-name, "
+                "h1.volume-name, h2.volume-name { border: none !important; }\n"
+                "h2.chapter-title, h3.chapter-title { font-family: %s; font-size: 1em; "
+                "font-weight: normal; text-align: center; margin: 1.6em 0 1.2em; "
+                "letter-spacing: 0.08em; }\n"
+                "span.volume-name, h1.volume-name, h2.volume-name { font-family: %s; }\n"
+                "h1.volume-name { font-size: 1.1em; font-weight: normal; text-align: center; "
+                "margin: 2em 0 0.4em; letter-spacing: 0.08em; }\n"
+                "h2.volume-name { font-size: 1em; font-weight: normal; text-align: center; "
+                "margin: 1.2em 0 0.4em; letter-spacing: 0.06em; }\n"
                 "div.volume-line { text-align: center; margin: 0.5em 0 0; line-height: 1.4; }\n"
                 "p { text-indent: 2em; text-align: justify; margin: 0 0 0.6em; }\n"
             ) % (chapter_family, volume_family)
             # 标题颜色：纯色直接写 color；渐变写 @supports 增强 + 纯色降级
             style_css += title_color_css("h2.chapter-title", chapter_color)
+            style_css += title_color_css("h3.chapter-title", chapter_color)
             style_css += title_color_css("span.volume-name", volume_color)
+            style_css += title_color_css("h1.volume-name", volume_color)
+            style_css += title_color_css("h2.volume-name", volume_color)
 
             # ---- 章首题图：准备原神资源库与预处理后的图片 ----
             try:
@@ -870,6 +902,13 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             )
             book.add_item(css_item)
             epub_chapters = []
+            toc_pairs = []  # (章节dict, EPUB条目)：供嵌套目录按卷/集分组
+            # 层级信息仅在目录整体带卷/集时启用；纯章目录维持原扁平渲染（零回归）
+            try:
+                from .hierarchy import build_nested_toc
+                _toc_builder = build_nested_toc
+            except Exception:  # noqa: BLE001
+                _toc_builder = None
             for i, ch in enumerate(catalog):
                 raw = _chapter_text(i, ch)
                 if not raw:
@@ -882,19 +921,40 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 else:
                     body_html = html.escape(raw).replace("\n", "<br/>")
                 safe_title = ch["title"]
-                vol_name, ch_name = split_volume_title(safe_title)
-                if vol_name:
-                    # 有分卷：卷名独立成行（卷名色/字体），章名独立 h2（章名色/字体），
-                    # 两者可各自使用渐变色而互不干扰。
-                    title_html = (
-                        f'<div class="volume-line">'
-                        f'<span class="volume-name">{html.escape(vol_name)}</span>'
-                        f'</div>'
-                        f'<h2 class="chapter-title">{html.escape(ch_name)}</h2>'
+                vol_name = str(ch.get("vol") or "").strip() if _hierarchy else ""
+                sub_name = str(ch.get("sub") or "").strip() if _hierarchy else ""
+                if vol_name or sub_name:
+                    # 层级模式：卷名 h1、集名 h2、章名 h3，微信读书可由标题再识别一层。
+                    # 首章正文内重复出现卷/集名做视觉分组；后续同组章节不再重复渲染。
+                    prev = toc_pairs[-1][0] if toc_pairs else {}
+                    show_vol = vol_name and vol_name != str(prev.get("vol") or "").strip()
+                    show_sub = sub_name and (sub_name != str(prev.get("sub") or "").strip()
+                                             or show_vol)
+                    parts = []
+                    if show_vol:
+                        parts.append(
+                            f'<h1 class="volume-name">{html.escape(vol_name)}</h1>'
+                        )
+                    if show_sub:
+                        parts.append(
+                            f'<h2 class="volume-name">{html.escape(sub_name)}</h2>'
+                        )
+                    parts.append(
+                        f'<h3 class="chapter-title">{html.escape(safe_title)}</h3>'
                     )
+                    title_html = "".join(parts)
                 else:
-                    # 无分卷：整行用章节字体
-                    title_html = f'<h2 class="chapter-title">{html.escape(safe_title)}</h2>'
+                    # 无分卷：沿用原逻辑（含从标题里拆「第X卷 …」的旧行为）
+                    vol_name, ch_name = split_volume_title(safe_title)
+                    if vol_name:
+                        title_html = (
+                            f'<div class="volume-line">'
+                            f'<span class="volume-name">{html.escape(vol_name)}</span>'
+                            f'</div>'
+                            f'<h2 class="chapter-title">{html.escape(ch_name)}</h2>'
+                        )
+                    else:
+                        title_html = f'<h2 class="chapter-title">{html.escape(safe_title)}</h2>'
 
                 # 章首题图：在标题上方插入图片（渐隐已烘焙进 PNG）
                 hero_html = ""
@@ -927,9 +987,14 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 )
                 book.add_item(c)
                 epub_chapters.append(c)
+                toc_pairs.append((ch, c))
                 chapters_written += 1
                 report(40 + int((i + 1) / len(catalog) * 60))
-            book.toc = tuple(epub_chapters)
+            if _hierarchy and _toc_builder is not None:
+                # 三级目录：卷 → 集 → 章（自动适配实际层数）
+                book.toc = _toc_builder(toc_pairs, epub)
+            else:
+                book.toc = tuple(epub_chapters)
             book.add_item(epub.EpubNcx())
             book.add_item(epub.EpubNav())
             book.spine = ["nav"] + epub_chapters
@@ -960,13 +1025,22 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         f.write(f"作者：{detail['author']}\n")
                     f.write(f"共 {len(catalog)} 章\n")
                     f.write("=" * 40 + "\n\n")
+                    try:
+                        from .hierarchy import txt_heading_lines
+                    except Exception:  # noqa: BLE001
+                        txt_heading_lines = None
+                    prev_ch = None
                     for i, ch in enumerate(catalog):
                         text = _chapter_text(i, ch)
                         if not text:
                             # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
                             report(40 + int((i + 1) / len(catalog) * 60))
                             continue
-                        f.write(f"\n\n{ch['title']}\n\n{text}\n")
+                        heads = ""
+                        if _hierarchy and txt_heading_lines is not None:
+                            heads = txt_heading_lines(catalog, i, prev_ch)
+                        f.write(f"{heads}\n\n{ch['title']}\n\n{text}\n")
+                        prev_ch = ch
                         chapters_written += 1
                         report(40 + int((i + 1) / len(catalog) * 60))
             except Exception:
