@@ -104,32 +104,25 @@ class FanqieBookSource(BookSource):
             pass
 
         text = ""
+        cid = str(chapter["id"])
         if backend == "upstream":
             try:
-                text = self._handler.down_text(str(chapter["id"])) or ""
+                text = self._handler.down_text(cid) or ""
             except Exception:  # noqa: BLE001
                 text = ""
         if not text:
-            # 番茄官网偶发返回不带 __INITIAL_STATE__ 的验证/兜底页，
-            # 单章一次失败不应让整本书下载失败：重试几次 → 再兜底 upstream 内核
-            # → 仍失败则返回空串，由 build_txt 跳过该章继续下载其余章节。
-            import time as _time
-            cid = str(chapter["id"])
-            for attempt in range(3):
-                try:
-                    text = decode_chapter(cid)
-                    break
-                except Exception:  # noqa: BLE001
-                    text = ""
-                    if attempt < 2:
-                        _time.sleep(0.6 * (attempt + 1))
+            # 官网读者页偶发返回验证/拦截页（不含 __INITIAL_STATE__）。
+            # decode_chapter 内部已用完整浏览器头 + 换 UA + 退避重试拿正常页，
+            # 这里只保留「官方失败再试上游接口」一条兜底，绝不跳过空章节假装成功。
+            try:
+                text = decode_chapter(cid)
+            except Exception:  # noqa: BLE001
+                text = ""
             if not text:
-                # 官方读者页取不到时用上游接口兜底（默认 backend=official 时未走过）
                 try:
                     text = self._handler.down_text(cid) or ""
                 except Exception:  # noqa: BLE001
                     text = ""
-            # 仍为空（特殊章/视频章）按跳过处理，不中断整本
 
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1

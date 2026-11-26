@@ -16,17 +16,40 @@ import html as _html
 import io
 import json
 import re
+import time as _time
 from functools import lru_cache
 from typing import Dict
 
 import requests
 
+# 真实浏览器请求头：番茄对只有 UA 的极简请求会返回验证/拦截页
+# （该页面不含 __INITIAL_STATE__，正是"读者页缺少数据"报错的根因）。
+_UA_POOL = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+)
+
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": _UA_POOL[0],
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
 }
+
+# 进程级 Session：复用 TCP 连接与 cookie，降低被风控概率
+_SESSION = requests.Session()
+
+INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
 
 FONT_MAP = {
     '58670': '0', '58413': '1', '58678': '2', '58371': '3', '58353': '4',
@@ -128,12 +151,35 @@ def _font_mapping(font_url: str) -> Dict[str, str]:
 
 
 def _initial_state(page: str) -> dict:
-    marker = "window.__INITIAL_STATE__="
-    pos = page.find(marker)
+    pos = page.find(INITIAL_STATE_MARKER)
     if pos < 0:
         raise ValueError("读者页缺少 __INITIAL_STATE__ 数据")
-    state, _ = json.JSONDecoder().raw_decode(page[pos + len(marker):])
+    state, _ = json.JSONDecoder().raw_decode(page[pos + len(INITIAL_STATE_MARKER):])
     return state
+
+
+def fetch_page(url: str, retries: int = 5, timeout: int = 25) -> str:
+    """请求番茄页面，确保拿到含 __INITIAL_STATE__ 的正常页面。
+
+    番茄会对可疑请求返回验证/拦截页（HTML 里没有 __INITIAL_STATE__），
+    这正是"读者页缺少数据"报错的来源。这里在整本书层面统一做重试：
+    每次更换 User-Agent、带上完整浏览器头、指数退避重试，直到拿到
+    真正包含数据的页面。拿不到才抛错，绝不用空内容假装成功。
+    """
+    last_error = ""
+    for attempt in range(retries):
+        headers = dict(_HEADERS)
+        headers["User-Agent"] = _UA_POOL[attempt % len(_UA_POOL)]
+        try:
+            resp = _SESSION.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 200 and INITIAL_STATE_MARKER in resp.text:
+                return resp.text
+            last_error = f"HTTP {resp.status_code} / 页面不含数据 (len={len(resp.text)})"
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+        if attempt < retries - 1:
+            _time.sleep(0.8 * (attempt + 1))
+    raise ValueError(f" readers 页面获取失败：{last_error}")
 
 
 @lru_cache(maxsize=128)
@@ -148,12 +194,7 @@ def fetch_cover(book_id: str, timeout: int = 15) -> str:
     if not bid:
         return ""
     try:
-        resp = requests.get(
-            f"https://fanqienovel.com/page/{bid}",
-            headers=_HEADERS, timeout=timeout,
-        )
-        resp.raise_for_status()
-        page = (_initial_state(resp.text).get("page") or {})
+        page = (_initial_state(fetch_page(f"https://fanqienovel.com/page/{bid}", timeout=timeout)).get("page") or {})
         return str(page.get("thumbUrl") or page.get("thumbUri") or "")
     except Exception:  # noqa: BLE001
         return ""
@@ -240,30 +281,20 @@ def resolve_book_id(value: str, timeout: int = 20) -> str:
 
     # 1) 当作 bookId：书籍页 __INITIAL_STATE__.page.bookId 非空即命中
     try:
-        resp = requests.get(
-            f"https://fanqienovel.com/page/{value}",
-            headers=_HEADERS, timeout=timeout,
-        )
-        if resp.status_code == 200:
-            state = _initial_state(resp.text)
-            page_book_id = str((state.get("page", {}) or {}).get("bookId", "") or "")
-            if page_book_id.isdigit() and len(page_book_id) >= 6:
-                return page_book_id
+        state = _initial_state(fetch_page(f"https://fanqienovel.com/page/{value}", timeout=timeout))
+        page_book_id = str((state.get("page", {}) or {}).get("bookId", "") or "")
+        if page_book_id.isdigit() and len(page_book_id) >= 6:
+            return page_book_id
     except Exception:  # noqa: BLE001
         pass
 
     # 2) 当作章节 ID：读者页 __INITIAL_STATE__.reader.chapterData.bookId
     try:
-        resp = requests.get(
-            f"https://fanqienovel.com/reader/{value}",
-            headers=_HEADERS, timeout=timeout,
-        )
-        if resp.status_code == 200:
-            state = _initial_state(resp.text)
-            chapter = (state.get("reader", {}) or {}).get("chapterData", {}) or {}
-            real_book_id = str(chapter.get("bookId", "") or "")
-            if real_book_id.isdigit() and len(real_book_id) >= 6:
-                return real_book_id
+        state = _initial_state(fetch_page(f"https://fanqienovel.com/reader/{value}", timeout=timeout))
+        chapter = (state.get("reader", {}) or {}).get("chapterData", {}) or {}
+        real_book_id = str(chapter.get("bookId", "") or "")
+        if real_book_id.isdigit() and len(real_book_id) >= 6:
+            return real_book_id
     except Exception:  # noqa: BLE001
         pass
 
@@ -274,9 +305,7 @@ def resolve_book_id(value: str, timeout: int = 20) -> str:
 def decode_chapter(item_id: str) -> str:
     """从番茄官网读者页读取正文并解密字体，返回纯文本。"""
     url = f"https://fanqienovel.com/reader/{item_id}"
-    resp = requests.get(url, headers=_HEADERS, timeout=25)
-    resp.raise_for_status()
-    state = _initial_state(resp.text)
+    state = _initial_state(fetch_page(url, timeout=25))
     data = state.get("reader", {}).get("chapterData", {}) or {}
 
     content = str(data.get("content", "") or "")
