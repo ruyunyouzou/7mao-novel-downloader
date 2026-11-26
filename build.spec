@@ -14,6 +14,10 @@ from PyInstaller.utils.hooks import collect_data_files
 # 项目资源：字体 / 插件源码 / 图标
 datas = [
     ("assets", "assets"),
+    # Qt 标准控件中文/俄文翻译（输入框右键菜单、消息框、文件对话框等）。
+    # 显式随包分发到 assets/translations，不再依赖 PySide6 hook 是否收集
+    # translations 目录（GitHub Actions 未锁版本时曾漏收，导致右键菜单退回英文）。
+    ("assets/translations", "assets/translations"),
     # CLI 模式使用的字体与样式表位于 src/assets，需一并收集到 assets 根目录
     ("src/assets/HarmonyOS_Sans_SC_Regular.ttf", "assets"),
     ("src/assets/page_styles.css", "assets"),
