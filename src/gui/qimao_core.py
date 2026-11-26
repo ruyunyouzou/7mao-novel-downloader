@@ -511,6 +511,15 @@ class BookSource:
     def chapter_text(self, ctx, chapter: Dict, session, report) -> str:
         raise NotImplementedError
 
+    def prefetch_texts(self, ctx, catalog, session, on_progress=None):
+        """可选：并发预取全部章节正文，返回与 catalog 等长的 list。
+
+        默认返回 None 表示不支持，build_txt 仍逐章调用 chapter_text（七猫走此路径，
+        其正文来自本地缓存 ZIP 解密，已足够快）。支持并发的书源（番茄）覆写此方法：
+        工作线程只做纯网络抓取，on_progress 由主线程回调以安全触发进度/取消检查。
+        """
+        return None
+
     def fetch_source_info(self, book_id: str, session) -> Dict:
         """可选：站点专属的额外元信息（番茄简介等），默认空。"""
         return {}
@@ -631,6 +640,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
 
     # 节流：全本书上千章时，进度只在整数百分比变化时回调，避免 UI 高频刷新
     report = ProgressThrottle(progress_cb, step=1)
+    # 先把进度推到 2%，让用户在「取详情/目录」阶段就能看到任务在动，
+    # 而不是停在 0% 误以为死锁（网络慢时这一阶段可能耗时数秒）。
+    report(2)
     session = requests.Session()
     source = source or QimaoBookSource()
     # 详情（失败不致命，用提示书名兜底）
@@ -676,13 +688,29 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         os.makedirs(save_path, exist_ok=True)
         chapters_written = 0
 
+        # 可选并发预取正文：番茄逐章请求是整链路瓶颈（1441 章=1441 次网络往返），
+        # 由书源覆写 prefetch_texts 一次并发抓完；七猫返回 None 保持原逐章解密路径。
+        # 进度在预取收集阶段由主线程推进到 40%，实际渲染阶段再推 40→100。
+        prefetched = source.prefetch_texts(
+            ctx, catalog, session,
+            on_progress=lambda done, total: report(2 + int(done / total * 38)),
+        )
+
+        def _chapter_text(i, ch):
+            """优先用预取结果；未预取（七猫）或预取失败时回退逐章抓取。"""
+            if prefetched is not None and i < len(prefetched) and prefetched[i]:
+                return prefetched[i]
+            return source.chapter_text(ctx, ch, session, report)
+
         if fmt == "chapter":
             # 分章 txt：每章一个文件
             book_dir = os.path.join(save_path, out_name)
             os.makedirs(book_dir, exist_ok=True)
             for i, ch in enumerate(catalog):
-                text = source.chapter_text(ctx, ch, session, report)
+                text = _chapter_text(i, ch)
                 if not text:
+                    # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
+                    report(40 + int((i + 1) / len(catalog) * 60))
                     continue
                 fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
                 with open(os.path.join(book_dir, fname), "w", encoding="utf-8") as f:
@@ -817,6 +845,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 chapter_hero, _ch.HERO_LIBRARY, hero_mode, hero_fixed, "hero",
                 smart=bool(smart_art))
             style_css += "\n" + _hero_css
+            # 题图准备完毕就推一次进度：这一阶段要逐张烘焙渐隐（原实现单张 1.5s，
+            # 100 张尾图可达 150s+），发生在章节下载之前。提前上报让进度条动起来，
+            # 避免用户误以为卡在 2%。提速后这段通常只需数秒。
+            report(3)
 
             # ---- 章末尾图：准备原神地理志图库（横屏风景，顶部渐隐） ----
             (tail_item_map, _pick_tail, _tail_order, _tail_css,
@@ -824,6 +856,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 chapter_tail, _ch.TAIL_LIBRARY, tail_mode, tail_fixed, "tail",
                 smart=bool(smart_art))
             style_css += "\n" + _tail_css
+            report(4)
 
             css_item = epub.EpubItem(
                 uid="layout_style", file_name="style.css",
@@ -832,8 +865,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             book.add_item(css_item)
             epub_chapters = []
             for i, ch in enumerate(catalog):
-                raw = source.chapter_text(ctx, ch, session, report)
+                raw = _chapter_text(i, ch)
                 if not raw:
+                    # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
+                    report(40 + int((i + 1) / len(catalog) * 60))
                     continue
                 if colorize_dialogue:
                     # highlight_text 内部已做 HTML 转义并生成 <br/>，直接可用
@@ -910,15 +945,20 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             result_path = os.path.join(save_path, f"{out_name}.txt")
             _tmp = result_path + ".part"
             try:
-                with open(_tmp, "w", encoding="utf-8") as f:
+                # utf-8-sig（带 BOM）：微信读书等阅读器对纯 UTF-8 无 BOM 的中文
+                # TXT 偶发误判为 GBK 导致乱码，BOM 是跨阅读器的标准兼容写法。
+                # 软件自身读取端已用 utf-8-sig（向下兼容无 BOM 文件），零影响。
+                with open(_tmp, "w", encoding="utf-8-sig") as f:
                     f.write(f"名称：{title}\n")
                     if detail.get("author"):
                         f.write(f"作者：{detail['author']}\n")
                     f.write(f"共 {len(catalog)} 章\n")
                     f.write("=" * 40 + "\n\n")
                     for i, ch in enumerate(catalog):
-                        text = source.chapter_text(ctx, ch, session, report)
+                        text = _chapter_text(i, ch)
                         if not text:
+                            # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
+                            report(40 + int((i + 1) / len(catalog) * 60))
                             continue
                         f.write(f"\n\n{ch['title']}\n\n{text}\n")
                         chapters_written += 1

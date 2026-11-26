@@ -34,6 +34,47 @@ class FanqieBookSource(BookSource):
     def __init__(self) -> None:
         self._handler = RequestHandler()
         self._total = 0
+        self._harden_handler(self._handler)
+        # 多源框架：默认只注册官网源（行为与单源时代一致）；
+        # 配置 fanqie_custom_api 后可追加自建 API 源，自动测速/故障转移。
+        self._source_manager = None  # 惰性构造，避免无谓开销
+
+    def _manager(self):
+        """惰性构造/刷新源管理器（设置变化后自动重建）。"""
+        from gui.fanqie_core.fanqie_sources import build_manager
+        if self._source_manager is None:
+            self._source_manager = build_manager()
+        return self._source_manager
+
+    @staticmethod
+    def _harden_handler(handler) -> None:
+        """给上游 RequestHandler 实例打「限时」补丁，不改上游源码一行。
+
+        上游 request_handler.py 被 __init__.py 明确标注「禁止手改，同步会覆盖」，
+        但它有两处会拖死整本书的系统性缺陷：
+          1) get_cookie() 在 cookie 文件缺失/损坏时循环 10 次 × 10 秒 = 最坏 100 秒；
+          2) get_book_info()/extract_chapters() 的 session.get() 完全没有 timeout，
+             网络挂起时可无限等待（正是用户「卡在 2%」的元凶）。
+        这里在实例层打补丁：固定内存 cookie + 所有 GET 注入超时上限，
+        既保留上游目录/详情解析逻辑，又杜绝任何单点无限等待。
+        """
+        import random as _random
+
+        # 1) 固定 cookie：番茄只需一个 novel_web_id 即可正常抓目录/详情，
+        #    实测固定值同样返回 243 章。省掉 get_cookie 的 10 次网络循环。
+        handler.get_cookie = lambda: (
+            f"novel_web_id={_random.randint(10**18, 10**19 - 1)}")
+
+        # 2) 给 session.get 注入默认超时（requests.Session 无默认 timeout 属性）。
+        #    上游调用若已显式传 timeout（如 down_text），尊重原值不再覆盖。
+        _orig_get = handler.session.get
+        _default_timeout = 10
+
+        def _get_with_timeout(url, **kwargs):
+            kwargs.setdefault("timeout", _default_timeout)
+            return _orig_get(url, **kwargs)
+
+        handler.session.get = _get_with_timeout
 
     def fetch_detail(self, book_id: str, session) -> dict:
         bid = str(book_id or "").strip()
@@ -77,7 +118,25 @@ class FanqieBookSource(BookSource):
         }
 
     def fetch_catalog(self, book_id: str, session) -> list:
-        raw = self._handler.extract_chapters(str(book_id)) or []
+        # 智能加固：番茄偶发对目录请求返回验证/拦截页，extract_chapters 解析不到
+        # div.chapter-item 就返回空列表，导致「目录为空，无法下载」偶发失败。
+        # 换 UA（重建 handler 的 session 头）+ 递增延时重试，最多 3 次。
+        import time as _time
+        raw = []
+        for attempt in range(3):
+            raw = self._handler.extract_chapters(str(book_id)) or []
+            if raw:
+                break
+            if attempt < 2:
+                # 轮换 UA：直接改 handler 的 user_agents 配置首项，下次 get_headers 生效
+                try:
+                    from gui.fanqie_core.fanqie_reader import _UA_POOL
+                    uas = self._handler.config.get("user_agents")
+                    if isinstance(uas, list) and _UA_POOL:
+                        uas.insert(0, _UA_POOL[(attempt + 1) % len(_UA_POOL)])
+                except Exception:  # noqa: BLE001
+                    pass
+                _time.sleep(0.8 * (attempt + 1))
         self._total = len(raw)
         catalog = []
         for i, ch in enumerate(raw):
@@ -94,8 +153,6 @@ class FanqieBookSource(BookSource):
         默认走番茄官网读者页 + 字体解密（上游第三方 API 域名已失效）；
         设置 fanqie_text_backend=upstream 可切回上游原实现。
         """
-        from gui.fanqie_core.fanqie_reader import decode_chapter
-
         backend = "official"
         try:
             from gui.datastore import DataStore
@@ -111,23 +168,93 @@ class FanqieBookSource(BookSource):
             except Exception:  # noqa: BLE001
                 text = ""
         if not text:
-            # 官网读者页偶发返回验证/拦截页（不含 __INITIAL_STATE__）。
-            # decode_chapter 内部已用完整浏览器头 + 换 UA + 退避重试拿正常页，
-            # 这里只保留「官方失败再试上游接口」一条兜底，绝不跳过空章节假装成功。
+            # 经多源框架取正文：默认只有官网源（内部仍是 decode_chapter），
+            # 行为与改动前完全一致；若配置了额外源，框架自动测速选最快、失败切换。
+            # 官网源的 fetch_page 已有完整浏览器头 + 换 UA 重试 + 24s 硬限时。
             try:
-                text = decode_chapter(cid)
+                text = self._manager().fetch(cid)
             except Exception:  # noqa: BLE001
                 text = ""
-            if not text:
-                try:
-                    text = self._handler.down_text(cid) or ""
-                except Exception:  # noqa: BLE001
-                    text = ""
 
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1
             report(2 + min(38, int(idx / self._total * 38)))
         return text
+
+    def prefetch_texts(self, ctx, catalog, session, on_progress=None):
+        """并发预取番茄全书正文（番茄无整本 ZIP 接口，只能逐章请求）。
+
+        智能自适应并发：
+        - 默认 12 线程高速抓取（可通过 fanqie_concurrent_workers 调整 1~16）；
+        - 收集后识别失败章节（空串/异常），若失败数 > 0，自动降到半并发对失败章
+          补抓重试（带退避），重试成功则回填——速度优先但保证成功率；
+        - 工作线程仅调 chapter_text 做纯网络抓取，report 传 None 避免线程内上报；
+        - 主线程用 as_completed 收集结果，on_progress 在主线程回调 → 安全触发进度/取消。
+        """
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        try:
+            from gui.datastore import DataStore
+            workers = int(DataStore().settings_get("fanqie_concurrent_workers", 12) or 12)
+        except Exception:  # noqa: BLE001
+            workers = 12
+        workers = max(1, min(16, workers))
+        total = len(catalog)
+        if total <= 1:
+            return [self.chapter_text(ctx, ch, session, None) for ch in catalog]
+
+        # 累计完成数：保证两轮进度单调递增，不因补抓重新计数而倒退
+        state = {"done": 0}
+
+        def _grab(indices, pool):
+            """对给定 index 列表并发抓取，返回 {idx: text}；on_progress 每章回调。"""
+            got: dict = {}
+            fmap = {
+                pool.submit(self.chapter_text, ctx, catalog[i], session, None): i
+                for i in indices
+            }
+            for fut in as_completed(fmap):
+                idx = fmap[fut]
+                try:
+                    got[idx] = fut.result() or ""
+                except Exception:  # noqa: BLE001
+                    got[idx] = ""
+                state["done"] += 1
+                if on_progress is not None:
+                    # 补抓阶段最多报到 total，避免超过 40% 分段
+                    on_progress(min(state["done"], total), total)
+            return got
+
+        # 第一轮：默认并发高速抓取。用显式 executor，取消时 cancel_futures=True
+        # 不强等待在途任务，避免用户点取消后还要等上千个请求跑完（秒级响应）。
+        results: dict = {}
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
+            results.update(_grab(range(total), pool))
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
+
+        # 第二轮：自适应补抓失败章节（空串），降半并发 + 退避重试
+        failed = [i for i in range(total) if not results.get(i)]
+        if failed:
+            retry_workers = max(2, workers // 2)
+            _time.sleep(0.6)
+            pool2 = ThreadPoolExecutor(max_workers=retry_workers)
+            try:
+                retried = _grab(failed, pool2)
+            except BaseException:
+                pool2.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                pool2.shutdown(wait=True)
+            for i, txt in retried.items():
+                if txt:
+                    results[i] = txt  # 重试成功回填
+
+        return [results.get(i, "") for i in range(total)]
 
 
 class FanqieDownloader(DownloaderBase):

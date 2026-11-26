@@ -1822,6 +1822,28 @@ class WereadView(QWidget):
 
     # ------------------------------------------------------------------ 导入
 
+    def _import_default_dir(self) -> str:
+        """导入对话框的默认目录：跟随软件按书源分流的两个下载目录。
+
+        七猫书下载到 default_save_dir（缺省 ~/七猫小说），番茄书下载到
+        fanqie_save_dir（缺省 ~/番茄小说）。旧版写死七猫目录，导致番茄用户
+        打开导入框找不到刚下载的书。这里优先取用户实际设置过且存在的目录，
+        两个都未设置时回退到番茄目录（新书源，最近常用），再回退用户主目录。
+        """
+        import os as _os
+        home = _os.path.expanduser("~")
+        candidates = []
+        for key, fallback in (
+            ("fanqie_save_dir", _os.path.join(home, "番茄小说")),
+            ("default_save_dir", _os.path.join(home, "七猫小说")),
+        ):
+            val = str(self.store.settings_get(key, "") or "").strip()
+            if val and _os.path.isdir(val):
+                candidates.append(val)
+            elif _os.path.isdir(fallback):
+                candidates.append(fallback)
+        return candidates[0] if candidates else home
+
     def import_books(self) -> None:
         if self._upload_worker is not None and self._upload_worker.isRunning():
             return
@@ -1835,7 +1857,7 @@ class WereadView(QWidget):
             return
         paths = _fd.open_files(
             self, "选择要导入微信读书的书",
-            os.path.expanduser("~/七猫小说"),
+            self._import_default_dir(),
             "支持的格式 (*.epub *.txt *.pdf *.mobi *.azw3);;所有文件 (*.*)",
         )
         if not paths:

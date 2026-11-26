@@ -40,7 +40,8 @@ def estimate_local_chapters(file_path: str, fmt: str = "txt") -> int:
             r"|第[零一二三四五六七八九十百千万两〇0-9]{2,}"
             r"|[Cc]hapter\s*\d+|序章|楔子|番外|尾声|后记)")
         count = 0
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        # utf-8-sig 向下兼容无 BOM 文件，同时避免下载产物的 BOM 变成替换符
+        with open(file_path, "r", encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 if ch_re.match(line):
                     count += 1

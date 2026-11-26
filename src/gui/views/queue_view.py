@@ -276,10 +276,30 @@ class TaskCard(_CardBase):
         status = task.get("status", "waiting")
         book = task.get("book", {}) or {}
         title = book.get("title", "未知")
+        cover_url = str(book.get("cover", "") or "")
+        local_cover_path = ""
+
+        # 番茄「官方信息修正」覆盖表：下载对话框里改过的书名/封面要同步反映到
+        # 队列卡片（用户改了封面但队列仍是旧图，就是因为这里只读 book 里的旧 Web 数据）。
+        # 纯展示层读取，惰性导入 + 失败兜底，绝不影响无覆盖的书或下载逻辑。
+        try:
+            if str(book.get("source", "") or "") == "fanqie":
+                from ..fanqie_core.meta_override import get_override
+                ov = get_override(str(book.get("id", "") or ""))
+                if ov:
+                    if ov.get("title"):
+                        title = ov["title"]
+                    if ov.get("cover_path"):
+                        local_cover_path = ov["cover_path"]
+                    elif ov.get("cover_url"):
+                        cover_url = ov["cover_url"]
+        except Exception:  # noqa: BLE001
+            pass
+
         self._set_title(title)
-        # 队列任务的书可能还没下载完，file_path 为空；此时优先用 book 里的 cover URL
-        self._set_cover(title, str(task.get("file_path", "") or ""),
-                        str(book.get("cover", "") or ""))
+        # 封面优先级：官方本地原图 > 本地产物 file_path > 封面网址
+        cover_source = local_cover_path or str(task.get("file_path", "") or "")
+        self._set_cover(title, cover_source, "" if local_cover_path else cover_url)
 
         self.fmt.set_icon(self.nations["fmt"])
         self.fmt.set_text(str(task.get("format", "txt")).upper())

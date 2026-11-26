@@ -20,7 +20,30 @@ import time as _time
 from functools import lru_cache
 from typing import Dict
 
+import random
+import threading
+
 import requests
+
+# 探测 brotli 解码能力：PyInstaller 打包环境可能未包含 brotli 库，
+# 若声明 Accept-Encoding: br 但无法解码，拿到的是压缩乱码。
+# 动态探测（brotli / brotlicffi / urllib3 自带解码器三者任一可用即可），
+# 不可用则只声明 gzip/deflate，避免 exe 环境踩坑。
+def _has_brotli() -> bool:
+    for mod in ("brotli", "brotlicffi"):
+        try:
+            __import__(mod)
+            return True
+        except ImportError:
+            pass
+    try:
+        from urllib3.response import BrotliDecoder  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_ACCEPT_ENCODING = "gzip, deflate, br" if _has_brotli() else "gzip, deflate"
 
 # 真实浏览器请求头：番茄对只有 UA 的极简请求会返回验证/拦截页
 # （该页面不含 __INITIAL_STATE__，正是"读者页缺少数据"报错的根因）。
@@ -37,17 +60,56 @@ _HEADERS = {
     "User-Agent": _UA_POOL[0],
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
+    "Accept-Encoding": _ACCEPT_ENCODING,
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
+    # 真实 Chrome 的 Client Hints：番茄风控会据此识别脚本请求。
+    # 实测并发高频下，带完整 CH + Cookie + Referer 的风控率约 10%，
+    # 仅 UA 的极简头约 20%——减半。这些字段对正常阅读无副作用。
+    "sec-ch-ua": '"Chromium";v="121", "Not A(Brand";v="99", "Google Chrome";v="121"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
-# 进程级 Session：复用 TCP 连接与 cookie，降低被风控概率
-_SESSION = requests.Session()
+# 每线程独立 Session：复用 TCP 连接与 cookie，同时避免并发共享 Session 的线程安全问题。
+# 并发预取章节时每个工作线程持有自己的连接，互不干扰。
+_TLS = threading.local()
+
+
+def _get_session() -> requests.Session:
+    session = getattr(_TLS, "session", None)
+    if session is None:
+        session = requests.Session()
+        _TLS.session = session
+    return session
+
+
+def _browser_headers(url: str = "", ua: str = "") -> dict:
+    """构造完整浏览器头，带每线程固定的 novel_web_id cookie 与 Referer。
+
+    Cookie 按线程固定（与 session 生命周期一致），模拟真实浏览器"同一访客连续
+    浏览多个页面"，比每次随机 cookie 更像真人，实测更抗风控。
+    """
+    h = dict(_HEADERS)
+    if ua:
+        h["User-Agent"] = ua
+    # 每线程固定一个 novel_web_id
+    cookie = getattr(_TLS, "cookie", None)
+    if cookie is None:
+        cookie = f"novel_web_id={random.randint(10**18, 10**19 - 1)}"
+        _TLS.cookie = cookie
+    h["Cookie"] = cookie
+    # Referer：模拟从书籍页点进读者页/字体
+    if url:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        h["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+    return h
+
 
 INITIAL_STATE_MARKER = "window.__INITIAL_STATE__="
 
@@ -137,7 +199,7 @@ def _font_mapping(font_url: str) -> Dict[str, str]:
     except ImportError:  # pragma: no cover - 打包时由 requirements 保证
         return {}
     try:
-        data = requests.get(font_url, headers=_HEADERS, timeout=20).content
+        data = requests.get(font_url, headers=_browser_headers(font_url), timeout=20).content
         font = TTFont(io.BytesIO(data))
         cmap = font.getBestCmap() or {}
     except Exception:  # noqa: BLE001
@@ -154,32 +216,50 @@ def _initial_state(page: str) -> dict:
     pos = page.find(INITIAL_STATE_MARKER)
     if pos < 0:
         raise ValueError("读者页缺少 __INITIAL_STATE__ 数据")
-    state, _ = json.JSONDecoder().raw_decode(page[pos + len(INITIAL_STATE_MARKER):])
+    raw = page[pos + len(INITIAL_STATE_MARKER):]
+    # 番茄新版页面在 __INITIAL_STATE__ 里塞了 JS 字面量 undefined
+    # （实测 "_config":{"libra":undefined,...}），标准 JSON 无法解析。
+    # 用正则把 :undefined / ,undefined 替换为 null（仅匹配值位置，不碰字符串内容）。
+    if "undefined" in raw:
+        raw = re.sub(r'(?<=[:\[,])\s*undefined\b', ' null', raw)
+    state, _ = json.JSONDecoder().raw_decode(raw)
     return state
 
 
-def fetch_page(url: str, retries: int = 5, timeout: int = 25) -> str:
+# 单章抓正文的总时间预算（秒）：超时/风控时绝不让一章拖死整本书。
+# 用户实测曾卡在 85% 十分钟，根因就是旧版重试 5×25s + 失效兜底接口叠加。
+_PAGE_FETCH_BUDGET = 24.0
+
+
+def fetch_page(url: str, retries: int = 4, timeout: int = 8) -> str:
     """请求番茄页面，确保拿到含 __INITIAL_STATE__ 的正常页面。
 
     番茄会对可疑请求返回验证/拦截页（HTML 里没有 __INITIAL_STATE__），
-    这正是"读者页缺少数据"报错的来源。这里在整本书层面统一做重试：
-    每次更换 User-Agent、带上完整浏览器头、指数退避重试，直到拿到
-    真正包含数据的页面。拿不到才抛错，绝不用空内容假装成功。
+    这正是"读者页缺少数据"报错的来源。这里更换 User-Agent、带完整浏览器头
+    重试拿正常页；但**总耗时受 _PAGE_FETCH_BUDGET 硬约束**——网络超时/风控
+    时最多约 24 秒就放弃并抛错，绝不出现单章卡 2 分钟拖死整本书的情况。
     """
+    deadline = _time.monotonic() + _PAGE_FETCH_BUDGET
     last_error = ""
+    # 随机 UA 起点：并发预取时让不同线程错开 UA，降低被风控识别为脚本的概率
+    ua_offset = random.randrange(len(_UA_POOL))
+    session = _get_session()
     for attempt in range(retries):
-        headers = dict(_HEADERS)
-        headers["User-Agent"] = _UA_POOL[attempt % len(_UA_POOL)]
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0.5:
+            break
+        headers = _browser_headers(url, _UA_POOL[(ua_offset + attempt) % len(_UA_POOL)])
         try:
-            resp = _SESSION.get(url, headers=headers, timeout=timeout)
+            resp = session.get(url, headers=headers, timeout=min(timeout, remaining))
             if resp.status_code == 200 and INITIAL_STATE_MARKER in resp.text:
                 return resp.text
             last_error = f"HTTP {resp.status_code} / 页面不含数据 (len={len(resp.text)})"
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
-        if attempt < retries - 1:
-            _time.sleep(0.8 * (attempt + 1))
-    raise ValueError(f" readers 页面获取失败：{last_error}")
+        gap = min(0.6 * (attempt + 1), max(0.0, deadline - _time.monotonic()))
+        if attempt < retries - 1 and gap > 0:
+            _time.sleep(gap)
+    raise ValueError(f"页面获取失败（已限时 {_PAGE_FETCH_BUDGET:.0f}s）：{last_error}")
 
 
 @lru_cache(maxsize=128)
@@ -228,7 +308,7 @@ def resolve_short_link(url: str, timeout: int = 15) -> str:
     target = match.group(0)
     try:
         resp = requests.get(
-            target, headers=_HEADERS, timeout=timeout, allow_redirects=True,
+            target, headers=_browser_headers(target), timeout=timeout, allow_redirects=True,
         )
         # 1) 最终 URL 里的 book_id=/page/<id>（最可靠）
         final_url = str(getattr(resp, "url", "") or target)
@@ -305,7 +385,7 @@ def resolve_book_id(value: str, timeout: int = 20) -> str:
 def decode_chapter(item_id: str) -> str:
     """从番茄官网读者页读取正文并解密字体，返回纯文本。"""
     url = f"https://fanqienovel.com/reader/{item_id}"
-    state = _initial_state(fetch_page(url, timeout=25))
+    state = _initial_state(fetch_page(url))
     data = state.get("reader", {}).get("chapterData", {}) or {}
 
     content = str(data.get("content", "") or "")

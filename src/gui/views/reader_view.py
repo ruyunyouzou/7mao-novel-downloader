@@ -904,7 +904,9 @@ class ReaderView(QWidget):
 
     def _parse_txt(self, path: str) -> List[Dict[str, Any]]:
         """按章节标题正则切分 TXT。"""
-        for enc in ("utf-8", "gbk", "gb18030"):
+        # utf-8-sig 同时兼容带 BOM（下载产物）与不带 BOM 的 UTF-8 文件；
+        # 带 BOM 时用 utf-8 会在首行留下 \ufeff 乱码字符，故优先 sig。
+        for enc in ("utf-8-sig", "gbk", "gb18030"):
             try:
                 with open(path, "r", encoding=enc) as f:
                     text = f.read()

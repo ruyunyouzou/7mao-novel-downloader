@@ -25,6 +25,11 @@ __all__ = [
     "get_override",
     "set_override",
     "remove_override",
+    "SourceManager",
+    "OfficialSource",
+    "AppChannelSource",
+    "CustomApiSource",
+    "build_manager",
 ]
 
 
@@ -45,4 +50,7 @@ def __getattr__(name: str):
     if name in ("get_override", "set_override", "remove_override", "all_overrides"):
         from . import meta_override
         return getattr(meta_override, name)
+    if name in ("SourceManager", "OfficialSource", "AppChannelSource", "CustomApiSource", "build_manager"):
+        from . import fanqie_sources
+        return getattr(fanqie_sources, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
