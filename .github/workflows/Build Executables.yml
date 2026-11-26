@@ -53,7 +53,7 @@ jobs:
       - name: 生成绿色版压缩包
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist\星隅小说下载器\*" -DestinationPath "星隅小说下载器_Windows_$env:TARGET_TAG.zip" -Force
+          Compress-Archive -Path "dist\星隅小说下载器\*" -DestinationPath "_Windows_$env:TARGET_TAG.zip" -Force
 
       - name: 创建 GitHub Release 并上传安装包
         uses: softprops/action-gh-release@v2
@@ -62,13 +62,13 @@ jobs:
           name: ${{ env.TARGET_TAG }}
           generate_release_notes: true
           body: |
-            ## 星隅小说下载器 ${{ env.TARGET_TAG }}
+            ## GUI-novel下载器 ${{ env.TARGET_TAG }}
 
-            从源码自动构建的 Windows 绿色版，解压后运行「星隅小说下载器.exe」即可。
+            从源码自动构建的 Windows 绿色版，解压后运行「GUI-novel下载器.exe」即可。
 
             ### 本次更新
             详见更新说明；安装后软件内「设置 → 检查更新」也会展示本 Release 说明。
 
             > 仅供个人学习研究使用，请遵守当地法律法规。
           files: |
-            星隅小说下载器_Windows_${{ env.TARGET_TAG }}.zip
+            _Windows_${{ env.TARGET_TAG }}.zip
