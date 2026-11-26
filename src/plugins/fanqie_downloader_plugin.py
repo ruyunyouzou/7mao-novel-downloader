@@ -48,7 +48,8 @@ class FanqieBookSource(BookSource):
 
         name, author, intro, cover = "", "", "", ""
         # 封面供 EPUB 内嵌；惰性导入避免启动期加载字体映射大表，失败不影响下载。
-        if not (override.get("title") and override.get("cover_url")):
+        has_local_cover = bool(override.get("cover_path"))
+        if not (override.get("title") and (override.get("cover_url") or has_local_cover)):
             # 没有完整覆盖时才请求 Web 详情，避免无谓网络开销
             try:
                 name, author, intro = self._handler.get_book_info(bid)
@@ -61,9 +62,12 @@ class FanqieBookSource(BookSource):
                 cover = ""
 
         # 用覆盖值逐字段覆盖（空字段仍回退 Web）
+        # 封面优先级：本地选中的官方原图 > 封面网址 > Web 抓取值
         if override.get("title"):
             name = override["title"]
-        if override.get("cover_url"):
+        if has_local_cover:
+            cover = override["cover_path"]
+        elif override.get("cover_url"):
             cover = override["cover_url"]
         return {
             "title": str(name or ""),
@@ -133,12 +137,14 @@ class FanqieDownloader(DownloaderBase):
         # 之后同书再下载自动沿用，无需重复填写。
         off_title = str(kwargs.get("official_title", "") or "").strip()
         off_cover = str(kwargs.get("official_cover_url", "") or "").strip()
+        # 本地封面文件路径：对话框选图时已写入覆盖表，这里只补写标题（避免覆盖已存的 cover_path）
         try:
             from gui.fanqie_core.meta_override import set_override, remove_override
             if kwargs.get("official_clear"):
                 remove_override(bid)
                 off_title, off_cover = "", ""
             elif off_title or off_cover:
+                # 不传 cover_path，set_override 空字段不覆盖已有本地封面
                 set_override(bid, off_title, off_cover)
         except Exception:  # noqa: BLE001
             pass

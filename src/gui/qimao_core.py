@@ -718,11 +718,15 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 book.add_author(detail["author"])
             if detail.get("intro"):
                 book.add_metadata("DC", "description", detail["intro"])
-            # 封面
-            cover_url = detail.get("cover")
-            if cover_url:
+            # 封面：本地文件（番茄 App 保存的原图）直接读；网络 URL 才下载。
+            cover_src = detail.get("cover")
+            if cover_src:
                 try:
-                    img = session.get(cover_url, timeout=15).content
+                    if os.path.isfile(cover_src):
+                        with open(cover_src, "rb") as _f:
+                            img = _f.read()
+                    else:
+                        img = session.get(cover_src, timeout=15).content
                     book.set_cover("cover.jpg", img)
                 except Exception:  # noqa: BLE001
                     pass

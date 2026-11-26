@@ -12,7 +12,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QCheckBox, QLineEdit, QColorDialog, QGroupBox,
-    QScrollArea, QFrame,
+    QScrollArea, QFrame, QFileDialog,
 )
 
 from .qimao_core import (render_filename, font_combo_items,
@@ -109,13 +109,17 @@ class DownloadDialog(QDialog):
         self._official_group = None
         self.official_title_edit = None
         self.official_cover_edit = None
+        self.official_cover_path = ""
+        self.official_cover_label = None
         self._official_cleared = False
         if str(book.get("source", "") or "") == "fanqie":
             from .fanqie_core.meta_override import get_override
-            override = get_override(str(book.get("id", "") or ""))
+            bid = str(book.get("id", "") or "")
+            override = get_override(bid)
+            self.official_cover_path = override.get("cover_path", "")
             grp = QGroupBox(tr("dlg.official_group"))
             g_lay = QVBoxLayout(grp)
-            hint = QLabel(tr("dlg.official_hint"))
+            hint = QLabel(tr("dlg.official_hint2"))
             hint.setWordWrap(True)
             hint.setStyleSheet("color: #888;")
             g_lay.addWidget(hint)
@@ -125,6 +129,18 @@ class DownloadDialog(QDialog):
             self.official_title_edit.setPlaceholderText(str(book.get("title", "") or ""))
             row_ot.addWidget(self.official_title_edit, 1)
             g_lay.addLayout(row_ot)
+            # 本地封面图（App「保存」得到的原图，推荐）
+            row_pick = QHBoxLayout()
+            pick_btn = QPushButton(tr("dlg.official_pick"))
+            pick_btn.clicked.connect(self._pick_official_cover)
+            row_pick.addWidget(pick_btn)
+            self.official_cover_label = QLabel(
+                tr("dlg.official_cover_set") if self.official_cover_path
+                else tr("dlg.official_cover_none"))
+            self.official_cover_label.setStyleSheet("color: #888;")
+            row_pick.addWidget(self.official_cover_label, 1)
+            g_lay.addLayout(row_pick)
+            # 封面网址（备用：能拿到图片直链时用）
             row_oc = QHBoxLayout()
             row_oc.addWidget(QLabel(tr("dlg.official_cover")))
             self.official_cover_edit = QLineEdit(override.get("cover_url", ""))
@@ -345,12 +361,35 @@ class DownloadDialog(QDialog):
         self.tail_mode_combo.setEnabled(on)
         self.tail_fixed_combo.setEnabled(on and fixed)
 
+    def _pick_official_cover(self) -> None:
+        """选择 App「保存」出来的本地封面图片（原图，不失真）。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("dlg.official_pick_title"), "",
+            "图片文件 (*.jpg *.jpeg *.png *.webp *.bmp);;所有文件 (*.*)")
+        if not path:
+            return
+        self.official_cover_path = path
+        # 立即复制到覆盖表目录并持久化，保证关掉对话框也不丢
+        bid = str(self.book.get("id", "") or "")
+        from .fanqie_core.meta_override import save_cover_file, set_override
+        saved = save_cover_file(bid, path)
+        if saved:
+            self.official_cover_path = saved
+        title = self.official_title_edit.text().strip() if self.official_title_edit else ""
+        set_override(bid, title=title, cover_path=saved)
+        self._official_cleared = False
+        if self.official_cover_label is not None:
+            self.official_cover_label.setText(tr("dlg.official_cover_set"))
+
     def _clear_official(self) -> None:
         """清空官方信息修正输入，并标记删除持久化的覆盖表记录。"""
         if self.official_title_edit is not None:
             self.official_title_edit.clear()
         if self.official_cover_edit is not None:
             self.official_cover_edit.clear()
+        self.official_cover_path = ""
+        if self.official_cover_label is not None:
+            self.official_cover_label.setText(tr("dlg.official_cover_none"))
         self._official_cleared = True
 
     # ---------- 预览与输出 ----------
@@ -398,6 +437,7 @@ class DownloadDialog(QDialog):
                                       if self.official_title_edit else "")
             opts["official_cover_url"] = (self.official_cover_edit.text().strip()
                                           if self.official_cover_edit else "")
+            opts["official_cover_path"] = self.official_cover_path
             opts["official_clear"] = self._official_cleared
         return opts
 
