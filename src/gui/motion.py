@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPropertyAnimation, QTimer, Qt
 from PySide6.QtWidgets import (
     QAbstractScrollArea, QApplication, QComboBox, QGraphicsOpacityEffect, QProgressBar, QWidget,
 )
@@ -201,11 +201,15 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
             setattr(widget, "_crossfade_pending", apply_fn)
             return True
 
-        # 独立遮罩层：盖在 widget 之上、鼠标穿透，绝不改动 widget 自身的 effect
+        # 独立遮罩层：盖在 widget 之上、鼠标穿透，绝不改动 widget 自身的 effect。
+        # 关键：遮罩背景用「半透明黑 rgba」而不是纯色 #000。这样即便动画信号丢失、
+        # effect 被异常摘除、或清理被事件循环阻塞，遮罩最坏也只是 32% 半透明，
+        # 绝不会退化成一整块纯黑 (0,0,0) 盖住界面（v5.0.5 曾出现搜索页大黑框）。
         overlay = QWidget(widget)
         overlay.setObjectName("crossfadeOverlay")
         overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        overlay.setStyleSheet("QWidget#crossfadeOverlay { background: #000; border: none; }")
+        overlay.setStyleSheet(
+            "QWidget#crossfadeOverlay { background: rgba(0, 0, 0, 0.32); border: none; }")
         overlay.setGeometry(widget.rect())
         overlay.raise_()
         setattr(widget, "_crossfade_overlay", overlay)
@@ -214,16 +218,40 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
         effect.setOpacity(0.0)
         overlay.setGraphicsEffect(effect)
 
+        # 统一清理：先 hide() 立即隐藏（同步生效，不依赖事件循环），再排删除。
+        # 绝不调用 overlay.setGraphicsEffect(None)——摘特效的瞬间遮罩会以样式表
+        # 底色满不透明显示，若恰逢重绘/事件循环繁忙就会定格成黑块。
+        def _cleanup_overlay():
+            ov = getattr(widget, "_crossfade_overlay", None)
+            if ov is not None:
+                try:
+                    ov.hide()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    fx = ov.graphicsEffect()
+                    ov.setGraphicsEffect(None)  # 先摘关联，供安全 deleteLater
+                    if fx is not None:
+                        fx.deleteLater()
+                    ov.deleteLater()
+                except Exception:  # noqa: BLE001
+                    pass
+            watchdog.stop()
+            setattr(widget, "_crossfade_overlay", None)
+            setattr(widget, "_crossfade_running", False)
+            setattr(widget, "_crossfade_anim_out", None)
+            setattr(widget, "_crossfade_anim_in", None)
+
         setattr(widget, "_crossfade_running", True)
         anim_out = QPropertyAnimation(effect, b"opacity")
         anim_out.setDuration(_duration("page", fade_out))
         anim_out.setStartValue(0.0)
-        anim_out.setEndValue(0.28)  # 遮罩最深也只盖 28%，过渡柔和
+        anim_out.setEndValue(1.0)  # 背景本身已半透明，特效满值=32% 暗，足够柔和
         anim_out.setEasingCurve(_curve(QEasingCurve.InQuad))
 
         anim_in = QPropertyAnimation(effect, b"opacity")
         anim_in.setDuration(_duration("page", fade_in))
-        anim_in.setStartValue(0.28)
+        anim_in.setStartValue(1.0)
         anim_in.setEndValue(0.0)
         anim_in.setEasingCurve(_curve(QEasingCurve.OutCubic))
 
@@ -237,16 +265,7 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
                 anim_in.start()
 
         def _on_in_finished():
-            try:
-                overlay.setGraphicsEffect(None)
-                effect.deleteLater()
-                overlay.deleteLater()
-            except Exception:  # noqa: BLE001
-                pass
-            setattr(widget, "_crossfade_overlay", None)
-            setattr(widget, "_crossfade_running", False)
-            setattr(widget, "_crossfade_anim_out", None)
-            setattr(widget, "_crossfade_anim_in", None)
+            _cleanup_overlay()
             # 补执行动画期间累积的最后一次视图变更（连点配色不丢）
             pending = getattr(widget, "_crossfade_pending", None)
             setattr(widget, "_crossfade_pending", None)
@@ -260,14 +279,31 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
         anim_in.finished.connect(_on_in_finished)
         setattr(widget, "_crossfade_anim_out", anim_out)
         setattr(widget, "_crossfade_anim_in", anim_in)
+        # 看门狗：无论 finished 信号是否丢失，到时强制收尾，杜绝遮罩永久残留。
+        watchdog = QTimer(widget)
+        watchdog.setSingleShot(True)
+        watchdog.setInterval(fade_out + fade_in + 400)
+        watchdog.timeout.connect(_cleanup_overlay)
+        setattr(widget, "_crossfade_watchdog", watchdog)
+        watchdog.start()
         anim_out.start()
         return True
     except Exception:  # noqa: BLE001
-        # 任何异常都退回同步执行，保证视图变更一定发生
+        # 任何异常都退回同步执行，保证视图变更一定发生，且遮罩立即隐藏
         overlay = getattr(widget, "_crossfade_overlay", None)
         if overlay is not None:
             try:
+                overlay.hide()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 overlay.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+        wd = getattr(widget, "_crossfade_watchdog", None)
+        if wd is not None:
+            try:
+                wd.stop()
             except Exception:  # noqa: BLE001
                 pass
         setattr(widget, "_crossfade_overlay", None)
@@ -288,14 +324,28 @@ def cancel_crossfade(widget: Optional[QWidget]) -> None:
             except Exception:  # noqa: BLE001
                 pass
             setattr(widget, key, None)
-    # 遮罩层随动画新方案创建，取消时一并清理（widget 自身从不挂 effect）
+    # 遮罩层随动画新方案创建，取消时先 hide() 再清理（widget 自身从不挂 effect）
     overlay = getattr(widget, "_crossfade_overlay", None)
     if overlay is not None:
         try:
+            overlay.hide()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            fx = overlay.graphicsEffect()
             overlay.setGraphicsEffect(None)
+            if fx is not None:
+                fx.deleteLater()
             overlay.deleteLater()
         except Exception:  # noqa: BLE001
             pass
+    wd = getattr(widget, "_crossfade_watchdog", None)
+    if wd is not None:
+        try:
+            wd.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        setattr(widget, "_crossfade_watchdog", None)
     effect = getattr(widget, "_crossfade_effect", None)
     if effect is not None:
         try:
