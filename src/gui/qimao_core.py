@@ -618,7 +618,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         风景图，顶部渐隐已烘焙进 PNG）。默认 False（关闭）。
     :param tail_mode: 尾图分配方式：rotate=按章轮换 / fixed=固定一张 / none=不用。
     :param tail_fixed: tail_mode=fixed 时指定的尾图 key。
-    :param smart_art: 智能选题预设：题图每本随机 30 张（必含 7 张神明）。
+    :param smart_art: 智能选题预设：题图每本随机 40 张（必含 7 张神明），尾图随机 100 张。
         True=启用 / False=关闭 / None=读取全局设置。
         缺省（如追更重建未传参）时，题图参数自动回退到全局设置。
     :return: {file_path, title, chapters, ...}

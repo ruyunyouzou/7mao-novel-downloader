@@ -378,8 +378,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.epub_colorize": "人物对话彩色高亮（不同人物不同颜色）",
         "set.epub_colorize_tip": "下载 EPUB 时把对话写进文件，任何阅读器打开都带颜色；不影响 TXT",
         "set.epub_smart_art": "智能选题预设（推荐开启）",
-        "set.epub_smart_art_tip": "开启后：每本书章首题图随机抽 30 张且必含全部 7 张神明立绘，其余随机补齐；章末尾图从地理志按地区均衡抽 10 张。都按章轮换，同一本书固定不变。关闭则用下方的手动分配方式",
-        "set.epub_smart_art_hint": "题图 30 张（含 7 神明）+ 尾图地理志 10 张；关闭后使用下方「分配」设置",
+        "set.epub_smart_art_tip": "开启后：每本书章首题图随机抽 40 张且必含全部 7 张神明立绘，其余随机补齐；章末尾图从地理志按地区均衡抽 100 张。都按章轮换，同一本书固定不变。关闭则用下方的手动分配方式",
+        "set.epub_smart_art_hint": "题图 40 张（含 7 神明）+ 尾图地理志 100 张；关闭后使用下方「分配」设置",
         "set.epub_hero": "章首题图（原神祈愿立绘，标题上方）",
         "set.epub_hero_tip": "下载 EPUB 时在每章标题上方插入内置原神祈愿立绘，底部渐隐融入纸张；仅个人非商用。不影响 TXT",
         "set.epub_hero_mode": "题图分配",
@@ -400,9 +400,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "正在检查…",
         "set.protocol_hint": "检测下载依赖的搜索与目录接口是否仍可用，判断上游协议是否已变更。",
         "set.about_text": (
-            "GUI-novel下载器\n"
-            "基于 shing-yu/7mao-novel-downloader（AGPL-3.0）\n"
-            "新增：深色界面 / 插件机制 / 书架 / 阅读器 / 任务队列 / 历史记录 / 备份恢复"
+            "GUI-novel下载器 {version}\n"
+            "七猫 + 番茄 双真实内核｜基于 shing-yu/7mao-novel-downloader（AGPL-3.0）\n"
+            "功能：深浅主题 / 插件机制 / 书架 / 阅读器 / 任务队列 / 历史记录 / 备份恢复 / 更新日志 / 微信读书"
         ),
         # 状态 / 通用
         "status.ready": "就绪",
@@ -1143,8 +1143,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.epub_colorize": "Colorize character dialogue (a distinct color per character)",
         "set.epub_colorize_tip": "Bakes dialogue colors into the EPUB at download time; visible in any reader; TXT unaffected",
         "set.epub_smart_art": "Smart art selection (recommended)",
-        "set.epub_smart_art_tip": "When on: each book's hero art is a random 30-image set always including all 7 divine figures (6 Archons + the Moon Goddess), rest filled at random; tail art is 10 landscape images drawn evenly from Genshin's Geographic Atlas regions. Both rotate per chapter and stay fixed per book. Turn off to use the manual modes below",
-        "set.epub_smart_art_hint": "30 hero images (incl. 7 divine) + 10 Geographic Atlas tail images; when off, use the 'mode' settings below",
+        "set.epub_smart_art_tip": "When on: each book's hero art is a random 40-image set always including all 7 divine figures (6 Archons + the Moon Goddess), rest filled at random; tail art is 100 landscape images drawn evenly from Genshin's Geographic Atlas regions. Both rotate per chapter and stay fixed per book. Turn off to use the manual modes below",
+        "set.epub_smart_art_hint": "40 hero images (incl. 7 divine) + 100 Geographic Atlas tail images; when off, use the 'mode' settings below",
         "set.epub_hero": "Chapter hero art (Genshin wish art, above the title)",
         "set.epub_hero_tip": "Inserts built-in Genshin wish art above each chapter title at download time, with a faded bottom blending into the page; personal non-commercial use only. TXT unaffected",
         "set.epub_hero_mode": "Hero art mode",
@@ -1165,9 +1165,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "Checking…",
         "set.protocol_hint": "Test whether the search and catalog APIs are still reachable, to detect upstream protocol changes.",
         "set.about_text": (
-            "GUI-novel Downloader\n"
-            "Based on shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
-            "Added: dark UI / plugin system / bookshelf / reader / task queue / history / backup"
+            "GUI-novel Downloader {version}\n"
+            "Dual real cores: Qimao + Fanqie | Based on shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
+            "Features: light/dark themes / plugins / bookshelf / reader / task queue / history / backup / changelog / WeRead"
         ),
         "status.ready": "Ready",
         "common.save": "Save",
@@ -1903,8 +1903,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.epub_colorize": "Раскрашивать диалоги персонажей (разный цвет для каждого)",
         "set.epub_colorize_tip": "Цвет диалогов встраивается в EPUB при загрузке, виден в любой программе; TXT не затрагивается",
         "set.epub_smart_art": "Умный подбор иллюстраций (рекомендуется)",
-        "set.epub_smart_art_tip": "При включении: для каждой книги случайный набор из 30 иллюстраций в начале главы, обязательно включающий всех 7 божеств (6 Архонтов + Богиня Луны), остальные добираются случайно; в конце главы — 10 пейзажей из «Географического атласа» Genshin, равномерно по регионам. Оба набора чередуются по главам и фиксированы для книги. Отключите, чтобы использовать ручные режимы ниже",
-        "set.epub_smart_art_hint": "30 иллюстраций в начале (вкл. 7 божеств) + 10 пейзажей атласа в конце; при отключении — настройки «режим» ниже",
+        "set.epub_smart_art_tip": "При включении: для каждой книги случайный набор из 40 иллюстраций в начале главы, обязательно включающий всех 7 божеств (6 Архонтов + Богиня Луны), остальные добираются случайно; в конце главы — 100 пейзажей из «Географического атласа» Genshin, равномерно по регионам. Оба набора чередуются по главам и фиксированы для книги. Отключите, чтобы использовать ручные режимы ниже",
+        "set.epub_smart_art_hint": "40 иллюстраций в начале (вкл. 7 божеств) + 100 пейзажей атласа в конце; при отключении — настройки «режим» ниже",
         "set.epub_hero": "Иллюстрация в начале главы (арт гаша Genshin, над заголовком)",
         "set.epub_hero_tip": "Вставляет встроенный арт гаша Genshin над заголовком каждой главы при загрузке, с плавным затуханием вниз; только для личного некоммерческого использования. TXT не затрагивается",
         "set.epub_hero_mode": "Режим иллюстраций",
@@ -1925,9 +1925,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "set.protocol_checking": "Проверка…",
         "set.protocol_hint": "Проверка доступности API поиска и каталога для обнаружения изменений протокола.",
         "set.about_text": (
-            "GUI-novel Загрузчик\n"
-            "На базе shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
-            "Добавлено: тёмная тема / плагины / книжная полка / ридер / очередь / история / резерв"
+            "GUI-novel Загрузчик {version}\n"
+            "Два настоящих ядра: Qimao + Fanqie | На базе shing-yu/7mao-novel-downloader (AGPL-3.0)\n"
+            "Возможности: светлая/тёмная темы / плагины / книжная полка / ридер / очередь / история / резерв / журнал обновлений / WeRead"
         ),
         "status.ready": "Готово",
         "common.save": "Сохранить",

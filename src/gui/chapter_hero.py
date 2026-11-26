@@ -199,16 +199,16 @@ def pick_hero(chapter_index: int, heroes: List[dict], mode: str = "rotate",
 
 # ------------------------------------------------------------------ 智能选题预设
 # 规则（用户定义）：
-#   章首题图：每本书随机抽 30 张，其中必含全部 7 张神明（6 archon + 月神），
-#             其余 23 张从非神明随机补齐；按章轮换。
+#   章首题图：每本书随机抽 40 张，其中必含全部 7 张神明（6 archon + 月神），
+#             其余从非神明随机补齐；按章轮换。图库共 42 张，取 40 张可行。
 # 用书标识做随机种子，保证同一本书重下时选题一致（可复现）。
-SMART_HERO_COUNT = 30
+SMART_HERO_COUNT = 40
 SMART_GOD_COUNT = 7       # 温迪/钟离/雷电将军/纳西妲/芙宁娜/玛薇卡/月神
 GOD_GROUPS = ("archon", "moon")
 
 
 def smart_hero_pool(book_key: str, heroes: List[dict]) -> List[dict]:
-    """题图智能池：7 张神明全取 + 非神明随机补到 30 张。"""
+    """题图智能池：7 张神明全取 + 非神明随机补到 40 张。"""
     import random
     rng = random.Random("hero|" + str(book_key))
     gods = [h for h in heroes if h.get("group") in GOD_GROUPS]
@@ -222,14 +222,14 @@ def smart_hero_pool(book_key: str, heroes: List[dict]) -> List[dict]:
 
 
 # 章末尾图智能池：地理志无年份筛选，改为每个地区均衡抽样，让一本书看到多样风景
-SMART_TAIL_COUNT = 10
+SMART_TAIL_COUNT = 100
 
 
 def smart_tail_pool(book_key: str, heroes: List[dict]) -> List[dict]:
-    """尾图智能池：按地区均衡抽 10 张地理志风景，按章轮换、同书固定。
+    """尾图智能池：按地区均衡抽 100 张地理志风景，按章轮换、同书固定。
 
     先按地区（group）分组，轮流从各地区取图，避免整本都是同一地区；
-    不足 10 张时用全库补齐。用书标识做种子保证可复现。
+    不足 100 张时用全库补齐。用书标识做种子保证可复现。
     """
     import random
     from collections import defaultdict

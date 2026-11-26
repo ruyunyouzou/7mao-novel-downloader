@@ -32,6 +32,7 @@ from .workers import SearchWorker, DownloadWorker, DetailWorker
 from . import filedialogs as _fd
 from .datastore import DataStore
 from .i18n import tr, manager as i18n_manager, LANGUAGES
+from .version import VERSION_LABEL
 from .views import ShelfView, QueueView, HistoryView, ReaderView, StatsView
 from .widgets import TitleBar, Card, section_title, hint_label
 from .side_nav import SideNavWidget
@@ -976,7 +977,7 @@ class MainWindow(QMainWindow):
         self.epub_colorize_check.stateChanged.connect(self._on_epub_colorize_changed)
         l_epub.addWidget(self.epub_colorize_check)
 
-        # ---- 智能选题预设（章首题图30张含7神明） ----
+        # ---- 智能选题预设（章首题图40张含7神明，章末尾图100张） ----
         self.epub_smart_art_check = QCheckBox(tr("set.epub_smart_art"))
         self.epub_smart_art_check.setChecked(bool(self.store.settings_get("epub_smart_art", True)))
         self.epub_smart_art_check.setToolTip(tr("set.epub_smart_art_tip"))
@@ -1089,7 +1090,7 @@ class MainWindow(QMainWindow):
         self.set_protocol_status.setWordWrap(True)
         row_check.addWidget(self.set_protocol_status, 1)
         l4.addLayout(row_check)
-        self.about_label = QLabel(tr("set.about_text"))
+        self.about_label = QLabel(tr("set.about_text").format(version=VERSION_LABEL))
         self.about_label.setStyleSheet(f"color: {TEXT_DIM}; line-height: 150%;")
         l4.addWidget(self.about_label)
         layout.addWidget(card4)
@@ -2016,7 +2017,7 @@ class MainWindow(QMainWindow):
         self.set_about_title.setText(tr("set.about"))
         self.set_protocol_hint.setText(tr("set.protocol_hint"))
         self.settings_protocol_btn.setText(tr("set.protocol_check"))
-        self.about_label.setText(tr("set.about_text"))
+        self.about_label.setText(tr("set.about_text").format(version=VERSION_LABEL))
         self.theme_status.setText(
             tr("set.current_theme",
                theme=tr("set.theme_dark" if self._dark_theme else "set.theme_light"))
@@ -2959,11 +2960,8 @@ class MainWindow(QMainWindow):
 
     def _show_about(self) -> None:
         QMessageBox.about(
-            self, "关于",
-            "GUI-novel下载器\n\n"
-            "基于 shing-yu/7mao-novel-downloader（AGPL-3.0）\n\n"
-            "新增：深色界面、插件扩展机制、书架、任务队列、历史记录。\n"
-            "开源版本身不含章节下载内核，可通过插件提供。",
+            self, tr("set.about"),
+            tr("set.about_text").format(version=VERSION_LABEL),
         )
 
     def changeEvent(self, event) -> None:  # noqa: N802

@@ -63,7 +63,7 @@ class QimaoRealDownloader(DownloaderBase):
             chapter_tail = bool(store.settings_get("epub_chapter_tail", False))
         tail_mode = kwargs.get("tail_mode") or store.settings_get("epub_tail_mode", "rotate") or "rotate"
         tail_fixed = kwargs.get("tail_fixed") or store.settings_get("epub_tail_fixed", "") or ""
-        # 智能选题预设（题图每本随机30张含7神明 / 尾图地理志按地区均衡抽10张）
+        # 智能选题预设（题图每本随机40张含7神明 / 尾图地理志按地区均衡抽100张）
         smart_art = kwargs.get("smart_art")
         if smart_art is None:
             smart_art = bool(store.settings_get("epub_smart_art", True))

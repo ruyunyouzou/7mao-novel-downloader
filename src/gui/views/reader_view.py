@@ -244,6 +244,19 @@ class ReaderView(QWidget):
         self._auto_timer = QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.timeout.connect(self._auto_next)
+        # 字号滑块防抖写盘：拖动时只做轻量重排，停手后才写一次设置
+        self._font_save_timer = QTimer(self)
+        self._font_save_timer.setSingleShot(True)
+        self._font_save_timer.setInterval(300)
+        self._font_save_timer.timeout.connect(
+            lambda: self.store.settings_set("font_size", self.size_slider.value())
+            if hasattr(self, "size_slider") else None)
+        # 主题/字体重排防抖：连续切换时合并为一次，避免多次全量重绘卡顿
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.setInterval(120)
+        self._reflow_timer.timeout.connect(self._deferred_reflow)
+        self._pending_reflow = False
 
         # 听书：统一引擎（edge-tts 网络音色优先，系统 TTS 兜底）
         self.tts_engine = TTSEngine(self)
@@ -266,16 +279,19 @@ class ReaderView(QWidget):
 
     # ------------------------------------------------------------------ UI
 
+    # 退出专注国徽距底部的空隙（状态栏之上再留出一段，避免贴底）
+    _EXIT_FOCUS_BOTTOM_GAP = 96
+
     def resizeEvent(self, event) -> None:  # noqa: N802
-        """窗口尺寸变化时，把专注模式退出圆钮固定在正文区右下角（状态栏上方）。"""
+        """窗口尺寸变化时，把专注模式退出国徽固定在正文区右下角（状态栏上方）。"""
         super().resizeEvent(event)
         if hasattr(self, "btn_exit_focus"):
             w, h = self.width(), self.height()
             bw, bh = self.btn_exit_focus.width(), self.btn_exit_focus.height()
-            # 状态栏高度作为底部偏移，避免圆钮压住状态文字
+            # 状态栏高度 + 额外间距，避免国徽贴住底部状态文字
             status_h = self.status_label.height() if hasattr(self, "status_label") else 28
             x = max(8, w - bw - 22)
-            y = max(8, h - bh - status_h - 18)
+            y = max(8, h - bh - status_h - self._EXIT_FOCUS_BOTTOM_GAP)
             self.btn_exit_focus.move(x, y)
             self.btn_exit_focus.raise_()
 
@@ -1113,16 +1129,31 @@ class ReaderView(QWidget):
     # ------------------------------------------------------------------ 外观
 
     def _apply_font(self) -> None:
+        """调整正文字号。
+
+        关键性能修复：正文 HTML 不写死字号，字号完全由 document 默认字体控制，
+        因此改字号只需 setDefaultFont 让 Qt 轻量重排，**不必 setHtml 重建整章**。
+        原来每次拖动都全量重建文档 + 写盘，是阅读器拖动卡顿的主因。
+        写盘用防抖 timer，停手 300ms 后才落一次。
+        """
         size = self.size_slider.value()
-        self.text.setFont(QFont("Microsoft YaHei", size))
-        # 同步 HTML 正文默认字号（QTextBrowser 的 setHtml 会重置 document 默认字体），
-        # 并立即重渲染当前章，保证拖动滑块即时可见
-        self.text.document().setDefaultFont(QFont("Microsoft YaHei", size))
-        if self.chapters:
+        f = QFont("Microsoft YaHei", size)
+        self.text.setFont(f)
+        # document 默认字体决定全文字号，Qt 内部增量重排，无需重建 HTML
+        self.text.document().setDefaultFont(f)
+        # 写盘防抖：拖动过程中不落盘，停手后再写一次
+        self._font_save_timer.start()
+
+    def _deferred_reflow(self) -> None:
+        """防抖后的实际重排：仅在需要对话着色时重建当前章 HTML。"""
+        if not self._pending_reflow:
+            return
+        self._pending_reflow = False
+        if self.chapters and getattr(self, "act_dialogue", None) is not None \
+                and self.act_dialogue.isChecked():
             scroll = self.text.verticalScrollBar().value()
             self._render_chapter(self.current_index)
             self.text.verticalScrollBar().setValue(scroll)
-        self._save_setting("font_size", size)
 
     def _on_theme_index_changed(self, _idx: int = 0) -> None:
         """主题下拉变更（用 userData 存内部 key）。"""
@@ -1159,10 +1190,11 @@ class ReaderView(QWidget):
         host_bg = '#181818' if dark else '#f3f1ec'
         self.page_host.setStyleSheet(f"QWidget {{ background: {host_bg}; }}")
         self._save_setting("reader_theme", name)
-        # 对话着色颜色随深/浅主题切换，重新渲染当前章
+        # 对话着色颜色随深/浅主题切换才需重建 HTML；用防抖合并连续切换，避免卡顿
         if self.chapters and getattr(self, "act_dialogue", None) is not None \
                 and self.act_dialogue.isChecked():
-            self._render_chapter(self.current_index)
+            self._pending_reflow = True
+            self._reflow_timer.start()
 
     def _toggle_dialogue(self, checked: bool = None) -> None:
         """对话着色开关：只重渲染当前章，不动原始数据。"""
