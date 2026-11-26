@@ -7,23 +7,24 @@
    网络失败 / 证书问题自动降级用本地数据，不影响页面打开。
 
 顶部：当前版本徽章 + 「检查更新」按钮（复用 update_core 四镜像渠道）。
-主体：按版本倒序的富文本卡片，把 ①②③ 序号自动拆成有序列表。
+主体：方案 A「时间轴流」——左侧渐变轴线 + 国徽节点，右侧版本卡片，
+      把 ①②③ 序号自动拆成条目列表；按版本倒序排列。
 底部：「查看完整历史」链接打开 GitHub Releases。
 深浅主题自适应（apply_colors 接入主题链），文案三语。
 """
 
 from __future__ import annotations
 
-import html as _html
 import json
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QThread, QUrl, Signal, Qt, QRectF
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
+    QVBoxLayout, QWidget,
 )
 
 from .. import netutil
@@ -194,6 +195,135 @@ class _ReleaseFetcher(QThread):
         self.done.emit(blocks)
 
 
+# 时间轴各国徽节点按版本轮换使用的国徽（与软件现有 8 国国徽体系一致）
+_TIMELINE_NATIONS = (
+    "mondstadt", "liyue", "inazuma", "sumeru", "fontaine", "natlan",
+    "snezhnaya", "nodkrai",
+)
+
+
+def _nation_pixmap(nation: str, size: int, color: str = "") -> QPixmap:
+    """加载并按主题色染色国徽图标（失败返回空图，不影响渲染）。"""
+    try:
+        from ..widgets import nation_pixmap as _np
+        pm = _np(nation, color, size)
+        if pm is not None and not pm.isNull():
+            return pm
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        path = resource_path("assets", "nation_icons", f"{nation}.png")
+        pm = QPixmap(path)
+        if not pm.isNull():
+            return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    except Exception:  # noqa: BLE001
+        pass
+    return QPixmap()
+
+
+class _TimelineRail(QWidget):
+    """时间轴左侧竖条：一条竖直渐变线 + 一个国徽节点圆。
+
+    纯 QWidget 自绘（Qt 富文本无法画轴线/圆点），高度随右侧卡片自适应。
+    """
+
+    def __init__(self, nation: str, accent: str, dot_bg: str,
+                 line_color: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(54)
+        self._pm = _nation_pixmap(nation, 22, accent)
+        self._accent = accent
+        self._dot_bg = dot_bg
+        self._line_color = line_color
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w = self.width()
+        h = self.height()
+        cx = w / 2.0
+        dot_cy = 26.0
+        r = 15.0
+        # 竖线：从顶部贯穿到底部，底部用中性色渐弱（分段模拟渐变）
+        line = QPen(QColor(self._line_color), 2)
+        p.setPen(line)
+        p.drawLine(int(cx), int(dot_cy), int(cx), h)
+        if dot_cy > r:
+            p.drawLine(int(cx), 0, int(cx), int(dot_cy - r))
+        # 节点圆：底色填充 + 主题色描边
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self._dot_bg))
+        p.drawEllipse(QRectF(cx - r, dot_cy - r, r * 2, r * 2))
+        p.setPen(QPen(QColor(self._accent), 2))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(QRectF(cx - r, dot_cy - r, r * 2, r * 2))
+        # 国徽
+        if not self._pm.isNull():
+            p.drawPixmap(int(cx - self._pm.width() / 2),
+                         int(dot_cy - self._pm.height() / 2), self._pm)
+
+
+class _VersionCard(QFrame):
+    """时间轴右侧的版本卡片：版本号 + 当前徽章 + 副标题 + 条目列表。"""
+
+    def __init__(self, version: str, subtitle: str, items: List[str],
+                 is_current: bool, nation: str, colors: Dict[str, str],
+                 parent=None) -> None:
+        super().__init__(parent)
+        c = colors
+        self.setStyleSheet(
+            f"_VersionCard {{ background:{c['card_bg']}; border:1px solid {c['border']};"
+            f"border-radius:14px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 18, 14)
+        lay.setSpacing(6)
+
+        # 版本行
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        ver = QLabel(f"v{version}")
+        ver.setStyleSheet(
+            f"font-size:19px;font-weight:800;color:{c['accent']};")
+        head.addWidget(ver)
+        if is_current:
+            cur = QLabel(tr("changelog.current"))
+            cur.setStyleSheet(
+                "background:#f5c542;color:#3a2c00;border-radius:11px;"
+                "padding:2px 10px;font-size:11px;font-weight:800;")
+            head.addWidget(cur)
+        head.addStretch(1)
+        lay.addLayout(head)
+
+        if subtitle:
+            sub = QLabel(subtitle)
+            sub.setWordWrap(True)
+            sub.setStyleSheet(f"color:{c['dim']};font-size:12.5px;")
+            lay.addWidget(sub)
+
+        if items:
+            tip = QLabel(tr("changelog.items"))
+            tip.setStyleSheet(f"color:{c['dim']};font-size:11px;")
+            lay.addWidget(tip)
+            ol = QVBoxLayout()
+            ol.setSpacing(3)
+            for i, item in enumerate(items, 1):
+                row = QHBoxLayout()
+                row.setSpacing(6)
+                idx = QLabel(f"{i:02d}")
+                idx.setStyleSheet(f"color:{c['accent']};font-size:11px;font-weight:700;")
+                idx.setFixedWidth(22)
+                txt = QLabel(item.strip("。 "))
+                txt.setWordWrap(True)
+                txt.setStyleSheet(f"color:{c['fg']};font-size:12.5px;line-height:150%;")
+                row.addWidget(idx, 0, Qt.AlignTop)
+                row.addWidget(txt, 1)
+                ol.addLayout(row)
+            lay.addLayout(ol)
+        elif subtitle:
+            # 无条目时副标题已在上方展示，无需重复
+            pass
+
+
 class ChangelogView(QWidget):
     """更新日志页：本地 notes + 联网补充，富文本卡片展示。"""
 
@@ -245,13 +375,18 @@ class ChangelogView(QWidget):
         head.addWidget(self.check_btn)
         root.addLayout(head)
 
-        # ---- 主体：富文本 ----
-        self.browser = QTextBrowser()
-        self.browser.setOpenExternalLinks(True)
-        self.browser.setReadOnly(True)
-        self.browser.document().setDocumentMargin(4)
-        self.browser.setStyleSheet(modern_scrollbar_qss())
-        root.addWidget(self.browser, 1)
+        # ---- 主体：时间轴滚动区（方案 A）----
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self._list_host = QWidget()
+        self._list_host.setObjectName("changelogListHost")
+        self._list_lay = QVBoxLayout(self._list_host)
+        self._list_lay.setContentsMargins(2, 2, 8, 2)
+        self._list_lay.setSpacing(14)
+        self._list_lay.addStretch(1)
+        self.scroll.setWidget(self._list_host)
+        root.addWidget(self.scroll, 1)
 
         # ---- 底部：查看完整历史 ----
         foot = QHBoxLayout()
@@ -286,8 +421,34 @@ class ChangelogView(QWidget):
         ]
         self._render()
 
+    def _clear_list(self) -> None:
+        """清空时间轴列表中的旧 widget（保留末尾 stretch）。"""
+        while self._list_lay.count() > 1:
+            item = self._list_lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            else:
+                lay = item.layout()
+                if lay is not None:
+                    self._clear_layout(lay)
+
+    @staticmethod
+    def _clear_layout(lay) -> None:
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            else:
+                sub = item.layout()
+                if sub is not None:
+                    ChangelogView._clear_layout(sub)
+
     def _render(self) -> None:
-        """合并本地+远端数据，按版本倒序渲染富文本卡片。"""
+        """合并本地+远端数据，按版本倒序构建时间轴卡片（功能逻辑不变）。"""
         merged: Dict[str, str] = {}
         # 远端优先（更全），本地补缺
         for v, body in self._local_blocks:
@@ -295,9 +456,12 @@ class ChangelogView(QWidget):
         for v, body in self._remote_blocks:
             merged[v] = body or merged.get(v, "")
 
+        self._clear_list()
+
         if not merged:
-            self.browser.setHtml(
-                f"<p style='color:{self._dim};font-size:13px;'>{_html.escape(tr('changelog.empty'))}</p>")
+            empty = QLabel(tr("changelog.empty"))
+            empty.setStyleSheet(f"color:{self._dim};font-size:13px;padding:20px;")
+            self._list_lay.insertWidget(0, empty)
             return
 
         def vkey(v: str) -> tuple:
@@ -305,49 +469,30 @@ class ChangelogView(QWidget):
             return tuple(nums + [0] * (3 - len(nums)))[:3]
 
         versions = sorted(merged.keys(), key=vkey, reverse=True)
-        text_fg = self._fg
-        dim = self._dim
-        accent = self._accent
-        card_bg = self._card_bg
-        border = self._border
+        colors = {
+            "fg": self._fg,
+            "dim": self._dim,
+            "accent": self._accent,
+            "card_bg": self._card_bg,
+            "border": self._border,
+        }
+        line_color = "#4a3a7a" if self._dark else "#d8cfe8"
 
-        parts: List[str] = [
-            "<style> body{font-family:'Microsoft YaHei','Segoe UI',sans-serif;"
-            f"color:{text_fg};font-size:13px;}} </style>"
-        ]
-        list_label = tr("changelog.items")
-        for ver in versions:
+        for idx, ver in enumerate(versions):
             subtitle, items = _split_items(merged[ver])
-            ver_title = f"v{ver}" if not ver.startswith("v") else ver
-            badge = tr("changelog.current") if ver == APP_VERSION else ""
-            badge_html = (
-                f"<span style='background:{accent};color:#1a1a1a;border-radius:8px;"
-                f"padding:1px 8px;font-size:11px;margin-left:8px;'>{_html.escape(badge)}</span>"
-                if badge else "")
-            parts.append(
-                f"<div style='background:{card_bg};border:1px solid {border};"
-                f"border-radius:10px;padding:12px 14px;margin:0 0 12px 0;'>"
-                f"<div style='font-size:15px;font-weight:bold;color:{accent};'>"
-                f"{_html.escape(ver_title)}{badge_html}</div>"
-            )
-            if subtitle:
-                parts.append(
-                    f"<div style='color:{dim};font-size:12px;margin:4px 0 8px 0;'>"
-                    f"{_html.escape(subtitle)}</div>")
-            if items:
-                parts.append(f"<div style='font-size:12px;color:{dim};margin-bottom:4px;'>{_html.escape(list_label)}</div>")
-                parts.append("<ol style='margin:2px 0 0 0;padding-left:22px;line-height:1.7;'>")
-                for item in items:
-                    item_clean = item.strip("。 ")
-                    parts.append(f"<li style='margin:2px 0;'>{_html.escape(item_clean)}</li>")
-                parts.append("</ol>")
-            elif subtitle:
-                parts.append(
-                    f"<div style='margin-top:6px;color:{text_fg};'>"
-                    f"{_html.escape(subtitle)}</div>")
-            parts.append("</div>")
-
-        self.browser.setHtml("".join(parts))
+            nation = _TIMELINE_NATIONS[idx % len(_TIMELINE_NATIONS)]
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(6)
+            rail = _TimelineRail(nation, self._accent, self._card_bg, line_color)
+            card = _VersionCard(
+                ver, subtitle, items, ver == APP_VERSION, nation, colors)
+            rail.setSizePolicy(
+                rail.sizePolicy().horizontalPolicy(), QSizePolicy.Expanding)
+            row_lay.addWidget(rail, 0)
+            row_lay.addWidget(card, 1)
+            self._list_lay.insertWidget(idx, row)
 
     # ------------------------------------------------------------------ 操作
     def _check_update(self) -> None:
@@ -403,9 +548,10 @@ class ChangelogView(QWidget):
             f"background:{self._accent};color:#1a1a1a;border:none;border-radius:8px;"
             f"padding:6px 14px;font-weight:bold;")
         self.history_btn.setStyleSheet(f"color:{self._accent};font-size:12px;")
-        self.browser.setStyleSheet(
+        self.scroll.setStyleSheet(
             modern_scrollbar_qss() +
-            f"QTextBrowser {{ background:{page_bg}; color:{self._fg}; border:none; }}")
+            f"QScrollArea {{ background:{page_bg}; border:none; }}"
+            f"QWidget#changelogListHost {{ background:{page_bg}; }}")
         self._render()
 
     def retranslate(self) -> None:
