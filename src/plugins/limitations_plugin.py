@@ -11,7 +11,7 @@ from typing import Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gui.plugin.base import Plugin, PluginMeta
+from gui.plugin.base import Plugin, PluginMeta, declare_nav
 from gui.views.limitations_view import LimitationsView
 
 
@@ -26,6 +26,7 @@ class LimitationsPlugin(Plugin):
     def register_tabs(self, main_window: Any) -> List[Any]:
         view = LimitationsView(main_window)
         view.setWindowTitle("功能说明")
+        declare_nav(view, "nav.limitations", "ℹ")
         main_window.limitations_view = view
         self.log("功能说明页已接入")
         return [view]

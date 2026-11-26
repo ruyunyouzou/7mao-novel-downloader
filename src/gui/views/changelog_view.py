@@ -50,15 +50,12 @@ _VER_PREFIX = re.compile(
 
 
 def _load_repo() -> str:
-    """复用 update_config.json 的仓库配置（与 update_core 同源）。"""
+    """复用 update_config.json 的仓库配置（与更新检查共用同一解析实现）。"""
     try:
-        path = resource_path("update_config.json")
-        if path and os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            repo = str(data.get("repo") or data.get("repository") or "").strip()
-            if repo and "/" in repo:
-                return repo
+        from ..update_core import load_repo
+        repo = load_repo()
+        if repo:
+            return repo
     except Exception:  # noqa: BLE001
         pass
     return _DEFAULT_REPO

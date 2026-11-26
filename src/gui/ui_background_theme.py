@@ -233,14 +233,6 @@ def auto_contrast(color: str, dark: bool) -> str:
     return mixed.name()
 
 
-def ensure_pair(key: str, source_colors: List[str], source_dark: bool) -> None:
-    """设置某套色后，自动为另一主题生成适配色（写入 store，需外部提供 setter）。
-
-    实际写 store 在设置页完成，这里仅返回应为另一主题写入的值。
-    """
-    return None
-
-
 def derive_pair_value(colors: List[str], source_dark: bool) -> str:
     """给定一套主题的颜色，派生另一主题应存储的渐变/纯色值。"""
     target_dark = not source_dark

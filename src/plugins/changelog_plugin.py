@@ -12,7 +12,7 @@ from typing import Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gui.plugin.base import Plugin, PluginMeta
+from gui.plugin.base import Plugin, PluginMeta, declare_nav
 from gui.views.changelog_view import ChangelogView
 
 
@@ -27,6 +27,7 @@ class ChangelogPlugin(Plugin):
     def register_tabs(self, main_window: Any) -> List[Any]:
         view = ChangelogView(main_window)
         view.setWindowTitle("更新日志")
+        declare_nav(view, "nav.changelog", "📜")
         main_window.changelog_view = view
         self.log("更新日志页已接入")
         return [view]

@@ -164,6 +164,12 @@ class MainWindow(QMainWindow):
 
         self._force_quit = False
         self._shortcuts: list = []
+        # 阅读进度 → 书架表格刷新的合并定时器（见 _on_read_progress）
+        self._shelf_progress_dirty = False
+        self._shelf_refresh_timer = QTimer(self)
+        self._shelf_refresh_timer.setSingleShot(True)
+        self._shelf_refresh_timer.setInterval(350)
+        self._shelf_refresh_timer.timeout.connect(self._flush_shelf_progress)
         self._setup_tray()
         self._setup_shortcuts()
         # 启动时自动检查更新（延迟 3 秒，不阻塞界面）
@@ -1131,21 +1137,21 @@ class MainWindow(QMainWindow):
             if i is not None:
                 main_kids.append(i)
         # 功能说明、使用说明与更新日志也归入书库管理
-        for k in ("功能说明", "nav.help", "nav.changelog"):
+        for k in ("nav.limitations", "功能说明", "nav.help", "nav.changelog"):
             i = idx(k)
             if i is not None:
                 main_kids.append(i)
 
         # 分组 2：导入导出（璃月国徽）
         io_kids = []
-        for k in ("Calibre", "nav.weread", "nav.notebook"):
+        for k in ("nav.calibre", "Calibre", "nav.weread", "nav.notebook"):
             i = idx(k)
             if i is not None:
                 io_kids.append(i)
 
         # 分组 3：插件扩展（稻妻国徽）
         plugin_kids = []
-        for k in ("nav.plugins", "示例插件"):
+        for k in ("nav.plugins", "nav.example", "示例插件"):
             i = idx(k)
             if i is not None:
                 plugin_kids.append(i)
@@ -1212,6 +1218,15 @@ class MainWindow(QMainWindow):
                             self._plugin_theme_widgets = []
                         self._plugin_theme_widgets.append(widget)
                     label = widget.windowTitle() or plugin.meta.name
+                    # 首选插件显式声明的导航键/图标（declare_nav）；未声明时
+                    # 才回退到按中文标题猜的老逻辑，兼容第三方旧插件。
+                    nav_key = str(widget.property("nav_key") or "").strip()
+                    nav_icon = str(widget.property("nav_icon") or "").strip()
+                    if nav_key:
+                        icon = nav_icon or "🔌"
+                        self._nav_tab_specs.append((nav_key, icon))
+                        self.tabs.addTab(widget, f"{icon}  {tr(nav_key)}")
+                        continue
                     # 给已知插件更贴切的图标
                     if "笔记" in label:
                         icon_text = "📝 笔记"
@@ -2083,7 +2098,12 @@ class MainWindow(QMainWindow):
                 pass
 
     def _on_page_changed_for_lang(self, index: int) -> None:
-        """语言切换期间不在设置页时，进入设置页再补做重建。"""
+        """页面切换钩子：补做延后的语言重建与书架进度刷新。"""
+        # 阅读时书架不可见，进度只标脏；切回书架页时补一次刷新
+        if getattr(self, "_shelf_progress_dirty", False):
+            page = self.tabs.widget(index) if hasattr(self, "tabs") else None
+            if page is not None and page is self.shelf_view:
+                self._flush_shelf_progress()
         if not getattr(self, "_settings_lang_dirty", False):
             return
         page = self.tabs.widget(index) if hasattr(self, "tabs") else None
@@ -2803,9 +2823,38 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_read_progress(self, key: str, chapter_index: int, percent: float) -> None:
-        """阅读进度变化时刷新书架进度列（轻量刷新）。"""
-        if self.shelf_view is not None:
+        """阅读进度变化时刷新书架进度列。
+
+        滚动条 valueChanged 按像素触发，一次翻页可能上百次；而
+        ``ShelfView.refresh()`` 会整表重建（setRowCount + 每格新建
+        QTableWidgetItem），实测 40 本书时单次约 3ms。原实现每次进度都刷新，
+        相当于拖动滚动条时每秒阻塞主线程上百毫秒，是阅读卡顿的主因之一，
+        高频重建还曾触发 Qt 表格崩溃。这里改为「合并 + 懒刷新」：
+        - 书架可见：350ms 内多次变化合并为一次；
+        - 书架不可见：只标脏，切回书架页时补一次（见 _on_page_changed_for_lang）。
+        """
+        if self.shelf_view is None:
+            return
+        self._shelf_progress_dirty = True
+        timer = getattr(self, "_shelf_refresh_timer", None)
+        try:
+            visible = self.tabs.currentWidget() is self.shelf_view
+        except (RuntimeError, AttributeError):
+            visible = False
+        if timer is not None and visible and not timer.isActive():
+            timer.start()
+
+    def _flush_shelf_progress(self) -> None:
+        """把积压的阅读进度变化一次性刷进书架表格。"""
+        if not getattr(self, "_shelf_progress_dirty", False):
+            return
+        self._shelf_progress_dirty = False
+        if self.shelf_view is None:
+            return
+        try:
             self.shelf_view.refresh()
+        except RuntimeError:  # 视图已销毁（退出过程中）
+            pass
 
     def _on_download_progress(self, value: int) -> None:
         motion.animate_progress(self.progress, value)
@@ -3021,12 +3070,23 @@ class MainWindow(QMainWindow):
         dyn = getattr(self, "_dynamic_bg", None)
         if dyn is not None and hasattr(dyn, "stop"):
             dyn.stop()
-        if self.queue_view:
-            self.queue_view._timer.stop()
-            for worker in list(self.queue_view._runners.values()):
-                worker.cancel()
-                if worker.isRunning():
-                    worker.wait(2000)
+        # 队列页的内部属性做防御式访问：closeEvent 里任何一次 AttributeError
+        # 都会让 event.accept() 执行不到，窗口关不掉、进程残留。
+        qv = getattr(self, "queue_view", None)
+        if qv is not None:
+            try:
+                q_timer = getattr(qv, "_timer", None)
+                if q_timer is not None and q_timer.isActive():
+                    q_timer.stop()
+            except RuntimeError:
+                pass
+            for worker in list(getattr(qv, "_runners", {}).values()):
+                try:
+                    worker.cancel()
+                    if worker.isRunning():
+                        worker.wait(2000)
+                except RuntimeError:
+                    pass
         for worker in (self.search_worker, self.download_worker, getattr(self, "detail_worker", None)):
             if worker and worker.isRunning():
                 # 协作式退出优先：请求中断网络循环 + 退出线程事件循环，

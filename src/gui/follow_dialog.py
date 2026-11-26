@@ -38,11 +38,22 @@ class _FollowWorker(QThread):
         super().__init__(parent)
         self.rec, self.file_path, self.fmt = rec, file_path, fmt
 
+    def cancel(self) -> None:
+        """协作式取消：进度回调里抛异常中断内核，避免 terminate 打坏半成品文件。"""
+        self.requestInterruption()
+
+    def _progress(self, p: int) -> None:
+        from .plugin.base import DownloadCancelled
+        if self.isInterruptionRequested():
+            raise DownloadCancelled()
+        self.progress.emit(int(p))
+
     def run(self) -> None:
         from .follow_core import follow_txt
+        from .plugin.base import DownloadCancelled
         try:
             if self.fmt == "txt":
-                r = follow_txt(self.rec, self.file_path, lambda p: self.progress.emit(p))
+                r = follow_txt(self.rec, self.file_path, self._progress)
                 new_total = r["total"] if r.get("changed") else self.rec.get("last_chapter", 0)
             else:
                 # EPUB/分章：重建整本（缓存 ZIP 含全书，保证排版一致）
@@ -53,7 +64,7 @@ class _FollowWorker(QThread):
                     book_id=str(self.rec.get("book_id", "")),
                     save_path=save_dir,
                     fmt=self.fmt,
-                    progress_cb=lambda p: self.progress.emit(p),
+                    progress_cb=self._progress,
                     title_hint=self.rec.get("title", ""),
                     author_hint=self.rec.get("author", ""),
                     # 按书源重建：番茄书不能再落到七猫缓存 ZIP
@@ -62,10 +73,15 @@ class _FollowWorker(QThread):
                 r = {"changed": True, "message": "已重新生成", "total": res.get("total_chapters", 0)}
                 new_total = res.get("total_chapters", 0)
                 self.file_path = res.get("file_path", self.file_path)
+            if self.isInterruptionRequested():
+                return  # 已取消：丢弃结果，避免对话框关闭后回调
             self.done.emit({"ok": True, "message": r["message"],
                             "new_total": new_total, "file_path": self.file_path})
+        except DownloadCancelled:
+            return
         except Exception as exc:  # noqa: BLE001
-            self.done.emit({"ok": False, "message": str(exc)})
+            if not self.isInterruptionRequested():
+                self.done.emit({"ok": False, "message": str(exc)})
 
 
 class FollowDialog(QDialog):
@@ -82,12 +98,23 @@ class FollowDialog(QDialog):
         self._load()
 
     def stop_workers(self) -> None:
-        """停止所有仍在运行的追更线程，避免对话框/主窗口销毁时崩溃。"""
+        """停止所有仍在运行的追更线程，避免对话框/主窗口销毁时崩溃。
+
+        先协作式取消（进度回调抛 DownloadCancelled，内核自然收尾、清理 .part），
+        只有当它卡在网络 I/O 上超过 2 秒才 terminate 兜底。原来一上来就
+        terminate，会把正在写盘的内核硬杀，留下半截 EPUB/TXT 或损坏的 ZIP 缓存。
+        """
         for w in list(self._workers):
             try:
+                if not w.isRunning():
+                    continue
+                cancel = getattr(w, "cancel", None)
+                if callable(cancel):
+                    cancel()
+                    w.wait(2000)
                 if w.isRunning():
                     w.terminate()
-                    w.wait(1000)
+                    w.wait(800)
             except RuntimeError:
                 # 底层 C++ 对象已销毁时忽略
                 pass

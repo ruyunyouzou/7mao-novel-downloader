@@ -18,6 +18,15 @@ from typing import Any, Dict, List, Optional
 
 from .logutil import logger
 
+#: 进程级设置文件锁。
+#:
+#: settings.json 的读写是「整文件读取 → 改一个键 → 整文件写回」。DataStore 允许
+#: 多实例并存（主窗口一个、fanqie_core.meta_override 一个、测试一个），每实例
+#: 各有一把 threading.RLock，两个实例同时写会互相覆盖：下载线程写
+#: fanqie_meta_overrides 的同时主线程写 language，后写者会把前者刚写的键抹掉。
+#: 这里用模块级锁把同进程内的设置读写串行化，成本可忽略、彻底消除该竞态。
+_SETTINGS_LOCK = threading.RLock()
+
 
 def _now() -> str:
     """当前时间的可读字符串。"""
@@ -303,14 +312,14 @@ class DataStore:
     # ------------------------------------------------------------------ 设置
 
     def settings_get(self, key: str, default: Any = None) -> Any:
-        with self._lock:
+        with _SETTINGS_LOCK:
             data = self._load(self.settings_path, {})
             if isinstance(data, dict):
                 return data.get(key, default)
             return default
 
     def settings_set(self, key: str, value: Any) -> None:
-        with self._lock:
+        with _SETTINGS_LOCK:
             data = self._load(self.settings_path, {})
             if not isinstance(data, dict):
                 data = {}

@@ -20,6 +20,31 @@ from typing import Any, Optional, Callable, List, Dict
 from enum import Enum
 
 
+#: 插件页面声明导航项用的 Qt 动态属性名
+NAV_KEY_PROPERTY = "nav_key"
+NAV_ICON_PROPERTY = "nav_icon"
+
+
+def declare_nav(widget: Any, key: str, icon: str = "") -> None:
+    """声明插件页面在左侧导航中的 i18n 键与图标。
+
+    主窗口旧逻辑靠 ``widget.windowTitle()`` 的中文字串去猜导航键，任何一个
+    插件改了标题文案就会在英/俄界面露出中文，且新增插件必须改主窗口代码。
+    插件在 ``register_tabs`` 里调用本函数显式声明后，主窗口优先读这两个属性，
+    只有没声明时才回退到旧的猜法（保证第三方旧插件仍可用）。
+
+    :param widget: 要加入导航的 QWidget 页面
+    :param key: i18n 键（如 ``nav.weread``）；找不到时主窗口原样显示该串
+    :param icon: 导航图标（emoji），留空则用 🔌
+    """
+    try:
+        widget.setProperty(NAV_KEY_PROPERTY, str(key or ""))
+        if icon:
+            widget.setProperty(NAV_ICON_PROPERTY, str(icon))
+    except Exception:  # noqa: BLE001 - 非 QWidget 时静默跳过
+        pass
+
+
 class Hook(str, Enum):
     """插件可实现的挂载点名称。字符串枚举，便于插件直接用方法名实现。"""
 

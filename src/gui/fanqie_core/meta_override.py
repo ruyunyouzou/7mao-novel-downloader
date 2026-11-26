@@ -20,14 +20,21 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Any, Dict, Optional
+from typing import Dict
 
 _KEY = "fanqie_meta_overrides"
 
+#: 进程内复用的 DataStore。DataStore() 构造会读取 9 个 JSON 文件，
+#: 覆盖表在搜索/详情/下载/反查里会被反复调用，每次新建实例纯属浪费。
+_STORE = None
+
 
 def _store():  # pragma: no cover - 惰性导入避免循环
-    from ..datastore import DataStore
-    return DataStore()
+    global _STORE
+    if _STORE is None:
+        from ..datastore import DataStore
+        _STORE = DataStore()
+    return _STORE
 
 
 def cover_file_path(book_id: str) -> str:
@@ -71,18 +78,36 @@ def get_override(book_id: str) -> Dict[str, str]:
 
 
 def save_cover_file(book_id: str, src_path: str) -> str:
-    """把用户选的本地封面图片复制到覆盖表目录，返回落盘路径；失败返回空串。"""
+    """把用户选的本地封面图片复制到覆盖表目录，返回落盘路径；失败返回空串。
+
+    先写 ``.part`` 再原子替换：直接 copyfile 到目标位置时，若复制中途被打断，
+    会留下半张坏图，而 ``os.path.isfile`` 仍为真，之后每次下载都会把坏图
+    塞进 EPUB。图片有 Pillow 时统一转成真正的 JPEG（用户可能选 PNG/WEBP，
+    而落盘文件名固定 ``.jpg``，扩展名与内容不符会导致部分阅读器不显示封面）。
+    """
     bid = str(book_id or "").strip()
     src = str(src_path or "").strip()
     if not bid or not src or not os.path.isfile(src):
         return ""
     dst = cover_file_path(bid)
+    tmp = f"{dst}.part"
     try:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        # 复制后统一按 jpg 命名（内容仍是原始字节，ebooklib 不校验扩展名）
-        shutil.copyfile(src, dst)
+        shutil.copyfile(src, tmp)
+        try:
+            from PIL import Image
+            with Image.open(tmp) as im:
+                im.convert("RGB").save(tmp, "JPEG", quality=92)
+        except Exception:  # noqa: BLE001 - 无 Pillow 或非图片：保留原始字节
+            pass
+        os.replace(tmp, dst)
         return dst
     except Exception:  # noqa: BLE001
+        try:
+            if os.path.isfile(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
         return ""
 
 

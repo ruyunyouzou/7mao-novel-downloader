@@ -10,7 +10,7 @@ import sys
 # 保证能 import 到 gui 包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gui.plugin.base import Plugin, PluginMeta
+from gui.plugin.base import Plugin, PluginMeta, declare_nav
 from gui.views.calibre_view import CalibreView
 
 
@@ -34,5 +34,6 @@ class CalibrePlugin(Plugin):
         # 主窗口持有引用，便于书架右键「用 Calibre 编辑」直接调用
         main_window.calibre_view = self.view
         self.view.setWindowTitle("Calibre 书库")
+        declare_nav(self.view, "nav.calibre", "📖")
         self.log("Calibre 页已接入")
         return [self.view]

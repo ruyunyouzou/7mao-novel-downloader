@@ -23,7 +23,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gui.plugin.base import (
-    Plugin, PluginMeta, DownloaderBase, DownloadResult,
+    Plugin, PluginMeta, DownloaderBase, DownloadResult, declare_nav,
 )
 from gui.widgets import nation_icon
 from gui.style import accent_color
@@ -258,7 +258,9 @@ class ExamplePlugin(Plugin):
 
     def register_tabs(self, main_window):
         """返回一个自定义 QWidget，主窗口会把它作为标签页加入。"""
-        return [ExampleDemoView(main_window)]
+        view = ExampleDemoView(main_window)
+        declare_nav(view, "nav.example", "🔌")
+        return [view]
 
     def provide_downloader(self):
         """接管下载内核。返回 None 则不接管；这里返回一个演示内核。"""

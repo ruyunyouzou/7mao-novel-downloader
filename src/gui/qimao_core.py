@@ -375,6 +375,15 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\/:*?"<>|]', "_", name).strip()
 
 
+def _discard_partial(path: str) -> None:
+    """删除未写完的临时产物（``*.part``）；失败静默，不影响主流程。"""
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 DEFAULT_FILENAME_TEMPLATE = "{title}"
 
 # 标题高亮色（白底 EPUB 用深色字，保证对比与可读）
@@ -910,24 +919,43 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             book.add_item(epub.EpubNav())
             book.spine = ["nav"] + epub_chapters
             result_path = os.path.join(save_path, f"{out_name}.epub")
-            epub.write_epub(result_path, book)
+            # 先写 .part 再原子替换：取消/异常时不留下半截 EPUB 被当成成品
+            _tmp = result_path + ".part"
+            try:
+                epub.write_epub(_tmp, book)
+            except Exception:
+                _discard_partial(_tmp)
+                raise
+            if chapters_written == 0:
+                _discard_partial(_tmp)
+            else:
+                os.replace(_tmp, result_path)
 
         else:
-            # 单 txt 文件：按顺序写入所有章节
+            # 单 txt 文件：按顺序写入所有章节（同样先写 .part 再替换）
             result_path = os.path.join(save_path, f"{out_name}.txt")
-            with open(result_path, "w", encoding="utf-8") as f:
-                f.write(f"名称：{title}\n")
-                if detail.get("author"):
-                    f.write(f"作者：{detail['author']}\n")
-                f.write(f"共 {len(catalog)} 章\n")
-                f.write("=" * 40 + "\n\n")
-                for i, ch in enumerate(catalog):
-                    text = source.chapter_text(ctx, ch, session, report)
-                    if not text:
-                        continue
-                    f.write(f"\n\n{ch['title']}\n\n{text}\n")
-                    chapters_written += 1
-                    report(40 + int((i + 1) / len(catalog) * 60))
+            _tmp = result_path + ".part"
+            try:
+                with open(_tmp, "w", encoding="utf-8") as f:
+                    f.write(f"名称：{title}\n")
+                    if detail.get("author"):
+                        f.write(f"作者：{detail['author']}\n")
+                    f.write(f"共 {len(catalog)} 章\n")
+                    f.write("=" * 40 + "\n\n")
+                    for i, ch in enumerate(catalog):
+                        text = source.chapter_text(ctx, ch, session, report)
+                        if not text:
+                            continue
+                        f.write(f"\n\n{ch['title']}\n\n{text}\n")
+                        chapters_written += 1
+                        report(40 + int((i + 1) / len(catalog) * 60))
+            except Exception:
+                _discard_partial(_tmp)
+                raise
+            if chapters_written == 0:
+                _discard_partial(_tmp)
+            else:
+                os.replace(_tmp, result_path)
 
         if chapters_written == 0:
             raise QimaoError("没有任何章节成功写入（章节ID与缓存文件不匹配）")

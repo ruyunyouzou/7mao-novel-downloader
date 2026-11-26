@@ -12,7 +12,7 @@ from typing import Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gui.plugin.base import Plugin, PluginMeta
+from gui.plugin.base import Plugin, PluginMeta, declare_nav
 from gui.views.help_view import HelpView
 
 
@@ -27,6 +27,7 @@ class HelpPlugin(Plugin):
     def register_tabs(self, main_window: Any) -> List[Any]:
         view = HelpView(main_window)
         view.setWindowTitle("使用说明")
+        declare_nav(view, "nav.help", "📖")
         main_window.help_view = view
         self.log("使用说明页已接入")
         return [view]

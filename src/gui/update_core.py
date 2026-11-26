@@ -41,9 +41,14 @@ _CONFIG_FILE = "update_config.json"
 
 
 def _load_repo() -> str:
-    """读取仓库地址：优先 exe 同目录的 update_config.json，否则用默认值。
+    """读取仓库地址：优先外置 update_config.json，否则用默认值。
 
-    配置文件格式：{"repo": "你的用户名/仓库名", "branch": "main"}
+    配置文件格式：{"repo": "用户名/仓库名", "branch": "main"}
+    （兼容旧键名 ``repository``。）
+
+    候选路径依次为：resource_path 根目录（源码=项目根、打包=_MEIPASS/入口目录）、
+    PyInstaller ``app_root``、argv[0] 所在目录。更新检查与「更新日志」页共用本函数，
+    避免两处各自解析配置导致仓库地址不一致。
     """
     candidates = []
     try:
@@ -51,17 +56,30 @@ def _load_repo() -> str:
         candidates.append(os.path.join(app_root(), _CONFIG_FILE))
     except Exception:  # noqa: BLE001
         pass
+    try:
+        from .resource_path import resource_path
+        candidates.append(resource_path(_CONFIG_FILE))
+    except Exception:  # noqa: BLE001
+        pass
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), _CONFIG_FILE))
     for path in candidates:
+        if not path:
+            continue
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            repo = str(data.get("repo") or "").strip()
+            if not isinstance(data, dict):
+                continue
+            repo = str(data.get("repo") or data.get("repository") or "").strip()
             if repo and "/" in repo:
                 return repo
         except (OSError, ValueError):
             continue
     return DEFAULT_REPO
+
+
+# 公开别名：供「更新日志」等其他模块复用，避免再抄一份配置解析
+load_repo = _load_repo
 
 
 def _branch() -> str:

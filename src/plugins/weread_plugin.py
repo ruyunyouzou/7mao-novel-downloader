@@ -15,7 +15,7 @@
 
 from typing import Any, List
 
-from gui.plugin.base import Plugin, PluginMeta
+from gui.plugin.base import Plugin, PluginMeta, declare_nav
 from gui.views.weread_view import WereadView
 from gui.views.notebook_view import NotebookView
 
@@ -39,12 +39,14 @@ class WeReadPlugin(Plugin):
             return []
         self.view = WereadView(store, main_window)
         self.view.setWindowTitle("微信读书")
+        declare_nav(self.view, "nav.weread", "📚")
         # 让主窗口持有引用，便于书架右键「导入到微信读书」直接调用
         main_window.weread_view = self.view
 
         # 笔记本页（复刻微信读书笔记界面）
         self.notebook_view = NotebookView(store, main_window)
         self.notebook_view.setWindowTitle("笔记")
+        declare_nav(self.notebook_view, "nav.notebook", "📝")
         main_window.notebook_view = self.notebook_view
         self.log("微信读书页与笔记页已接入")
         return [self.view, self.notebook_view]

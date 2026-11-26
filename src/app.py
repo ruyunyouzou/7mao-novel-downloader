@@ -16,6 +16,9 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+# LEGACY（命令行版）：仅供排障/回归对照，GUI 发行包不包含本文件
+# （build.spec 入口是 启动GUI.py）。新功能一律在 gui/ 下实现，不要在此扩展。
+# 注：本文件的更新检查仍走上游 gitee 接口，与 GUI 的 GitHub 渠道互相独立。
 
 import os
 import time
@@ -34,10 +37,17 @@ import sys
 import atexit
 import shutil
 
+# 版本单一真源：CLI 与 GUI 必须同步，否则「检查更新」会误判。
+# gui.version 只依赖 re，导入无副作用；失败时才回退（如脱离 src 单独运行）。
+try:
+    from gui.version import APP_VERSION as _APP_VERSION
+except Exception:  # noqa: BLE001
+    _APP_VERSION = "5.0.1"
+
 
 class MainProgram:
     def __init__(self):
-        self.__version__: str = "v5.0.0"                     # 主程序版本
+        self.__version__: str = f"v{_APP_VERSION}"               # 主程序版本
         self.mode: str = ""                                     # 模式
         self.book_id: str = "None"                              # 书籍ID（单本）
         self.books: list = []                                   # 书籍ID（批量）
