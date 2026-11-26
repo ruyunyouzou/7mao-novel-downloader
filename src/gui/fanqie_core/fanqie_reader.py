@@ -159,6 +159,56 @@ def fetch_cover(book_id: str, timeout: int = 15) -> str:
         return ""
 
 
+def fetch_online_book_meta(book_id: str, timeout: int = 15) -> Dict[str, str]:
+    """从番茄官网书籍页一次性解析当前书名/作者/简介/封面。
+
+    番茄同一本书可能有多个历史书名与封面（搜索页/书架里常常残留旧值），
+    下载产物必须以官网**当前**展示为准。本函数以
+    ``window.__INITIAL_STATE__.page`` 为唯一权威来源，保证 title 与 cover
+    同源；INITIAL_STATE 解析失败时回退 HTML ``<h1>`` 与 fetch_cover()。
+    失败返回空串字段，不抛异常、不影响下载主链路。
+
+    返回值键：title / author / intro / cover，全部为字符串。
+    """
+    bid = str(book_id or "").strip()
+    result: Dict[str, str] = {"title": "", "author": "", "intro": "", "cover": ""}
+    if not bid:
+        return result
+    try:
+        resp = requests.get(
+            f"https://fanqienovel.com/page/{bid}",
+            headers=_HEADERS, timeout=timeout,
+        )
+        resp.raise_for_status()
+    except Exception:  # noqa: BLE001
+        result["cover"] = fetch_cover(bid, timeout=timeout)
+        return result
+
+    page: Dict[str, object] = {}
+    try:
+        page = (_initial_state(resp.text).get("page") or {})
+    except Exception:  # noqa: BLE001
+        pass
+    result["title"] = str(page.get("bookName") or page.get("title") or "").strip()
+    result["author"] = str(page.get("authorName") or page.get("author") or "").strip()
+    result["intro"] = str(page.get("abstract") or page.get("description") or "").strip()
+    result["cover"] = str(page.get("thumbUrl") or page.get("thumbUri") or "").strip()
+
+    # INITIAL_STATE 缺失或部分字段为空时，从已下载的 HTML 补齐（不再发第二次请求）
+    if not result["title"]:
+        try:
+            match = re.search(r"<h1[^>]*>\s*(.*?)\s*</h1>", resp.text, re.S | re.I)
+            if match:
+                result["title"] = _html.unescape(
+                    re.sub(r"<[^>]+>", "", match.group(1))
+                ).strip()
+        except Exception:  # noqa: BLE001
+            pass
+    if not result["cover"]:
+        result["cover"] = fetch_cover(bid, timeout=timeout)
+    return result
+
+
 # 番茄分享短链域名：/t/<token> 形态需联网跟随重定向还原为真实 bookId。
 # 只对这些白名单域名发起请求，防止把任意 URL 当短链跟随（SSRF 风险）。
 _SHORT_LINK_HOSTS = (

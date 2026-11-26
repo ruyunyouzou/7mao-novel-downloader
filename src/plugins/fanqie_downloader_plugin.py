@@ -34,24 +34,46 @@ class FanqieBookSource(BookSource):
     def __init__(self) -> None:
         self._handler = RequestHandler()
         self._total = 0
+        # 实例级缓存：同一次下载任务里 build_txt 会再次调用 fetch_detail，
+        # 避免重复请求；每次下载新建 source，保证每次都拉取官网当前值。
+        self._detail_cache: dict = {}
 
     def fetch_detail(self, book_id: str, session) -> dict:
+        bid = str(book_id or "").strip()
+        if bid in self._detail_cache:
+            return dict(self._detail_cache[bid])
+        # 官网当前书名/封面同源解析；搜索页与书架里的旧别名不得覆盖下载产物。
         try:
-            name, author, intro = self._handler.get_book_info(str(book_id))
+            from gui.fanqie_core.fanqie_reader import fetch_online_book_meta
+            meta = fetch_online_book_meta(bid)
         except Exception:  # noqa: BLE001
-            name, author, intro = None, None, None
-        # 封面供 EPUB 内嵌；惰性导入避免启动期加载字体映射大表，失败不影响下载。
-        try:
-            from gui.fanqie_core.fanqie_reader import fetch_cover
-            cover = fetch_cover(str(book_id))
-        except Exception:  # noqa: BLE001
-            cover = ""
-        return {
-            "title": str(name or ""),
-            "author": str(author or ""),
-            "intro": str(intro or ""),
-            "cover": str(cover or ""),
-        }
+            meta = {}
+        if meta and meta.get("title"):
+            detail = {
+                "title": meta["title"],
+                "author": meta.get("author", ""),
+                "intro": meta.get("intro", ""),
+                "cover": meta.get("cover", ""),
+            }
+        else:
+            # 官网元数据整体失败时回退旧链路，保证下载不中断
+            try:
+                name, author, intro = self._handler.get_book_info(bid)
+            except Exception:  # noqa: BLE001
+                name, author, intro = None, None, None
+            try:
+                from gui.fanqie_core.fanqie_reader import fetch_cover
+                cover = fetch_cover(bid)
+            except Exception:  # noqa: BLE001
+                cover = ""
+            detail = {
+                "title": str(name or ""),
+                "author": str(author or ""),
+                "intro": str(intro or ""),
+                "cover": str(cover or ""),
+            }
+        self._detail_cache[bid] = dict(detail)
+        return dict(detail)
 
     def fetch_catalog(self, book_id: str, session) -> list:
         raw = self._handler.extract_chapters(str(book_id)) or []
@@ -108,6 +130,16 @@ class FanqieDownloader(DownloaderBase):
 
     def download(self, book_id, save_path, fmt="txt", progress_cb=None, **kwargs):
         title = kwargs.get("title", "") or ""
+        # 下载产物（文件名/EPUB 标题）以番茄官网当前书名为准；
+        # 搜索页/书架里残留的旧别名只用于展示，不再覆盖落盘结果。
+        source = FanqieBookSource()
+        try:
+            official = source.fetch_detail(str(book_id), None) or {}
+            official_title = str(official.get("title") or "").strip()
+            if official_title:
+                title = official_title
+        except Exception:  # noqa: BLE001
+            pass
         from gui.datastore import DataStore
         store = DataStore()
 
@@ -159,7 +191,7 @@ class FanqieDownloader(DownloaderBase):
                 tail_mode=str(tail_mode),
                 tail_fixed=str(tail_fixed),
                 smart_art=bool(smart_art),
-                source=FanqieBookSource(),
+                source=source,
             )
         except DownloadCancelled:
             raise  # 取消必须冒泡，否则队列会误判为失败
