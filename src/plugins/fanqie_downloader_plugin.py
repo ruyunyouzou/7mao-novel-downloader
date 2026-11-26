@@ -110,7 +110,26 @@ class FanqieBookSource(BookSource):
             except Exception:  # noqa: BLE001
                 text = ""
         if not text:
-            text = decode_chapter(str(chapter["id"]))
+            # 番茄官网偶发返回不带 __INITIAL_STATE__ 的验证/兜底页，
+            # 单章一次失败不应让整本书下载失败：重试几次 → 再兜底 upstream 内核
+            # → 仍失败则返回空串，由 build_txt 跳过该章继续下载其余章节。
+            import time as _time
+            cid = str(chapter["id"])
+            for attempt in range(3):
+                try:
+                    text = decode_chapter(cid)
+                    break
+                except Exception:  # noqa: BLE001
+                    text = ""
+                    if attempt < 2:
+                        _time.sleep(0.6 * (attempt + 1))
+            if not text:
+                # 官方读者页取不到时用上游接口兜底（默认 backend=official 时未走过）
+                try:
+                    text = self._handler.down_text(cid) or ""
+                except Exception:  # noqa: BLE001
+                    text = ""
+            # 仍为空（特殊章/视频章）按跳过处理，不中断整本
 
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1
@@ -137,15 +156,21 @@ class FanqieDownloader(DownloaderBase):
         # 之后同书再下载自动沿用，无需重复填写。
         off_title = str(kwargs.get("official_title", "") or "").strip()
         off_cover = str(kwargs.get("official_cover_url", "") or "").strip()
-        # 本地封面文件路径：对话框选图时已写入覆盖表，这里只补写标题（避免覆盖已存的 cover_path）
+        off_cover_path = str(kwargs.get("official_cover_path", "") or "").strip()
         try:
-            from gui.fanqie_core.meta_override import set_override, remove_override
+            from gui.fanqie_core.meta_override import (
+                set_override, remove_override, save_cover_file,
+            )
             if kwargs.get("official_clear"):
                 remove_override(bid)
                 off_title, off_cover = "", ""
-            elif off_title or off_cover:
-                # 不传 cover_path，set_override 空字段不覆盖已有本地封面
-                set_override(bid, off_title, off_cover)
+            elif off_title or off_cover or off_cover_path:
+                # 本地封面：对话框选图时已落盘覆盖表，这里再按 options 传来的
+                # 路径兜底保存一次，确保即使覆盖表被清也能恢复用户所选原图。
+                cover_path = ""
+                if off_cover_path and os.path.isfile(off_cover_path):
+                    cover_path = save_cover_file(bid, off_cover_path) or ""
+                set_override(bid, off_title, off_cover, cover_path=cover_path)
         except Exception:  # noqa: BLE001
             pass
         # 官方书名覆盖搜索页的旧别名（文件名 / EPUB 标题 / 题图种子均据此）

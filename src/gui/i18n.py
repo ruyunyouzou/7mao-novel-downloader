@@ -322,6 +322,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.official_pick_title": "选择从番茄 App 保存的封面图片",
         "dlg.official_cover_set": "已选择本地封面（自动记住）",
         "dlg.official_cover_none": "未选择封面（当前用网页封面）",
+        "dlg.official_cover_fail": "封面保存失败，请换一张图片重试。",
         "dlg.official_cover": "封面网址：",
         "dlg.official_clear": "清除修正",
         # 设置页
@@ -1171,6 +1172,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.official_pick_title": "Select the cover image saved from the Fanqie app",
         "dlg.official_cover_set": "Local cover selected (remembered)",
         "dlg.official_cover_none": "No cover selected (using web cover)",
+        "dlg.official_cover_fail": "Failed to save the cover. Please try another image.",
         "dlg.official_cover": "Cover URL:",
         "dlg.official_clear": "Clear fix",
         "set.download": "Download & Save",
@@ -2014,6 +2016,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dlg.official_pick_title": "Выберите изображение обложки, сохранённое из приложения Fanqie",
         "dlg.official_cover_set": "Локальная обложка выбрана (запомнена)",
         "dlg.official_cover_none": "Обложка не выбрана (используется веб-обложка)",
+        "dlg.official_cover_fail": "Не удалось сохранить обложку. Попробуйте другое изображение.",
         "dlg.official_cover": "URL обложки:",
         "dlg.official_clear": "Сбросить правку",
         "set.download": "Загрузка и сохранение",

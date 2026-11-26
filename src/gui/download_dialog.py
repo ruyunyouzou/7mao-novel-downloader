@@ -6,13 +6,15 @@ EPUB 排版选项只影响本次下载（临时覆盖全局设置），不修改
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict
 
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QCheckBox, QLineEdit, QColorDialog, QGroupBox,
-    QScrollArea, QFrame, QFileDialog,
+    QScrollArea, QFrame, QFileDialog, QMessageBox,
 )
 
 from .qimao_core import (render_filename, font_combo_items,
@@ -111,6 +113,7 @@ class DownloadDialog(QDialog):
         self.official_cover_edit = None
         self.official_cover_path = ""
         self.official_cover_label = None
+        self.official_cover_preview = None
         self._official_cleared = False
         if str(book.get("source", "") or "") == "fanqie":
             from .fanqie_core.meta_override import get_override
@@ -140,6 +143,15 @@ class DownloadDialog(QDialog):
             self.official_cover_label.setStyleSheet("color: #888;")
             row_pick.addWidget(self.official_cover_label, 1)
             g_lay.addLayout(row_pick)
+            # 封面预览：选完即可看到实际用到的封面图，避免"选了没生效"的错觉
+            self.official_cover_preview = QLabel()
+            self.official_cover_preview.setObjectName("officialCoverPreview")
+            self.official_cover_preview.setAlignment(Qt.AlignCenter)
+            self.official_cover_preview.setFixedHeight(180)
+            self.official_cover_preview.setStyleSheet(
+                "border: 1px solid #555; border-radius: 6px; background: #222; color: #888;")
+            g_lay.addWidget(self.official_cover_preview)
+            self._refresh_cover_preview()
             # 封面网址（备用：能拿到图片直链时用）
             row_oc = QHBoxLayout()
             row_oc.addWidget(QLabel(tr("dlg.official_cover")))
@@ -361,6 +373,21 @@ class DownloadDialog(QDialog):
         self.tail_mode_combo.setEnabled(on)
         self.tail_fixed_combo.setEnabled(on and fixed)
 
+    def _refresh_cover_preview(self) -> None:
+        """按当前选中/已记住的封面路径刷新预览图。"""
+        if self.official_cover_preview is None:
+            return
+        path = self.official_cover_path
+        if path and os.path.isfile(path):
+            pixmap = QPixmap(path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    self.official_cover_preview.width() - 8, 172,
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.official_cover_preview.setPixmap(scaled)
+                return
+        self.official_cover_preview.setText(tr("dlg.official_cover_none"))
+
     def _pick_official_cover(self) -> None:
         """选择 App「保存」出来的本地封面图片（原图，不失真）。"""
         path, _ = QFileDialog.getOpenFileName(
@@ -368,18 +395,21 @@ class DownloadDialog(QDialog):
             "图片文件 (*.jpg *.jpeg *.png *.webp *.bmp);;所有文件 (*.*)")
         if not path:
             return
-        self.official_cover_path = path
         # 立即复制到覆盖表目录并持久化，保证关掉对话框也不丢
         bid = str(self.book.get("id", "") or "")
         from .fanqie_core.meta_override import save_cover_file, set_override
         saved = save_cover_file(bid, path)
-        if saved:
-            self.official_cover_path = saved
+        if not saved:
+            # 保存失败：不要假装成功，否则用户以为选了、实际还是原图
+            QMessageBox.warning(self, tr("common.tip"), tr("dlg.official_cover_fail"))
+            return
+        self.official_cover_path = saved
         title = self.official_title_edit.text().strip() if self.official_title_edit else ""
         set_override(bid, title=title, cover_path=saved)
         self._official_cleared = False
         if self.official_cover_label is not None:
             self.official_cover_label.setText(tr("dlg.official_cover_set"))
+        self._refresh_cover_preview()
 
     def _clear_official(self) -> None:
         """清空官方信息修正输入，并标记删除持久化的覆盖表记录。"""
@@ -390,6 +420,7 @@ class DownloadDialog(QDialog):
         self.official_cover_path = ""
         if self.official_cover_label is not None:
             self.official_cover_label.setText(tr("dlg.official_cover_none"))
+        self._refresh_cover_preview()
         self._official_cleared = True
 
     # ---------- 预览与输出 ----------
