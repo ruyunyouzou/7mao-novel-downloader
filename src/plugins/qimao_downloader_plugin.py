@@ -29,8 +29,9 @@ class QimaoRealDownloader(DownloaderBase):
     source_key = "qimao"
 
     def supports(self, book_info):
-        # 未标注来源的书默认仍走七猫；显式标成番茄的书不接管。
-        return str((book_info or {}).get("source", "") or "qimao") != "fanqie"
+        # 未标注来源的书默认仍走七猫；显式标成其他书源（番茄/文库8）的不接管。
+        src = str((book_info or {}).get("source", "") or "qimao").strip().lower()
+        return src not in ("fanqie", "wenku8")
 
     def download(self, book_id, save_path, fmt="txt", progress_cb=None, **kwargs):
         title = kwargs.get("title", "") or ""

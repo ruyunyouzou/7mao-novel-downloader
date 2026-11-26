@@ -32,6 +32,23 @@ from .workers import SearchWorker, DownloadWorker, DetailWorker
 from . import filedialogs as _fd
 from .datastore import DataStore
 from .i18n import tr, manager as i18n_manager, LANGUAGES
+
+# 书源下拉框统一映射：索引 <-> 书源 key。新增书源只需在此扩一项与 i18n 键。
+_SOURCE_KEYS = ("qimao", "fanqie", "wenku8")
+_SOURCE_I18N = ("search.source_qimao", "search.source_fanqie", "search.source_wenku8")
+_SOURCE_LABELS = ("七猫", "番茄", "文库8")
+
+
+def _source_items() -> list:
+    return [tr(k) for k in _SOURCE_I18N]
+
+
+def _source_key_from_index(idx: int) -> str:
+    return _SOURCE_KEYS[idx] if 0 <= idx < len(_SOURCE_KEYS) else "qimao"
+
+
+def _source_label(key: str) -> str:
+    return _SOURCE_LABELS[_SOURCE_KEYS.index(key)] if key in _SOURCE_KEYS else "七猫"
 from .version import VERSION_LABEL
 from .views import ShelfView, QueueView, HistoryView, ReaderView, StatsView
 from .widgets import TitleBar, Card, section_title, hint_label
@@ -105,6 +122,9 @@ class MainWindow(QMainWindow):
         _fanqie_dir = str(self.store.settings_get("fanqie_save_dir", "") or "").strip()
         self.fanqie_save_dir = _fanqie_dir if _fanqie_dir and os.path.isdir(_fanqie_dir) \
             else os.path.join(os.path.expanduser("~"), "番茄小说")
+        _wenku8_dir = str(self.store.settings_get("wenku8_save_dir", "") or "").strip()
+        self.wenku8_save_dir = _wenku8_dir if _wenku8_dir and os.path.isdir(_wenku8_dir) \
+            else os.path.join(os.path.expanduser("~"), "文库8小说")
         # 动效模块读取设置：ui_motion / ui_motion_level / ui_low_power
         motion.bind_settings(lambda k, d: self.store.settings_get(k, d))
         # 通知/提示音模块读取设置
@@ -504,7 +524,7 @@ class MainWindow(QMainWindow):
 
         # 书源选择：七猫 / 番茄（默认七猫，行为不变）
         self.source_combo = QComboBox()
-        self.source_combo.addItems([tr("search.source_qimao"), tr("search.source_fanqie")])
+        self.source_combo.addItems(_source_items())
         self.source_combo.setToolTip(tr("search.source_tip"))
         bar.addWidget(self.source_combo)
 
@@ -788,6 +808,30 @@ class MainWindow(QMainWindow):
             lambda: self._choose_save_dir("fanqie"))
         row_fanqie.addWidget(self.settings_fanqie_choose_btn)
         l1.addLayout(row_fanqie)
+        # 文库8目录独立配置：文库8书籍下载到此目录
+        self.set_wenku8_dir_label = hint_label(tr("set.wenku8_dir"))
+        l1.addWidget(self.set_wenku8_dir_label)
+        row_wenku8 = QHBoxLayout()
+        self.settings_wenku8_path = QLabel(self.wenku8_save_dir)
+        self.settings_wenku8_path.setStyleSheet(f"color: {TEXT_DIM};")
+        row_wenku8.addWidget(self.settings_wenku8_path, 1)
+        self.settings_wenku8_choose_btn = QPushButton(tr("set.choose_dir"))
+        self.settings_wenku8_choose_btn.clicked.connect(
+            lambda: self._choose_save_dir("wenku8"))
+        row_wenku8.addWidget(self.settings_wenku8_choose_btn)
+        l1.addLayout(row_wenku8)
+        # 文库8 Cookie 配置：登录后 F12 → Console → document.cookie
+        self.set_wenku8_cookie_label = hint_label(tr("set.wenku8_cookie"))
+        l1.addWidget(self.set_wenku8_cookie_label)
+        row_cookie = QHBoxLayout()
+        self.settings_wenku8_cookie = QLineEdit(
+            str(self.store.settings_get("wenku8_cookie", "") or "")
+        )
+        self.settings_wenku8_cookie.setEchoMode(QLineEdit.Password)
+        self.settings_wenku8_cookie.setPlaceholderText("PHPSESSID=...; jieqiUserInfo=...")
+        self.settings_wenku8_cookie.editingFinished.connect(self._on_wenku8_cookie_changed)
+        row_cookie.addWidget(self.settings_wenku8_cookie, 1)
+        l1.addLayout(row_cookie)
         self.set_default_format_label = hint_label(tr("set.default_format"))
         l1.addWidget(self.set_default_format_label)
         self.settings_format = QComboBox()
@@ -1901,8 +1945,8 @@ class MainWindow(QMainWindow):
             src_idx = self.source_combo.currentIndex()
             self.source_combo.blockSignals(True)
             self.source_combo.clear()
-            self.source_combo.addItems([tr("search.source_qimao"), tr("search.source_fanqie")])
-            self.source_combo.setCurrentIndex(max(0, src_idx))
+            self.source_combo.addItems(_source_items())
+            self.source_combo.setCurrentIndex(max(0, min(src_idx, len(_SOURCE_KEYS) - 1)))
             self.source_combo.setToolTip(tr("search.source_tip"))
             self.source_combo.blockSignals(False)
         self.search_btn.setText(tr("search.button"))
@@ -2246,13 +2290,13 @@ class MainWindow(QMainWindow):
         # 书源：显式传入优先，否则取当前下拉框；番茄与七猫互不串台
         if not source:
             combo = getattr(self, "source_combo", None)
-            source = ("fanqie" if combo is not None and combo.currentIndex() == 1
-                      else "qimao")
+            source = (_source_key_from_index(combo.currentIndex())
+                      if combo is not None else "qimao")
         self._search_source = source
         self._update_pager_ui(False)
         self.search_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
-        src_label = "番茄" if source == "fanqie" else "七猫"
+        src_label = _source_label(source)
         self.log(f"正在搜索[{src_label}]：{keyword} …" + (f"（第 {page} 页）" if page > 1 else ""))
         self.pm.emit(Hook.ON_SEARCH, keyword, [])
         self.search_worker = SearchWorker(keyword, self, tab=tab, page=page,
@@ -2276,12 +2320,14 @@ class MainWindow(QMainWindow):
         if not keyword:
             QMessageBox.warning(self, tr("common.tip"), tr("search.need_keyword"))
             return
-        # 搜书 tab=0，搜作者 tab=1（番茄搜索不支持搜作者，统一按搜书处理）
+        # 搜书 tab=0，搜作者 tab=1（番茄/文库8 不支持独立按作者，统一按搜书处理）
         combo = getattr(self, "source_combo", None)
-        is_fanqie = combo is not None and combo.currentIndex() == 1
-        tab = "0" if is_fanqie else ("1" if self.tab_combo.currentIndex() == 1 else "0")
-        # 记录搜索历史（仅七猫搜书模式；番茄关键词单独走官方接口）
-        if tab == "0" and not is_fanqie:
+        cur_key = (_source_key_from_index(combo.currentIndex())
+                   if combo is not None else "qimao")
+        multi_source = cur_key in ("fanqie", "wenku8")
+        tab = "0" if multi_source else ("1" if self.tab_combo.currentIndex() == 1 else "0")
+        # 记录搜索历史（仅七猫搜书模式；番茄/文库8 关键词各自走独立接口）
+        if tab == "0" and not multi_source:
             self.store.search_history_add(keyword)
             if hasattr(self, "reload_search_tools"):
                 self.reload_search_tools()
@@ -2383,7 +2429,7 @@ class MainWindow(QMainWindow):
             self.detail_download_btn.setEnabled(False)
             self.detail_text.setPlainText(tr("search.detail_hint"))
         else:
-            src_label = "番茄" if getattr(self, "_search_source", "") == "fanqie" else "七猫"
+            src_label = _source_label(getattr(self, "_search_source", ""))
             self.result_title.setText(f"{src_label}搜索结果（{len(results)}）")
             page = getattr(self, "_search_page", 1)
             self.result_hint.setText(
@@ -2441,6 +2487,21 @@ class MainWindow(QMainWindow):
                 "tags": "",
                 "score": "",
                 "source": "fanqie",
+            }
+        if source == "wenku8":
+            from gui.wenku8_core.wenku8_reader import fetch_detail, resolve_book_id
+            wid = resolve_book_id(str(book_id)) or str(book_id).strip()
+            d = fetch_detail(wid)
+            return {
+                "id": wid,
+                "title": d.get("title") or f"书 {wid}",
+                "author": d.get("author") or "",
+                "intro": d.get("intro") or "",
+                "words_num": "",
+                "cover": d.get("cover") or "",
+                "tags": "",
+                "score": "",
+                "source": "wenku8",
             }
         from .api import get_book_info
         info = get_book_info(str(book_id), fallback=None)
@@ -2545,8 +2606,8 @@ class MainWindow(QMainWindow):
                 pass
             if old.isRunning():
                 old.requestInterruption()
-        # 番茄书详情直接复用搜索结果（已解码），七猫仍走详情接口
-        detail_source = "fanqie" if book.get("source") == "fanqie" else "qimao"
+        # 番茄/文库8详情走各自内核，七猫仍走详情接口
+        detail_source = book.get("source") if book.get("source") in ("fanqie", "wenku8") else "qimao"
         self.detail_worker = DetailWorker(book["id"], book, self, source=detail_source)
 
         def _recycle(w=self.detail_worker):
@@ -2968,29 +3029,57 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "恢复失败", str(exc))
 
     def resolve_save_dir(self, source: str = "") -> str:
-        """按书源解析保存目录：番茄进番茄目录，其余（七猫/未知）进七猫目录。"""
-        if str(source or "").strip().lower() == "fanqie":
+        """按书源解析保存目录：番茄/文库8各进独立目录，其余（七猫/未知）进七猫目录。"""
+        key = str(source or "").strip().lower()
+        if key == "fanqie":
             return self.fanqie_save_dir
+        if key == "wenku8":
+            return self.wenku8_save_dir
         return self.default_save_dir
 
     def _choose_save_dir(self, source: str = "qimao") -> None:
-        is_fanqie = str(source or "").strip().lower() == "fanqie"
-        key = "fanqie_save_dir" if is_fanqie else "default_save_dir"
-        current = self.fanqie_save_dir if is_fanqie else self.default_save_dir
-        title = "选择番茄小说保存目录" if is_fanqie else "选择七猫小说保存目录"
+        key_src = str(source or "").strip().lower()
+        # 每书源对应：(持久化 key, 当前值属性名, 对话框标题, 设置页 label 名, 显示名)
+        mapping = {
+            "fanqie": ("fanqie_save_dir", "fanqie_save_dir", "选择番茄小说保存目录",
+                       "settings_fanqie_path", "番茄"),
+            "wenku8": ("wenku8_save_dir", "wenku8_save_dir", "选择文库8小说保存目录",
+                       "settings_wenku8_path", "文库8"),
+        }
+        cfg_key, attr, title, label_name, label_text = mapping.get(
+            key_src, ("default_save_dir", "default_save_dir", "选择七猫小说保存目录",
+                      "settings_path", "七猫"))
+        current = getattr(self, attr, self.default_save_dir)
         directory = _fd.select_directory(self, title, current)
         if directory:
-            if is_fanqie:
-                self.fanqie_save_dir = directory
-            else:
-                self.default_save_dir = directory
+            setattr(self, attr, directory)
             # 持久化：否则重启后又会回到硬编码默认值
-            self.store.settings_set(key, directory)
-            label = getattr(
-                self, "settings_fanqie_path" if is_fanqie else "settings_path", None)
+            self.store.settings_set(cfg_key, directory)
+            label = getattr(self, label_name, None)
             if label is not None:
                 label.setText(directory)
-            self.log(f"{'番茄' if is_fanqie else '七猫'}保存目录已设为：{directory}")
+            self.log(f"{label_text}保存目录已设为：{directory}")
+
+    def _on_wenku8_cookie_changed(self) -> None:
+        """保存文库8 Cookie，并异步校验登录态（不阻塞界面）。"""
+        cookie = self.settings_wenku8_cookie.text().strip()
+        self.store.settings_set("wenku8_cookie", cookie)
+        if not cookie:
+            self.log("文库8 Cookie 已清空")
+            return
+        self.log("文库8 Cookie 已保存，正在校验登录态…")
+
+        def _verify(c=cookie):
+            try:
+                from gui.wenku8_core.wenku8_auth import make_session, is_logged_in
+                ok = is_logged_in(make_session(c))
+                msg = "文库8登录态有效 ✅" if ok else "文库8登录态无效，请重新获取 Cookie"
+            except Exception as exc:  # noqa: BLE001
+                msg = f"文库8 Cookie 校验失败：{exc}"
+            self.log(msg)
+
+        import threading
+        threading.Thread(target=_verify, daemon=True).start()
 
     def _on_default_format_changed(self, fmt: str) -> None:
         """设置页切换默认下载格式：持久化并同步到搜索页、直达页下拉。"""

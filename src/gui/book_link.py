@@ -60,6 +60,11 @@ _BARE_PATTERN = r"(?<!\d)(\d{6,24})(?!\d)"
 # 番茄识别特征：官网域名 + App 分享短链域名（changdunovel / fqnovel）
 _FANQIE_HINT = re.compile(
     r"fanqienovel\.com|changdunovel\.com|fqnovel\.com|fanqie\s*novel|番茄", re.I)
+# 文库8（轻小说文库）识别特征：域名 + /book/{id}.htm 或 /novel/{n}/{id}/ 路径
+_WENKU8_HINT = re.compile(
+    r"wenku8\.(?:cc|com|net)|轻小说文库|文库8", re.I)
+_WENKU8_BOOK = re.compile(r"/book/(\d+)\.htm", re.I)
+_WENKU8_NOVEL = re.compile(r"/novel/\d+/(\d+)/", re.I)
 # 番茄 /t/<token> 分享短链（token 为字母数字混合，非书籍 ID，需联网还原）
 _FANQIE_SHORT_LINK = re.compile(r"https?://[^/\s]+/t/[A-Za-z0-9_-]+/?", re.I)
 # 纯数字书 ID：番茄 ID 通常 13~24 位，七猫多为 6~12 位
@@ -67,10 +72,12 @@ _FANQIE_PURE_ID = re.compile(r"\d{13,24}\Z")
 
 
 def detect_source(text: str) -> str:
-    """识别输入文本的书源：番茄 / 七猫（默认）。"""
+    """识别输入文本的书源：番茄 / 文库8 / 七猫（默认）。"""
     text = (text or "").strip()
     if _FANQIE_HINT.search(text):
         return "fanqie"
+    if _WENKU8_HINT.search(text):
+        return "wenku8"
     if _FANQIE_PURE_ID.match(text):
         return "fanqie"
     return "qimao"
@@ -111,6 +118,12 @@ def extract_book_id(text: str) -> str:
     if not text:
         return ""
     is_fanqie = bool(_FANQIE_HINT.search(text))
+
+    # 0a) 文库8：/book/{id}.htm 或 /novel/{n}/{id}/xxx.htm，优先于通用数字兜底
+    if _WENKU8_HINT.search(text):
+        m = _WENKU8_BOOK.search(text) or _WENKU8_NOVEL.search(text)
+        if m:
+            return m.group(1)
 
     # 0) 番茄 /t/<token> 分享短链：token 非书籍 ID，须联网跟随重定向还原。
     #    放在最前，避免被口令文本里的其它数字（如时间戳）干扰。

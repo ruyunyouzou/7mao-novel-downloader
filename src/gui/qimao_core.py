@@ -563,6 +563,12 @@ def book_source_for(source_key: str = "") -> BookSource:
             return FanqieBookSource()
         except Exception:  # noqa: BLE001
             pass
+    if key == "wenku8":
+        try:
+            from plugins.wenku8_downloader_plugin import Wenku8BookSource
+            return Wenku8BookSource()
+        except Exception:  # noqa: BLE001
+            pass
     return QimaoBookSource()
 
 

@@ -15,10 +15,13 @@ from .plugin.base import DownloaderBase, DownloadResult, DownloadCancelled
 
 def _search_by_source(keyword: str, tab: str = "0", page: int = 1,
                       source: str = "qimao") -> list:
-    """按书源分发搜索：七猫关键词接口 / 番茄官方搜索接口。"""
+    """按书源分发搜索：七猫关键词接口 / 番茄官方搜索接口 / 文库8分类过滤。"""
     if source == "fanqie":
         from gui.fanqie_core.fanqie_search import search_fanqie
         return search_fanqie(keyword, page=page)
+    if source == "wenku8":
+        from gui.wenku8_core.wenku8_search import search_wenku8
+        return search_wenku8(keyword)
     return search_books(keyword, tab=tab, page=page)
 
 
@@ -93,6 +96,22 @@ class DetailWorker(QThread):
                     "intro": f.get("intro") or "",
                     "degraded": False,
                     "source": "fanqie",
+                }
+            elif self.source == "wenku8":
+                # 文库8用自研内核实时抓详情，得到完整书名/作者/简介/封面。
+                from gui.wenku8_core.wenku8_reader import fetch_detail
+                d = fetch_detail(self.book_id)
+                f = self.fallback or {}
+                info = {
+                    "id": str(self.book_id),
+                    "title": d.get("title") or f.get("title") or f"书 {self.book_id}",
+                    "author": d.get("author") or f.get("author") or "",
+                    "words_num": f.get("words_num") or "未知",
+                    "tags": f.get("tags") or "",
+                    "img_url": d.get("cover") or f.get("cover") or "",
+                    "intro": d.get("intro") or f.get("intro") or "",
+                    "degraded": False,
+                    "source": "wenku8",
                 }
             else:
                 info = get_book_info(self.book_id, fallback=self.fallback)
