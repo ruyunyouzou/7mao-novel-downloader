@@ -1104,7 +1104,7 @@ class MainWindow(QMainWindow):
         """把扁平导航重组为三大分组（stack 页面索引不变）。
 
         三组风格统一，均为「分组标题（国徽图标 + 名称 + 折叠箭头）+ 缩进子项」：
-        - 书库管理：搜索 / 书架 / 阅读 / 任务队列 / 历史记录 / 统计 / 设置 / 功能说明 / 使用说明
+        - 书库管理：搜索 / 书架 / 阅读 / 任务队列 / 历史记录 / 统计 / 设置 / 功能说明 / 使用说明 / 更新日志
         - 导入导出：Calibre / 微信读书 / 笔记
         - 插件扩展：插件 / 示例插件
         用 key 查索引而非硬编码，避免插件加载顺序变化导致错位。
@@ -1129,8 +1129,8 @@ class MainWindow(QMainWindow):
             i = idx(k)
             if i is not None:
                 main_kids.append(i)
-        # 功能说明与使用说明也归入书库管理
-        for k in ("功能说明", "nav.help"):
+        # 功能说明、使用说明与更新日志也归入书库管理
+        for k in ("功能说明", "nav.help", "nav.changelog"):
             i = idx(k)
             if i is not None:
                 main_kids.append(i)
@@ -1222,6 +1222,8 @@ class MainWindow(QMainWindow):
                         icon_text = "ℹ 功能说明"
                     elif "使用说明" in label:
                         icon_text = "📖 使用说明"
+                    elif "更新日志" in label:
+                        icon_text = "📜 更新日志"
                     elif "微信读书" in plugin.meta.name:
                         icon_text = "📚 微信读书"
                     else:
@@ -1234,6 +1236,7 @@ class MainWindow(QMainWindow):
                         "笔记": "nav.notebook",
                         "微信读书": "nav.weread",
                         "使用说明": "nav.help",
+                        "更新日志": "nav.changelog",
                     }
                     key = key_map.get(raw_text, raw_text)
                     self._nav_tab_specs.append((key, icon))
@@ -2034,7 +2037,8 @@ class MainWindow(QMainWindow):
                      getattr(self, "notebook_view", None),
                      getattr(self, "calibre_view", None),
                      getattr(self, "help_view", None),
-                     getattr(self, "limitations_view", None)):
+                     getattr(self, "limitations_view", None),
+                     getattr(self, "changelog_view", None)):
             retranslate = getattr(view, "retranslate", None)
             if callable(retranslate):
                 try:

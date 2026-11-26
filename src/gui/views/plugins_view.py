@@ -59,6 +59,7 @@ _PLUGIN_META: Dict[str, Tuple[str, str, str]] = {
     "番茄真实下载内核": ("core", "snezhnaya", "🍅"),
     "使用说明": ("doc", "liyue", "📖"),
     "功能说明": ("doc", "inazuma", "📋"),
+    "更新日志": ("doc", "fontaine", "📜"),
     "背景美化": ("beauty", "sumeru", "🌙"),
     "示例插件": ("example", "nodkrai", "🧪"),
 }
