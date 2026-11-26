@@ -150,6 +150,102 @@ def clear_page_effect(widget: Optional[QWidget]) -> None:
             pass
 
 
+# ------------------------------------------------------------------ 主题/背景过渡
+
+def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
+                    fade_out: int = 90, fade_in: int = 150) -> bool:
+    """交叉淡入淡出地执行一次性视图变更（主题/背景切换用）。
+
+    流程：把 widget 整体淡出到略透明 → 在最低点执行 ``apply_fn()``（重绘/换色）→
+    再淡入回不透明。这样把一次性、生硬的全量重绘藏在渐变里，观感丝滑。
+
+    - ``apply_fn`` 必须是无参可调用，且只做同步视图变更；
+    - 全局动效关闭 / offscreen 环境下：直接同步执行 ``apply_fn()``，返回 False；
+    - 返回 True 表示启动了异步动画；返回 False 表示已同步执行完毕。
+    - 自带防重入：动画进行中再次调用会忽略，避免连点叠加。
+    """
+    if widget is None or not callable(apply_fn):
+        if callable(apply_fn):
+            apply_fn()
+        return False
+    if not enabled():
+        apply_fn()
+        return False
+    try:
+        if getattr(widget, "_crossfade_running", False):
+            return True  # 动画中，忽略重复触发
+        effect = getattr(widget, "_crossfade_effect", None)
+        if effect is None:
+            effect = QGraphicsOpacityEffect(widget)
+            widget.setGraphicsEffect(effect)
+            setattr(widget, "_crossfade_effect", effect)
+
+        setattr(widget, "_crossfade_running", True)
+        anim_out = QPropertyAnimation(effect, b"opacity")
+        anim_out.setDuration(_duration("page", fade_out))
+        anim_out.setStartValue(1.0)
+        anim_out.setEndValue(0.35)
+        anim_out.setEasingCurve(_curve(QEasingCurve.InQuad))
+
+        anim_in = QPropertyAnimation(effect, b"opacity")
+        anim_in.setDuration(_duration("page", fade_in))
+        anim_in.setStartValue(0.35)
+        anim_in.setEndValue(1.0)
+        anim_in.setEasingCurve(_curve(QEasingCurve.OutCubic))
+
+        def _on_out_finished():
+            try:
+                apply_fn()  # 在透明度最低点做重绘，藏住生硬切换
+            finally:
+                anim_in.start()
+
+        def _on_in_finished():
+            try:
+                widget.setGraphicsEffect(None)
+                effect.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+            setattr(widget, "_crossfade_effect", None)
+            setattr(widget, "_crossfade_running", False)
+            setattr(widget, "_crossfade_anim_out", None)
+            setattr(widget, "_crossfade_anim_in", None)
+
+        anim_out.finished.connect(_on_out_finished)
+        anim_in.finished.connect(_on_in_finished)
+        setattr(widget, "_crossfade_anim_out", anim_out)
+        setattr(widget, "_crossfade_anim_in", anim_in)
+        anim_out.start()
+        return True
+    except Exception:  # noqa: BLE001
+        # 任何异常都退回同步执行，保证视图变更一定发生
+        setattr(widget, "_crossfade_running", False)
+        apply_fn()
+        return False
+
+
+def cancel_crossfade(widget: Optional[QWidget]) -> None:
+    """取消进行中的过渡（窗口关闭等场景），恢复控件原状。"""
+    if widget is None:
+        return
+    for key in ("_crossfade_anim_out", "_crossfade_anim_in"):
+        anim = getattr(widget, key, None)
+        if anim is not None:
+            try:
+                anim.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            setattr(widget, key, None)
+    effect = getattr(widget, "_crossfade_effect", None)
+    if effect is not None:
+        try:
+            widget.setGraphicsEffect(None)
+            effect.deleteLater()
+        except Exception:  # noqa: BLE001
+            pass
+    setattr(widget, "_crossfade_effect", None)
+    setattr(widget, "_crossfade_running", False)
+
+
 # ------------------------------------------------------------------ 导航指示条滑动
 
 def slide_indicator(indicator: Optional[QWidget], target_y: int) -> Optional[QPropertyAnimation]:

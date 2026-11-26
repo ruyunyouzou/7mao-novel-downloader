@@ -17,7 +17,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QTextCursor, QIcon, QKeySequence, QShortcut, QColor
+from PySide6.QtGui import QIcon, QKeySequence, QShortcut, QColor
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QLabel, QTextEdit, QProgressBar, QMessageBox, QComboBox, QSpinBox, QScrollArea, QCheckBox, QSystemTrayIcon, QMenu, QStackedWidget, QColorDialog
 
 try:
@@ -82,6 +82,9 @@ class MainWindow(QMainWindow):
         self.search_worker: Optional[SearchWorker] = None
         self.download_worker: Optional[DownloadWorker] = None
         self.detail_worker: Optional[DetailWorker] = None
+        # 详情渲染缓存：主题切换时只重着色、不重发网络请求（原 _load_detail 会
+        # 触发详情接口 + get_catalog 两次网络往返，是切主题卡顿两秒的主因）。
+        self._detail_cache: Optional[Dict[str, Any]] = None
         self._dark_theme = True
         self._dynamic_bg = None  # 当前动态背景 widget（若背景为动态）
         self._system_scheme_connected = False  # 是否已监听系统深浅色变化
@@ -203,7 +206,14 @@ class MainWindow(QMainWindow):
         combo.setCurrentIndex(idx)
         combo.blockSignals(False)
 
-    def set_theme_mode(self, mode: str, *, persist: bool = True) -> None:
+    def _animate_visual(self, apply_fn) -> bool:
+        """把一次性视觉变更包进交叉淡入淡出，作用在中央内容容器上。"""
+        from . import motion
+        central = self.centralWidget() if hasattr(self, "centralWidget") else None
+        return motion.crossfade_apply(central, apply_fn)
+
+    def set_theme_mode(self, mode: str, *, persist: bool = True,
+                       animate: bool = True) -> None:
         """统一主题入口：持久化 theme_mode，并同步下拉框、按钮、背景与实际主题。"""
         mode = str(mode or "dark")
         if mode not in ("dark", "light", "system", "dynamic"):
@@ -212,33 +222,39 @@ class MainWindow(QMainWindow):
             self.store.settings_set("theme_mode", mode)
         self._sync_theme_mode_combo(mode)
 
-        if mode == "dynamic":
-            key = ""
-            for provider in self.pm.get_backgrounds():
-                p_key = str(getattr(provider, "key", "") or "")
-                p_name = str(getattr(provider, "name", "") or "")
-                if "flow" in p_key.lower() or "gradient" in p_key.lower() or "流光" in p_name:
-                    key = p_key
-                    break
-            current_bg = str(self.store.settings_get("background_key", "") or "")
-            if current_bg != key:
-                self.set_background(key)
-            # 动态光效沿用深色主题，保证流光背景与控件可读性一致
-            if not self._dark_theme:
-                self._on_theme_toggled(True)
-            return
+        def apply() -> None:
+            if mode == "dynamic":
+                key = ""
+                for provider in self.pm.get_backgrounds():
+                    p_key = str(getattr(provider, "key", "") or "")
+                    p_name = str(getattr(provider, "name", "") or "")
+                    if "flow" in p_key.lower() or "gradient" in p_key.lower() or "流光" in p_name:
+                        key = p_key
+                        break
+                current_bg = str(self.store.settings_get("background_key", "") or "")
+                if current_bg != key:
+                    self.set_background(key, animate=False)
+                # 动态光效沿用深色主题，保证流光背景与控件可读性一致
+                if not self._dark_theme:
+                    self._on_theme_toggled(True)
+                return
 
-        if mode in ("dark", "light"):
-            # 普通深浅主题恢复默认纯色背景；已有背景时才重建样式，避免多余日志
-            if str(self.store.settings_get("background_key", "") or ""):
-                self.set_background("")
-            dark = (mode == "dark")
+            if mode in ("dark", "light"):
+                # 普通深浅主题恢复默认纯色背景；已有背景时才重建样式，避免多余日志
+                if str(self.store.settings_get("background_key", "") or ""):
+                    self.set_background("", animate=False)
+                dark = (mode == "dark")
+            else:
+                self._connect_system_scheme_listener()
+                dark = self._system_theme_is_dark()
+
+            if dark != self._dark_theme:
+                self._on_theme_toggled(dark)
+
+        if animate:
+            self._animate_visual(apply)
         else:
-            self._connect_system_scheme_listener()
-            dark = self._system_theme_is_dark()
-
-        if dark != self._dark_theme:
-            self._on_theme_toggled(dark)
+            apply()
 
     def _apply_theme_mode_on_startup(self) -> None:
         """按持久化的主题模式恢复启动主题。"""
@@ -1307,10 +1323,14 @@ class MainWindow(QMainWindow):
         app_text = str(self.store.settings_get(COLOR_APP_TEXT, "") or "")
         app_bg = str(self.store.settings_get(COLOR_APP_BG, "") or "")
         combined = apply_custom_colors(combined, self._dark_theme, app_text, app_bg)
-        self.setStyleSheet(combined)
+        # 只需应用一次应用级样式表：它覆盖所有顶层窗口与子控件（含本窗口），
+        # 之前 self.setStyleSheet + app.setStyleSheet 双份应用导致整份 QSS 被
+        # 解析两遍、控件重复 polish（实测切换主题多耗 ~85ms 且加重卡顿）。
         app = QApplication.instance()
         if app:
             app.setStyleSheet(combined)
+        else:
+            self.setStyleSheet(combined)
         # 内联强调色控件同步（导航指示条、状态文字等）
         self._sync_inline_accent()
         # 动态背景 widget 与静态 QSS 同步：只影响内容区底层，不碰任何控件
@@ -1502,13 +1522,20 @@ class MainWindow(QMainWindow):
         self._dynamic_bg = widget
         self._update_bg_pause_visibility()
 
-    def set_background(self, key: str) -> None:
+    def set_background(self, key: str, *, animate: bool = True) -> None:
         """切换背景并持久化；key 为空表示恢复默认纯色。"""
         self.store.settings_set("background_key", key)
-        self._apply_stylesheet()
-        provider = self._active_background()
-        name = provider.name if provider else "默认纯色"
-        self.log(f"背景已切换为：{name}")
+
+        def apply() -> None:
+            self._apply_stylesheet()
+            provider = self._active_background()
+            name = provider.name if provider else "默认纯色"
+            self.log(f"背景已切换为：{name}")
+
+        if animate:
+            self._animate_visual(apply)
+        else:
+            apply()
 
     def _refresh_bg_swatches(self) -> None:
         """主题切换后，刷新设置页背景色块的预览色为当前主题对应的一套。
@@ -1555,18 +1582,27 @@ class MainWindow(QMainWindow):
             self.tabs.refresh_theme(dark)
         if hasattr(self, "card_list") and hasattr(self.card_list, "refresh_theme"):
             self.card_list.refresh_theme(dark)
-        for card in self.findChildren(Card):
-            card.refresh_theme(dark)
+        # 479 张卡片的逐张重绘放到事件循环末尾，避免阻塞点击主线程；
+        # 样式表已应用后卡片底色由 QSS 统一接管，这里只补少量内联态。
+        QTimer.singleShot(0, lambda: self._refresh_cards_theme(dark))
         if hasattr(self, "detailPane"):
             self.detailPane.setStyleSheet(
                 f"QWidget#detailPane {{ border-left: 1px solid {BORDER if dark else '#e5e5e5'}; }}"
             )
-        # 重新渲染已打开书籍的详情，避免沿用旧主题的 HTML 文字色
-        if getattr(self, "current_book", None) is not None:
-            self._load_detail(self.current_book)
+        # 详情只用缓存数据重上色，绝不再发网络请求（原 _load_detail 会触发
+        # 详情接口 + get_catalog 两次往返，是切主题卡顿两秒的主因）。
+        self._recolor_detail()
         # refresh_theme 会重置导航指示条颜色，末尾再同步一次分部件配色
         self._sync_inline_accent()
         self.log(f"已切换到{'深色' if dark else '浅色'}主题")
+
+    def _refresh_cards_theme(self, dark: bool) -> None:
+        """延迟刷新所有卡片的内联主题态（切主题时从主线程挪出，避免卡顿）。"""
+        try:
+            for card in self.findChildren(Card):
+                card.refresh_theme(dark)
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------ 多语言
 
@@ -1981,9 +2017,8 @@ class MainWindow(QMainWindow):
                 except Exception:  # noqa: BLE001
                     pass
 
-        # 详情区若已有书，按当前语言重绘
-        if getattr(self, "current_book", None) is not None:
-            self._load_detail(self.current_book)
+        # 详情区若已有书，用缓存数据重绘（不发网络请求；标签沿用既有中文文案）
+        self._recolor_detail()
         self._retranslate_new_features()
 
     def _rebuild_setting_hosts(self) -> None:
@@ -2435,6 +2470,8 @@ class MainWindow(QMainWindow):
 
     def _load_detail(self, book: Dict[str, Any]) -> None:
         self.current_book = book
+        # 加载新书：失效旧详情缓存，避免主题切换把上一本的详情重着色过来
+        self._detail_cache = None
         self.detail_download_btn.setEnabled(True)
         main_c, dim_c, warn_c, border_c = self._detail_colors()
         # 字段统一用 get 兜底：番茄直达只有三元组元数据，硬取键会 KeyError
@@ -2479,9 +2516,11 @@ class MainWindow(QMainWindow):
             return
         self.detail_text.setPlainText(f"详情加载失败：{msg}")
 
-    def _on_detail_done(self, book: Dict[str, Any], info: Dict[str, Any]) -> None:
-        if self.current_book is None or self.current_book.get("id") != book.get("id"):
-            return
+    def _render_detail_html(self, info: Dict[str, Any], catalog=None) -> str:
+        """按当前主题把缓存的详情数据渲染为 HTML（纯本地，不发网络请求）。
+
+        供首次加载完成与主题切换重着色共用，保证两处渲染出的结构/配色一致。
+        """
         main_c, dim_c, warn_c, border_c = self._detail_colors()
         html = (
             f"<h2 style='color:{main_c}'>{info.get('title') or '—'}</h2>"
@@ -2493,22 +2532,41 @@ class MainWindow(QMainWindow):
         )
         if info.get("degraded"):
             html += f"<p style='color:{warn_c}'>⚠ 详情接口不可用，仅显示搜索结果中的基础信息。</p><hr style='border-color:{border_c}'>"
-        self.detail_text.setHtml(html)
+        if catalog:
+            cat_html = f"<p style='color:{dim_c}'><b>目录：</b>共 {len(catalog)} 章<br>"
+            cat_html += "、".join(c["title"] for c in catalog[:5])
+            if len(catalog) > 5:
+                cat_html += " …"
+            cat_html += "</p>"
+            html += cat_html
+        return html
+
+    def _recolor_detail(self) -> None:
+        """主题切换后用缓存数据重渲染详情（无网络请求），保持当前书信息不变。"""
+        cache = getattr(self, "_detail_cache", None)
+        if not cache or self.current_book is None:
+            return
+        if cache.get("id") != self.current_book.get("id"):
+            return
+        try:
+            self.detail_text.setHtml(
+                self._render_detail_html(cache["info"], cache.get("catalog"))
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_detail_done(self, book: Dict[str, Any], info: Dict[str, Any]) -> None:
+        if self.current_book is None or self.current_book.get("id") != book.get("id"):
+            return
+        # 目录仅首次加载时联网获取，随后与详情一起缓存，主题切换复用之
+        catalog = None
         try:
             from .api import get_catalog
             catalog = get_catalog(book["id"])
-            if catalog:
-                cat_html = f"<p style='color:{dim_c}'><b>目录：</b>共 {len(catalog)} 章<br>"
-                cat_html += "、".join(c["title"] for c in catalog[:5])
-                if len(catalog) > 5:
-                    cat_html += " …"
-                cat_html += "</p>"
-                cursor = self.detail_text.textCursor()
-                cursor.movePosition(QTextCursor.End)
-                self.detail_text.setTextCursor(cursor)
-                self.detail_text.insertHtml(cat_html)
         except Exception:  # noqa: BLE001
             pass
+        self._detail_cache = {"id": book.get("id"), "info": info, "catalog": catalog}
+        self.detail_text.setHtml(self._render_detail_html(info, catalog))
 
     def do_download(self) -> None:
         if self.current_book is None:
