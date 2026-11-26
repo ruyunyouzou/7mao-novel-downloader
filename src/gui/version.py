@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-APP_VERSION = "5.0.2"
+APP_VERSION = "5.0.3"
 
 # 展示用完整字符串（标题栏 / 关于 / 页脚统一）
 VERSION_LABEL = f"v{APP_VERSION}"

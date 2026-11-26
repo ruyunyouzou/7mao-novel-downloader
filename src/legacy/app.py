@@ -50,7 +50,7 @@ import shutil
 try:
     from gui.version import APP_VERSION as _APP_VERSION
 except Exception:  # noqa: BLE001
-    _APP_VERSION = "5.0.2"
+    _APP_VERSION = "5.0.3"
 
 
 class MainProgram:
