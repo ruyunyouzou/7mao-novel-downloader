@@ -46,6 +46,11 @@ def _cleanup_temp_wavs() -> None:
 atexit.register(_cleanup_temp_wavs)
 
 
+def cleanup() -> None:
+    """显式清理临时资源（供 os._exit 强制退出前调用，因 os._exit 不触发 atexit）。"""
+    _cleanup_temp_wavs()
+
+
 def bind_settings(getter) -> None:
     global _getter
     _getter = getter

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 from PySide6.QtWidgets import QApplication
@@ -47,7 +48,32 @@ def main() -> None:
     finally:
         # 无论正常退出还是异常，都释放单实例 server，避免僵尸连接
         guard.release()
-    sys.exit(code)
+    # 彻底退出兜底：Qt 事件循环结束后，CPython 解释器退出时仍会 join 所有
+    # 非守护线程（concurrent.futures 的 _python_exit atexit、微信读书长轮询、
+    # 未 terminate 干净的 QThread 等）。任一后台线程卡在 I/O 上，进程就不会
+    # 真正结束——这正是「从托盘退出后任务管理器仍有残留进程」的根因。
+    # 所有用户配置均由 DataStore 原子即时写盘、不依赖退出清理，因此这里用
+    # os._exit 强制终结：跳过线程 join / atexit / GC，确保进程一定消失、
+    # 解锁安装目录（_internal/*.dll），使旧版本可被删除覆盖。
+    _hard_exit(code)
+
+
+def _hard_exit(code: int = 0) -> None:
+    """强制结束进程：先做轻量清理，再 os._exit 跳过线程等待。"""
+    try:
+        # 显式清理提示音临时文件（os._exit 不会触发 atexit）
+        from . import notify_core
+        cleanup = getattr(notify_core, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    os._exit(int(code) & 0xFF)
 
 
 if __name__ == "__main__":

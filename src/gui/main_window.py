@@ -3031,10 +3031,19 @@ class MainWindow(QMainWindow):
                     worker.wait(2000)
         for worker in (self.search_worker, self.download_worker, getattr(self, "detail_worker", None)):
             if worker and worker.isRunning():
-                # terminate() 是异步请求，必须 wait() 确认线程真正退出，
-                # 否则 Qt 销毁仍运行的 QThread 会触发 "Destroyed while thread is still running" 崩溃
-                worker.terminate()
-                worker.wait(2000)
+                # 协作式退出优先：请求中断网络循环 + 退出线程事件循环，
+                # 让线程自然收尾。直接 terminate() 在线程持有 GIL/锁时可能
+                # 死锁或 "假死"，是退出后进程残留的常见诱因。
+                try:
+                    worker.requestInterruption()
+                except Exception:  # noqa: BLE001
+                    pass
+                worker.quit()
+                worker.wait(1500)
+                # 超时仍未结束才强制终止（wait 确保真正退出，避免销毁运行中的线程崩溃）
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
         # 兜底：停止所有挂在窗口对象树上的后台线程（微信读书/Calibre/笔记/WebDAV/刮削等）。
         # 这些 worker 以窗口或各 view 为 parent，退出时若仍在跑会随父对象销毁而崩溃。
         from PySide6.QtCore import QThread
@@ -3046,8 +3055,15 @@ class MainWindow(QMainWindow):
             seen.add(id(worker))
             try:
                 if worker.isRunning():
-                    worker.terminate()
-                    worker.wait(1000)
+                    try:
+                        worker.requestInterruption()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    worker.quit()
+                    worker.wait(800)
+                    if worker.isRunning():
+                        worker.terminate()
+                        worker.wait(800)
             except RuntimeError:
                 pass
         # 封面加载线程刻意不设 parent（book_card._orphan_loaders 持有引用），
@@ -3058,8 +3074,15 @@ class MainWindow(QMainWindow):
             for loader in list(_orphan_loaders):
                 try:
                     if loader.isRunning():
-                        loader.terminate()
-                        loader.wait(1000)
+                        try:
+                            loader.requestInterruption()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        loader.quit()
+                        loader.wait(800)
+                        if loader.isRunning():
+                            loader.terminate()
+                            loader.wait(800)
                 except RuntimeError:
                     pass
         except Exception:  # noqa: BLE001
