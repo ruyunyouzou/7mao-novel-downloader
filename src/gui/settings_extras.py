@@ -280,6 +280,18 @@ def build_extras(win) -> QWidget:
         render_quality.refresh_fonts()  # 即时刷新字体策略与窗口重绘
     win.antialias_check.stateChanged.connect(_on_antialias_changed)
     rl.addWidget(win.antialias_check)
+    # 玻璃质感（半透明卡片 / 柔光边 / 大圆角，默认开；不改配色方案）
+    win.glass_check = QCheckBox(tr("extras.glass"))
+    win.glass_check.setChecked(bool(store.settings_get("ui_glass", True)))
+    win.glass_check.setToolTip(tr("extras.glass_tip"))
+    def _on_glass_changed(_state, _win=win):
+        _win.store.settings_set("ui_glass", bool(_win.glass_check.isChecked()))
+        _win._apply_stylesheet()  # 卡片面板即时重绘（补丁随开关增减）
+        cards = getattr(_win, "card_list", None)
+        if cards is not None and hasattr(cards, "refresh_glass"):
+            cards.refresh_glass()  # 书卡内联样式即时刷新
+    win.glass_check.stateChanged.connect(_on_glass_changed)
+    rl.addWidget(win.glass_check)
     root.addWidget(read_card)
 
     # ---------- WebDAV 备份 ----------

@@ -75,14 +75,21 @@ class BookCard(QFrame):
     # ------------------------------------------------------------------ 样式
 
     def _apply_style(self) -> None:
-        # 玻璃质感：卡片改为同色相半透明 + 柔光边 + 大圆角；
-        # hover 仍用原强调色（主题色圆点/重染逻辑不变）。
-        bg = "rgba(36, 36, 36, 0.74)" if self._dark else "rgba(255, 255, 255, 0.82)"
-        bd = "rgba(255, 255, 255, 0.10)" if self._dark else "rgba(60, 50, 40, 0.09)"
+        # 玻璃质感（ui_glass 开关）：开启时卡片同色相半透明 + 柔光边 + 大圆角；
+        # 关闭时恢复原实心卡片。hover 始终用原强调色（主题色圆点/重染逻辑不变）。
+        from .style import glass_effect_enabled
         hover = ACCENT if self._dark else ACCENT_DARK
+        if glass_effect_enabled():
+            bg = "rgba(36, 36, 36, 0.74)" if self._dark else "rgba(255, 255, 255, 0.82)"
+            bd = "rgba(255, 255, 255, 0.10)" if self._dark else "rgba(60, 50, 40, 0.09)"
+            radius = 14
+        else:
+            bg = BG_CARD if self._dark else "#ffffff"
+            bd = BORDER if self._dark else "#e5e5e5"
+            radius = 8
         self.setStyleSheet(f"""
             QFrame#bookCard {{ background-color: {bg}; border: 1px solid {bd};
-                               border-radius: 14px; }}
+                               border-radius: {radius}px; }}
             QFrame#bookCard:hover {{ border: 1px solid {hover}; }}
         """)
 
@@ -276,6 +283,13 @@ class BookCardList(QListWidget):
             card = self.itemWidget(self.item(i))
             if isinstance(card, BookCard):
                 card.refresh_theme(dark)
+
+    def refresh_glass(self) -> None:
+        """玻璃质感开关切换后调用：重刷每张书卡的内联样式（即时生效）。"""
+        for i in range(self.count()):
+            card = self.itemWidget(self.item(i))
+            if isinstance(card, BookCard):
+                card._apply_style()
 
     def _on_item_clicked(self, item) -> None:
         card = self.itemWidget(item)

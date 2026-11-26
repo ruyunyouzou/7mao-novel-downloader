@@ -1362,8 +1362,10 @@ class MainWindow(QMainWindow):
         combined = base + ("\n" + extra if extra else "")
         # 玻璃质感补丁：仅调卡片圆角/半透明/柔光边，放在自定义卡片色之前，
         # 保证用户配色中心的颜色仍能覆盖；不改任何主题色/背景/强调色。
+        # 由 ui_glass 开关控制（默认开）；关闭时不追加，恢复实心卡片。
         from .style import glass_effect_qss
-        combined += "\n" + glass_effect_qss(self._dark_theme)
+        glass_on = bool(self.store.settings_get("ui_glass", True))
+        combined += "\n" + glass_effect_qss(self._dark_theme, glass_on)
         # 功能背景色（用户自定义）：只覆盖卡片类容器，不动整页背景/按钮/输入框
         from . import nation_theme as _nt
         custom_card = _nt.card_bg_color()

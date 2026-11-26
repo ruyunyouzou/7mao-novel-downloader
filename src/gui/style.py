@@ -568,7 +568,20 @@ QMessageBox {{ background: #fff; }}
 """
 
 
-def glass_effect_qss(dark: bool) -> str:
+def glass_effect_enabled() -> bool:
+    """玻璃质感开关是否开启（默认开）。
+
+    独立从 datastore 读取，供卡片等无法直接拿到主窗口的组件使用；
+    未注入 getter 时回退到默认开，保证开关缺失时行为与发布前一致。
+    """
+    from .datastore import DataStore
+    try:
+        return bool(DataStore().settings_get("ui_glass", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def glass_effect_qss(dark: bool, enabled: bool = True) -> str:
     """玻璃质感补丁：只调整卡片容器的圆角、半透明背景与柔光边框。
 
     严格不改任何主题色相 / 强调色锚点 / 用户配色方案：
@@ -577,7 +590,10 @@ def glass_effect_qss(dark: bool) -> str:
     本函数作为补丁追加在基础 QSS 之后、用户自定义卡片色覆盖之前，
     因此用户若在配色中心设过卡片色，仍以用户色为准（配色方案优先）。
     QSS 不支持 backdrop-filter，半透明透出背景渐变即为可实现的最佳玻璃感。
+    enabled=False 时返回空串（关闭开关，恢复基础 QSS 的实心卡片）。
     """
+    if not enabled:
+        return ""
     if dark:
         page = "rgba(36, 36, 36, 0.74)"          # BG_CARD #242424 同色半透
         accent_card = "rgba(42, 39, 51, 0.74)"   # queueConcurrentCard #2a2733 同色半透
