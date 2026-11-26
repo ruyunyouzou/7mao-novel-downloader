@@ -465,10 +465,14 @@ def build_settings_more(win) -> QWidget:
         store.settings_set("accent_color", key)
         for k, dot in win.color_dots.items():
             dot.set_selected(k == key)
-        # 通知主窗口重绘强调色
-        apply = getattr(win, "_apply_theme_color", None)
+        # 通知主窗口重绘强调色（统一走动画入口，消除卡顿+生硬切换）
+        apply = getattr(win, "apply_style_animated", None)
         if callable(apply):
             apply()
+        else:  # 兼容早期自定义窗口
+            legacy = getattr(win, "_apply_theme_color", None)
+            if callable(legacy):
+                legacy()
 
     for key, palette in ACCENT_PALETTES.items():
         # 圆点用同色系渐变显示（palette[3]），无渐变时回退纯色主色
@@ -493,9 +497,13 @@ def build_settings_more(win) -> QWidget:
     cl.addWidget(win.more_color_hint)
 
     def _reapply() -> None:
-        apply = getattr(win, "_apply_theme_color", None)
+        apply = getattr(win, "apply_style_animated", None)
         if callable(apply):
             apply()
+        else:
+            legacy = getattr(win, "_apply_theme_color", None)
+            if callable(legacy):
+                legacy()
 
     accent_now = accent_color(cur_color)
     dark_now = getattr(win, "_dark_theme", True)
@@ -529,14 +537,18 @@ def build_settings_more(win) -> QWidget:
     pl.addWidget(win.more_part_hint)
 
     def _reapply_parts() -> None:
-        # 字体缓存失效 + 通知主窗口重绘导航文字/图标/卡片
-        clear_nav_font_cache()
-        apply = getattr(win, "_apply_theme_color", None)
+        # 字体缓存失效 + 重绘导航文字/图标/卡片（统一走动画入口；clear_font 由入口内处理）
+        apply = getattr(win, "apply_style_animated", None)
         if callable(apply):
-            apply()
-        refresh = getattr(win, "_refresh_part_colors", None)
-        if callable(refresh):
-            refresh()
+            apply(parts=True, clear_font=True)
+        else:  # 兼容早期自定义窗口：保留原同步行为
+            clear_nav_font_cache()
+            legacy = getattr(win, "_apply_theme_color", None)
+            if callable(legacy):
+                legacy()
+            refresh = getattr(win, "_refresh_part_colors", None)
+            if callable(refresh):
+                refresh()
 
     # 导航字体下拉
     font_row = QHBoxLayout()

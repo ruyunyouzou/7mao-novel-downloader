@@ -162,7 +162,8 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
     - ``apply_fn`` 必须是无参可调用，且只做同步视图变更；
     - 全局动效关闭 / offscreen 环境下：直接同步执行 ``apply_fn()``，返回 False；
     - 返回 True 表示启动了异步动画；返回 False 表示已同步执行完毕。
-    - 自带防重入：动画进行中再次调用会忽略，避免连点叠加。
+    - 自带防重入：动画进行中再次调用不叠加动画，只记下最新一次 ``apply_fn``，
+      待动画结束后补执行一次——保证「连点配色」时每次配置变更最终都反映到界面。
     """
     if widget is None or not callable(apply_fn):
         if callable(apply_fn):
@@ -173,7 +174,9 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
         return False
     try:
         if getattr(widget, "_crossfade_running", False):
-            return True  # 动画中，忽略重复触发
+            # 动画中：不重启动画，只把最新视图变更记下来，结束时补执行
+            setattr(widget, "_crossfade_pending", apply_fn)
+            return True
         effect = getattr(widget, "_crossfade_effect", None)
         if effect is None:
             effect = QGraphicsOpacityEffect(widget)
@@ -209,6 +212,14 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
             setattr(widget, "_crossfade_running", False)
             setattr(widget, "_crossfade_anim_out", None)
             setattr(widget, "_crossfade_anim_in", None)
+            # 补执行动画期间累积的最后一次视图变更（连点配色不丢）
+            pending = getattr(widget, "_crossfade_pending", None)
+            setattr(widget, "_crossfade_pending", None)
+            if callable(pending):
+                try:
+                    pending()
+                except Exception:  # noqa: BLE001
+                    pass
 
         anim_out.finished.connect(_on_out_finished)
         anim_in.finished.connect(_on_in_finished)
@@ -244,6 +255,7 @@ def cancel_crossfade(widget: Optional[QWidget]) -> None:
             pass
     setattr(widget, "_crossfade_effect", None)
     setattr(widget, "_crossfade_running", False)
+    setattr(widget, "_crossfade_pending", None)
 
 
 # ------------------------------------------------------------------ 导航指示条滑动

@@ -1460,6 +1460,31 @@ class MainWindow(QMainWindow):
         """主题色圆点切换后的入口：重绘全局 QSS + 内联强调色。"""
         self._apply_stylesheet()
 
+    def apply_style_animated(self, *, parts: bool = False,
+                             clear_font: bool = False) -> None:
+        """配色/字体切换的统一动画入口。
+
+        所有设置页的配色圆点、分部件配色、独立调色、字体、背景色编辑的最终
+        视图重绘都走这里：把一次性、生硬的全量重绘藏进淡出淡入里，消除卡顿观感。
+        配置持久化由各控件负责（在本调用之前已完成），本方法只做视图重绘。
+
+        Args:
+            parts: 是否同时刷新独立配色（侧栏字体/国徽/卡片背景、各功能页）。
+            clear_font: 是否先清导航字体缓存（字体下拉切换时需要）。
+        """
+        def apply() -> None:
+            if clear_font:
+                try:
+                    from .style import clear_nav_font_cache
+                    clear_nav_font_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._apply_stylesheet()
+            if parts:
+                self._refresh_part_colors()
+
+        self._animate_visual(apply)
+
     def _refresh_part_colors(self) -> None:
         """部件独立配色变更后的即时刷新：侧栏（字体/国徽/文字/背景）+ 各功能页。
 

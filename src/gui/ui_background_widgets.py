@@ -315,8 +315,13 @@ def build_background_swatches(win, combo) -> QWidget:
 
     def setter(key: str, value: str) -> None:
         store.settings_set(key, value)
-        win._apply_stylesheet()
-        win._refresh_part_colors()
+        # 背景色编辑后重绘（统一走动画入口，消除卡顿+生硬切换）
+        apply = getattr(win, "apply_style_animated", None)
+        if callable(apply):
+            apply(parts=True)
+        else:  # 兼容早期自定义窗口
+            win._apply_stylesheet()
+            win._refresh_part_colors()
 
     def select(key: str) -> None:
         win.set_background(key)
