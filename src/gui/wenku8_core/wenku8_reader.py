@@ -13,9 +13,17 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from .wenku8_auth import make_session
+from .wenku8_auth import make_session, get_base_url
 
-BASE = "https://www.wenku8.cc"
+BASE = "https://www.wenku8.cc"  # 兼容旧引用；实际请求统一走 _base()
+
+
+def _base() -> str:
+    """当前站点根地址（用户设置/探测结果/候选），所有请求动态取用。"""
+    try:
+        return get_base_url()
+    except Exception:  # noqa: BLE001
+        return BASE
 
 _RE_BOOK_ID = re.compile(r"/book/(\d+)\.htm")
 _RE_NOVEL_PATH = re.compile(r"/novel/(\d+)/(\d+)/")
@@ -69,7 +77,7 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     """取书籍详情：title / author / intro / cover。"""
     bid = resolve_book_id(book_id)
     sess = session or make_session()
-    resp = sess.get(f"{BASE}/book/{bid}.htm", timeout=20)
+    resp = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
     html = _decode(resp)
     soup = BeautifulSoup(html, "html.parser")
 
@@ -93,7 +101,7 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     for img in soup.select("img[src]"):
         src = img.get("src", "")
         if "wenku8" in src and ("cover" in src.lower() or bid in src):
-            cover = urljoin(BASE, src)
+            cover = urljoin(_base(), src)
             break
 
     # 简介：含「内容简介」的容器
@@ -119,7 +127,7 @@ def fetch_book_meta(book_id: str, session=None) -> Dict[str, str]:
     """取下载所需元信息：含 novel 路径前缀，供目录/正文拼 URL。"""
     bid = resolve_book_id(book_id)
     sess = session or make_session()
-    resp = sess.get(f"{BASE}/book/{bid}.htm", timeout=20)
+    resp = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
     html = _decode(resp)
     prefix = _novel_prefix(html, bid)
     detail = fetch_detail(bid, sess)
@@ -138,9 +146,9 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     sess = session or make_session()
 
     # 先取详情页以确定 novel 前缀（分类号 n）
-    d = sess.get(f"{BASE}/book/{bid}.htm", timeout=20)
+    d = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
     prefix = _novel_prefix(_decode(d), bid)
-    catalog_url = f"{BASE}{prefix}index.htm"
+    catalog_url = f"{_base()}{prefix}index.htm"
 
     resp = sess.get(catalog_url, timeout=20)
     html = _decode(resp)
@@ -211,12 +219,12 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
         url = raw
     elif novel_prefix:
         if raw.endswith(".htm"):
-            url = urljoin(f"{BASE}{novel_prefix}", raw)
+            url = urljoin(f"{_base()}{novel_prefix}", raw)
         else:
-            url = f"{BASE}{novel_prefix}{raw}.htm"
+            url = f"{_base()}{novel_prefix}{raw}.htm"
     else:
         bid = resolve_book_id(book_id)
-        url = f"{BASE}/novel/0/{bid}/{raw}.htm"
+        url = f"{_base()}/novel/0/{bid}/{raw}.htm"
 
     resp = sess.get(url, timeout=20)
     html = _decode(resp)

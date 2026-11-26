@@ -1,76 +1,123 @@
 # -*- coding: utf-8 -*-
-"""文库8 搜索：分类页抓取 + 本地关键词过滤。
+"""文库8 搜索：站内搜索接口优先 + 分类页遍历兜底 + 归一化模糊匹配。
 
-站内 so.php 被 WAF 拦截（403），search.php 返回空，故不走站内搜索。
-改为遍历 14 个文库分类的前 N 页列表页，抓书名/作者在本地匹配关键词。
-效果等同关键词搜索，且完全不依赖被封接口。
+搜索策略（v5.0.7 重写，借鉴 mikufoxxx/Wenku8_Flutter 的匹配算法）：
+1. 先尝试站内搜索接口（多候选 URL/参数形式，带登录 Cookie）；
+2. 站内无结果/失败时，回退分类页遍历（扩大页数），本地归一化匹配；
+3. 匹配用 wenku8_match.matches（全角/标点/虚词归一化 + 多词 AND + 子序列兜底），
+   解决「邻家天使」搜不到「邻家的天使」这类问题。
 
-如需精确下载，用户也可直接粘贴书页 URL / 书号（resolve_book_id 归一化）。
+若需精确下载，用户也可直接粘贴书页 URL / 书号（resolve_book_id 归一化）。
 """
 
 from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import List, Optional
+from urllib.parse import quote
 
 from bs4 import BeautifulSoup
 
-from .wenku8_auth import make_session
-from .wenku8_reader import BASE, _decode
+from .wenku8_auth import get_base_url, make_session
+from .wenku8_match import matches as _matches, relevance as _relevance
+from .wenku8_reader import _decode
 
 # 文库分类：1-14（见 articlelist.php 导航）
 _CLASSES = list(range(1, 15))
 
+# 站内搜索候选：不同站点版本参数名不同，逐个尝试直到拿到结果
+_SEARCH_ENDPOINTS = (
+    "/modules/article/search.php?searchkey={kw}",
+    "/search.php?keyword={kw}",
+    "/so.php?keyword={kw}",
+    "/so.php?searchkey={kw}",
+)
 
-def _fetch_class_page(cls: int, page: int, session) -> List[dict]:
+
+def _extract_books(html: str, base: str) -> List[dict]:
+    """从搜索/列表页 HTML 提取书籍链接（兼容 /book/ 与 /novel/ 两种形式）。"""
+    soup = BeautifulSoup(html or "", "html.parser")
+    books: List[dict] = []
+    seen = set()
+    for a in soup.select("a[href]"):
+        href = a.get("href", "").strip()
+        m = re.search(r"/book/(\d+)\.htm", href)
+        if not m:
+            m = re.search(r"/novel/\d+/(\d+)/", href)
+        if not m:
+            continue
+        bid = m.group(1)
+        if bid in seen:
+            continue
+        name = a.get_text(" ", strip=True)
+        if not name or name in ("我要阅读", "返回书页", "点击阅读"):
+            continue
+        seen.add(bid)
+        books.append({
+            "id": bid, "title": name, "author": "", "intro": "",
+            "cover": "", "source": "wenku8", "_rel": 0,
+        })
+    return books
+
+
+def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dict]:
+    """尝试站内搜索接口，返回命中的书籍（已按相关性排序）。
+
+    任一接口返回含书籍链接的页面即视为成功；全部失败返回空列表由调用方兜底。
+    """
+    kw = quote(str(keyword or "").strip())
+    if not kw:
+        return []
+    for tpl in _SEARCH_ENDPOINTS:
+        url = base + tpl.format(kw=kw)
+        # 分页参数：仅当 >1 时附加（不同站点分页参数不一，优先 page）
+        if page > 1:
+            url += f"&page={page}"
+        try:
+            resp = session.get(url, timeout=15)
+            html = _decode(resp)
+        except Exception:  # noqa: BLE001
+            continue
+        books = _extract_books(html, base)
+        if not books:
+            continue
+        hits = [b for b in books if _matches(keyword, b["title"])]
+        if hits:
+            for b in hits:
+                b["_rel"] = _relevance(keyword, b["title"])
+            hits.sort(key=lambda b: -b["_rel"])
+            return hits
+    return []
+
+
+def _fetch_class_page(cls: int, page: int, session, base: str) -> List[dict]:
     """抓单个分类页的书籍列表。"""
-    url = f"{BASE}/modules/article/articlelist.php?class={cls}&page={page}"
+    url = f"{base}/modules/article/articlelist.php?class={cls}&page={page}"
     try:
         resp = session.get(url, timeout=15)
         html = _decode(resp)
     except Exception:  # noqa: BLE001
         return []
-
-    soup = BeautifulSoup(html, "html.parser")
-    books = []
-    for a in soup.select("a[href]"):
-        href = a.get("href", "").strip()
-        m = re.search(r"/book/(\d+)\.htm", href)
-        if not m:
-            continue
-        name = a.get_text(" ", strip=True)
-        if not name or name in ("我要阅读", "返回书页"):
-            continue
-        books.append({"id": m.group(1), "title": name, "source": "wenku8"})
-    return books
+    return _extract_books(html, base)
 
 
-def search_wenku8(keyword: str, session=None, max_pages: int = 3,
-                  workers: int = 8) -> List[dict]:
-    """按关键词搜索文库8书籍。
+def _search_categories(keyword: str, session, base: str, max_pages: int,
+                       workers: int, page_offset: int = 0) -> List[dict]:
+    """分类页遍历兜底：并发抓各分类页，本地归一化匹配。
 
-    :param keyword: 书名/作者关键词
-    :param max_pages: 每个分类抓前 N 页（默认 3，14 分类 × 3 页 ≈ 1600 本）
-    :param workers: 并发线程数
-    :return: [{id, title, author, cover, intro, source}]
-
-    说明：为速度考虑先按书名匹配；命中后不逐本请求详情（避免几十个并发详情请求），
-    书名/作者从列表页能拿到多少用多少。封面等在下载对话框/详情阶段再补。
+    page_offset 用于翻页：第 N 页对应分类页的 (N-1)*max_pages+1 起，
+    让 UI 翻页对文库8真正生效（原实现页码被丢弃）。
     """
-    kw = str(keyword or "").strip().lower()
-    if not kw:
-        return []
-    sess = session or make_session()
-
-    # 并发抓所有 (分类, 页码) 组合
-    tasks = [(cls, page) for cls in _CLASSES for page in range(1, max_pages + 1)]
-    all_books = []
+    start = page_offset * max_pages + 1
+    tasks = [(cls, p) for cls in _CLASSES
+             for p in range(start, start + max_pages)]
+    all_books: List[dict] = []
     pool = ThreadPoolExecutor(max_workers=max(1, min(16, workers)))
     try:
         fmap = {
-            pool.submit(_fetch_class_page, cls, page, sess): (cls, page)
-            for cls, page in tasks
+            pool.submit(_fetch_class_page, cls, p, session, base): (cls, p)
+            for cls, p in tasks
         }
         for fut in as_completed(fmap):
             try:
@@ -80,21 +127,43 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 3,
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
-    # 去重 + 本地过滤
     seen = set()
-    results = []
+    results: List[dict] = []
     for b in all_books:
         bid = b["id"]
         if bid in seen:
             continue
         seen.add(bid)
-        if kw in b["title"].lower():
-            results.append({
-                "id": bid,
-                "title": b["title"],
-                "author": "",
-                "intro": "",
-                "cover": "",
-                "source": "wenku8",
-            })
+        if _matches(keyword, b["title"]):
+            b["_rel"] = _relevance(keyword, b["title"])
+            results.append(b)
+    results.sort(key=lambda b: -b["_rel"])
     return results
+
+
+def search_wenku8(keyword: str, session=None, max_pages: int = 8,
+                  workers: int = 8, page: int = 1) -> List[dict]:
+    """按关键词搜索文库8书籍。
+
+    :param keyword: 书名/作者关键词
+    :param max_pages: 分类页兜底时每个分类抓的页数（默认 8，原为 3，扩大覆盖）
+    :param workers: 并发线程数
+    :param page: UI 页码（>1 时站内接口附加 page、分类页跳过前 N-1 组）
+    :return: [{id, title, author, intro, cover, source}]
+    """
+    kw = str(keyword or "").strip()
+    if not kw:
+        return []
+    sess = session or make_session()
+    base = get_base_url()
+    page = max(1, int(page or 1))
+
+    # 1) 站内搜索优先
+    hits = _search_on_site(kw, sess, base, page=page)
+    if hits:
+        return [{k: v for k, v in b.items() if k != "_rel"} for b in hits]
+
+    # 2) 分类页兜底
+    results = _search_categories(kw, sess, base, max_pages=max_pages,
+                                 workers=workers, page_offset=page - 1)
+    return [{k: v for k, v in b.items() if k != "_rel"} for b in results]

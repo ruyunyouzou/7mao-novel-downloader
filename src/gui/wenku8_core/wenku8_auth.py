@@ -12,7 +12,14 @@ from typing import Optional
 
 import requests
 
-_BASE_URL = "https://www.wenku8.cc"
+# 站点域名候选：搜索引擎收录的活站为 .net；.cc 为历史域名（部分网络返回关站旧页）。
+# get_base_url() 按顺序探测，用户可在设置页用 wenku8_base_url 手动固定。
+_BASE_CANDIDATES = (
+    "https://www.wenku8.net",
+    "https://www.wenku8.cc",
+    "https://www.wenku8.com",
+)
+_BASE_URL = _BASE_CANDIDATES[0]  # 兼容旧引用；实际取域名请用 get_base_url()
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -59,19 +66,73 @@ def parse_cookie(cookie: str) -> dict:
     return out
 
 
+def get_base_url() -> str:
+    """返回当前文库8站点根地址。
+
+    优先级：用户在设置页固定值 `wenku8_base_url` > 缓存的探测结果 >
+    候选列表首个（.net）。探测由 `probe_base_url()` 完成并缓存，避免每次请求都探测。
+    """
+    try:
+        from gui.datastore import DataStore
+        custom = str(DataStore().settings_get("wenku8_base_url", "") or "").strip()
+        if custom:
+            return custom.rstrip("/")
+        cached = str(DataStore().settings_get("wenku8_base_cached", "") or "").strip()
+        if cached:
+            return cached.rstrip("/")
+    except Exception:  # noqa: BLE001
+        pass
+    return _BASE_CANDIDATES[0]
+
+
+def probe_base_url(session=None, timeout: int = 8) -> str:
+    """探测候选域名，返回第一个可正常访问（非关站页/非纯登录跳转）的根地址并缓存。
+
+    探测失败时回退到候选首个，绝不抛异常。桌面端网络正常时应能命中活站。
+    """
+    sess = session or requests.Session()
+    for base in _BASE_CANDIDATES:
+        try:
+            resp = sess.get(base + "/", timeout=timeout, allow_redirects=True,
+                            headers={"User-Agent": _UA})
+            text = resp.text or ""
+            # 关站旧页：含「本站正式关闭」且无书籍链接
+            if "本站正式关闭" in text or "正式关闭" in text:
+                continue
+            # 正常站点：能到首页、含文库标识或书籍链接
+            if "轻小说文库" in text or "/book/" in text or "会员中心" in text:
+                try:
+                    from gui.datastore import DataStore
+                    DataStore().settings_set("wenku8_base_cached", base)
+                except Exception:  # noqa: BLE001
+                    pass
+                return base
+        except Exception:  # noqa: BLE001
+            continue
+    return _BASE_CANDIDATES[0]
+
+
 def make_session(cookie: Optional[str] = None, timeout: int = 20) -> requests.Session:
-    """构造带登录态、浏览器头的 Session，供详情/目录/正文复用。"""
+    """构造带登录态、浏览器头的 Session，供详情/目录/正文复用。
+
+    Cookie 的 domain 随当前站点域名动态调整（.net/.cc/.com），
+    避免旧版写死 `.wenku8.cc` 导致换域名后登录态失效。
+    """
+    base = get_base_url()
+    host = base.split("//", 1)[-1].split("/", 1)[0]
+    cookie_domain = host[4:] if host.startswith("www.") else host
     sess = requests.Session()
     sess.headers.update({
         "User-Agent": _UA,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": _BASE_URL + "/",
+        "Referer": base + "/",
     })
     raw = cookie if cookie is not None else get_cookie()
     if raw:
         for key, val in parse_cookie(raw).items():
-            sess.cookies.set(key, val, domain=".wenku8.cc")
+            # 主域 cookie：用不带 www 的域，保证 www/裸域都带上
+            sess.cookies.set(key, val, domain="." + cookie_domain)
     sess.timeout = timeout  # type: ignore[attr-defined]
     return sess
 

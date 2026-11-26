@@ -21,7 +21,7 @@ def _search_by_source(keyword: str, tab: str = "0", page: int = 1,
         return search_fanqie(keyword, page=page)
     if source == "wenku8":
         from gui.wenku8_core.wenku8_search import search_wenku8
-        return search_wenku8(keyword)
+        return search_wenku8(keyword, page=page)
     return search_books(keyword, tab=tab, page=page)
 
 

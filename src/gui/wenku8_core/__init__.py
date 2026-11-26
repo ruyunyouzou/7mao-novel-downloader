@@ -5,11 +5,14 @@
 LegacyWenkuRepository 全为 unavailableOnline 空壳），因此这里按文库8
 真实站点结构从零实现，全部基于实测接口（2026-11）：
 
-- 详情页    https://www.wenku8.cc/book/{id}.htm
-- 目录页    https://www.wenku8.cc/novel/{n}/{id}/index.htm  （章节为相对链接 {cid}.htm）
-- 正文页    https://www.wenku8.cc/novel/{n}/{id}/{cid}.htm  （正文在 #content，明文无字体混淆）
-- 分类列表  https://www.wenku8.cc/modules/article/articlelist.php?class={c}&page={p}
-- 站内搜索  so.php 被 WAF 拦截（403），故搜索走「分类页抓取 + 本地过滤」
+- 详情页    {BASE}/book/{id}.htm
+- 目录页    {BASE}/novel/{n}/{id}/index.htm  （章节为相对链接 {cid}.htm）
+- 正文页    {BASE}/novel/{n}/{id}/{cid}.htm  （正文在 #content，明文无字体混淆）
+- 分类列表  {BASE}/modules/article/articlelist.php?class={c}&page={p}
+- 站内搜索  多候选接口（search.php/so.php × searchkey/keyword）优先，分类页遍历兜底
+- 域名      .net/.cc/.com 候选，设置页 wenku8_base_url 可固定，Cookie 域动态跟随
+
+BASE 由 get_base_url() 动态解析（用户设置 > 探测缓存 > 候选首项），不写死单一域名。
 
 全站 GBK 编码；正文无 PUA / woff 字体混淆，无需字体解码。
 
@@ -30,6 +33,8 @@ __all__ = [
     "set_cookie",
     "is_logged_in",
     "make_session",
+    "get_base_url",
+    "probe_base_url",
 ]
 
 
@@ -45,13 +50,16 @@ def __getattr__(name: str):
                 "fetch_book_meta", "make_session"):
         from . import wenku8_reader
         return getattr(wenku8_reader, name)
-    if name in ("get_cookie", "set_cookie", "is_logged_in"):
+    if name in ("get_cookie", "set_cookie", "is_logged_in",
+                "get_base_url", "probe_base_url"):
         from .wenku8_auth import (
-            get_cookie, set_cookie, is_logged_in,
+            get_cookie, set_cookie, is_logged_in, get_base_url, probe_base_url,
         )
         return {
             "get_cookie": get_cookie,
             "set_cookie": set_cookie,
             "is_logged_in": is_logged_in,
+            "get_base_url": get_base_url,
+            "probe_base_url": probe_base_url,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

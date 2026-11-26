@@ -834,6 +834,22 @@ class MainWindow(QMainWindow):
         self.settings_wenku8_cookie.editingFinished.connect(self._on_wenku8_cookie_changed)
         row_cookie.addWidget(self.settings_wenku8_cookie, 1)
         l1.addLayout(row_cookie)
+        # 文库8 站点域名：站点曾迁移 .cc → .net，允许固定或自动探测
+        self.set_wenku8_base_label = hint_label(tr("set.wenku8_base"))
+        l1.addWidget(self.set_wenku8_base_label)
+        row_base = QHBoxLayout()
+        from .wenku8_core.wenku8_auth import get_base_url
+        self.settings_wenku8_base = QLineEdit(
+            str(self.store.settings_get("wenku8_base_url", "") or "")
+        )
+        self.settings_wenku8_base.setPlaceholderText(get_base_url())
+        self.settings_wenku8_base.editingFinished.connect(
+            self._on_wenku8_base_changed)
+        row_base.addWidget(self.settings_wenku8_base, 1)
+        self.settings_wenku8_probe_btn = QPushButton(tr("set.wenku8_probe"))
+        self.settings_wenku8_probe_btn.clicked.connect(self._on_wenku8_probe)
+        row_base.addWidget(self.settings_wenku8_probe_btn)
+        l1.addLayout(row_base)
         self.set_default_format_label = hint_label(tr("set.default_format"))
         l1.addWidget(self.set_default_format_label)
         self.settings_format = QComboBox()
@@ -3110,6 +3126,38 @@ class MainWindow(QMainWindow):
 
         import threading
         threading.Thread(target=_verify, daemon=True).start()
+
+    def _on_wenku8_base_changed(self) -> None:
+        """保存用户固定的文库8站点域名（留空则自动探测/用默认）。"""
+        base = self.settings_wenku8_base.text().strip().rstrip("/")
+        self.store.settings_set("wenku8_base_url", base)
+        self.log(f"文库8站点域名已设为：{base or '自动'}")
+
+    def _on_wenku8_probe(self) -> None:
+        """后台探测可用域名并回填，避免阻塞界面。"""
+        self.settings_wenku8_probe_btn.setEnabled(False)
+        self.log("正在探测文库8可用域名…")
+
+        def _probe():
+            try:
+                from gui.wenku8_core.wenku8_auth import probe_base_url
+                base = probe_base_url()
+                msg = f"文库8可用域名：{base}（已自动采用）"
+            except Exception as exc:  # noqa: BLE001
+                base, msg = "", f"域名探测失败：{exc}"
+
+            def _apply():
+                self.settings_wenku8_probe_btn.setEnabled(True)
+                self.log(msg)
+                if base:
+                    self.settings_wenku8_base.setPlaceholderText(base)
+
+            # 用单次定时器安全回到主线程更新 UI
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, _apply)
+
+        import threading
+        threading.Thread(target=_probe, daemon=True).start()
 
     def _on_default_format_changed(self, fmt: str) -> None:
         """设置页切换默认下载格式：持久化并同步到搜索页、直达页下拉。"""
