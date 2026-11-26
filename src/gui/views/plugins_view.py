@@ -57,6 +57,7 @@ _PLUGIN_META: Dict[str, Tuple[str, str, str]] = {
     "微信读书接入": ("extension", "natlan", "💬"),
     "七猫真实下载内核": ("core", "mondstadt", "🐱"),
     "番茄真实下载内核": ("core", "snezhnaya", "🍅"),
+    "文库8真实下载内核": ("core", "inazuma", "📖"),
     "使用说明": ("doc", "liyue", "📖"),
     "功能说明": ("doc", "inazuma", "📋"),
     "更新日志": ("doc", "fontaine", "📜"),

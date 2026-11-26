@@ -249,13 +249,14 @@ class DownloadWorker(QThread):
 class ProtocolCheckWorker(QThread):
     """下载内核协议健康自检（后台执行，避免阻塞界面）。
 
-    依次验证两路内核真正依赖的接口：
+    依次验证三路内核真正依赖的接口：
       1) 七猫搜索  qimao_core.search_books
       2) 七猫目录  qimao_core.get_catalog（顺带验证签名/请求头链路）
       3) 番茄目录  FanqieBookSource.fetch_catalog
+      4) 文库8目录 Wenku8BookSource.fetch_catalog（带登录 Cookie）
 
     progress = Signal(str)              每一步的状态文字
-    finished = Signal(dict)             最终结果 {ok, search, catalog, fanqie, detail, message}
+    finished = Signal(dict)             最终结果 {ok, search, catalog, fanqie, wenku8, detail, message}
     """
     progress = Signal(str)
     finished = Signal(dict)
@@ -263,12 +264,13 @@ class ProtocolCheckWorker(QThread):
     # 固定自检样本（不依赖用户输入、不写任何数据）
     PROBE_KEYWORD = "斗破苍穹"
     PROBE_FANQIE_ID = "7546406625741917209"  # 公开可访问的番茄书，只取目录不写盘
+    PROBE_WENKU8_ID = "2580"  # 文库8《关于邻家的天使大人…》，公开可访问，只取目录不写盘
 
     def run(self) -> None:
         from .qimao_core import search_books, book_source_for
 
         result = {"ok": False, "search": False, "catalog": False,
-                  "fanqie": False, "detail": "", "message": ""}
+                  "fanqie": False, "wenku8": False, "detail": "", "message": ""}
 
         # 1) 搜索接口（结果复用给目录测试）
         self.progress.emit("正在检测搜索接口…")
@@ -310,15 +312,31 @@ class ProtocolCheckWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             result["detail"] += f"；番茄目录失败：{exc}"
 
-        result["ok"] = result["search"] and result["catalog"] and result["fanqie"]
+        # 4) 文库8目录接口（带登录 Cookie，只读目录不下载正文）
+        self.progress.emit("正在检测文库8目录接口…")
+        try:
+            wenku8 = book_source_for("wenku8")
+            wc = wenku8.fetch_catalog(self.PROBE_WENKU8_ID, None)
+            if wc:
+                result["wenku8"] = True
+                result["detail"] += f"；文库8目录正常（{len(wc)} 章）"
+            else:
+                result["detail"] += "；文库8目录返回空章节（可能是登录态失效或站点风控）"
+        except Exception as exc:  # noqa: BLE001
+            result["detail"] += f"；文库8目录失败：{exc}"
+
+        result["ok"] = (result["search"] and result["catalog"]
+                        and result["fanqie"] and result["wenku8"])
         if result["ok"]:
-            result["message"] = "七猫 / 番茄内核均正常"
+            result["message"] = "七猫 / 番茄 / 文库8 内核均正常"
         else:
             bad = []
             if not (result["search"] and result["catalog"]):
                 bad.append("七猫")
             if not result["fanqie"]:
                 bad.append("番茄")
+            if not result["wenku8"]:
+                bad.append("文库8")
             result["message"] = "、".join(bad) + "内核异常 · 详情见提示"
         self.finished.emit(result)
 

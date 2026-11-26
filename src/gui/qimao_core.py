@@ -451,6 +451,37 @@ def title_color_css(selector: str, color: str) -> str:
     return f"{selector} {{ color: {v}; -webkit-text-fill-color: {v}; }}\n"
 
 
+def _plain_title_color(color: str) -> str:
+    """标题内联色的取值：渐变取首色作纯色兜底。
+
+    微信读书等精简内核在「有卷名」的层级 EPUB 里会把 h3 章名当目录标题，
+    用自己的黑色样式覆盖外部 CSS 类，导致章名变黑（无卷名时 h2 不受影响、
+    颜色正常）。内联 style 优先级最高，可绕过该覆盖；但内联无法可靠渲染
+    background-clip 渐变文字，故渐变一律退回首色，保证任何内核都清晰可见。
+    """
+    v = (color or "").strip()
+    if v.startswith("linear:"):
+        try:
+            colors = [c.strip() for c in v[len("linear:"):].split("|", 1)[1]
+                      .split(",") if c.strip()]
+            if colors:
+                v = colors[0]
+        except Exception:  # noqa: BLE001
+            v = ""
+    return v
+
+
+def title_inline_style(color: str) -> str:
+    """生成可直接拼进标题元素的 style 属性（含引号），空色返回空串。
+
+    color 与 -webkit-text-fill-color 双写，兼容部分内核只认后者的行为。
+    """
+    v = _plain_title_color(color)
+    if not v:
+        return ""
+    return f' style="color:{v};-webkit-text-fill-color:{v};"'
+
+
 def render_filename(template: str, title: str, author: str = "", book_id: str = "",
                     fmt: str = "txt", start: int = 0, end: int = 0,
                     total: int = 0) -> str:
@@ -800,6 +831,11 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             at_fonts = (chapter_at + "\n" + volume_at + "\n") if (chapter_at or volume_at) else ""
             chapter_color = _safe_color(chapter_color, CHAPTER_TITLE_COLOR)
             volume_color = _safe_color(volume_color, VOLUME_TITLE_COLOR)
+            # 内联标题色：层级 EPUB 的 h3 章名在微信读书里会被当目录标题
+            # 用默认黑色覆盖外部 CSS 类，故把颜色直接内联到元素上（优先级最高），
+            # 保证「有卷名/无卷名」「章名/卷名」「三源」任何组合都正确上色。
+            chapter_inline = title_inline_style(chapter_color)
+            volume_inline = title_inline_style(volume_color)
             style_css = (
                 at_fonts
                 + "body { font-size: 1em; line-height: 1.8; margin: 0 5%%; }\n"
@@ -931,17 +967,23 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                     show_vol = vol_name and vol_name != str(prev.get("vol") or "").strip()
                     show_sub = sub_name and (sub_name != str(prev.get("sub") or "").strip()
                                              or show_vol)
+                    # 微信读书等精简内核会把 h 标题当目录项用自己的黑色样式覆盖
+                    # 外部 CSS 类，故卷/集/章三级统一「h 元素内联 + 内层 span 内联」
+                    # 双保险，确保任何书（有无卷、有无集）三级标题都正确上色。
                     parts = []
                     if show_vol:
                         parts.append(
-                            f'<h1 class="volume-name">{html.escape(vol_name)}</h1>'
+                            f'<h1 class="volume-name"{volume_inline}>'
+                            f'<span{volume_inline}>{html.escape(vol_name)}</span></h1>'
                         )
                     if show_sub:
                         parts.append(
-                            f'<h2 class="volume-name">{html.escape(sub_name)}</h2>'
+                            f'<h2 class="volume-name"{volume_inline}>'
+                            f'<span{volume_inline}>{html.escape(sub_name)}</span></h2>'
                         )
                     parts.append(
-                        f'<h3 class="chapter-title">{html.escape(safe_title)}</h3>'
+                        f'<h3 class="chapter-title"{chapter_inline}>'
+                        f'<span{chapter_inline}>{html.escape(safe_title)}</span></h3>'
                     )
                     title_html = "".join(parts)
                 else:
@@ -950,12 +992,17 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                     if vol_name:
                         title_html = (
                             f'<div class="volume-line">'
-                            f'<span class="volume-name">{html.escape(vol_name)}</span>'
+                            f'<span class="volume-name"{volume_inline}>'
+                            f'{html.escape(vol_name)}</span>'
                             f'</div>'
-                            f'<h2 class="chapter-title">{html.escape(ch_name)}</h2>'
+                            f'<h2 class="chapter-title"{chapter_inline}>'
+                            f'<span{chapter_inline}>{html.escape(ch_name)}</span></h2>'
                         )
                     else:
-                        title_html = f'<h2 class="chapter-title">{html.escape(safe_title)}</h2>'
+                        title_html = (
+                            f'<h2 class="chapter-title"{chapter_inline}>'
+                            f'<span{chapter_inline}>{html.escape(safe_title)}</span></h2>'
+                        )
 
                 # 章首题图：在标题上方插入图片（渐隐已烘焙进 PNG）
                 hero_html = ""

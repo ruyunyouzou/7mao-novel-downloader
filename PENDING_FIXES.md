@@ -7,13 +7,13 @@
 ## 当前状态
 
 - **基线版本**：**v5.0.6**（2026-11-26，用户明确要求「直接发新版本」；版本真源 `APP_VERSION`、`update-manifest.json` 均已升至 5.0.6，含新周期第 1 条：根治搜索页纯黑大框——遮罩半透明 + 同步隐藏 + 看门狗兜底）
-- **已修未发版**：**5 / 10**（新周期第 2–6 条：文库8搜索根治 A′归一化模糊匹配、B′站内搜索优先+分类页兜底扩页、C′域名可配置+.net/.cc回退+Cookie域动态、D′翻页页码透传、文库8账号密码登录；第 1 条黑框修复已随 v5.0.6 发布）
+- **已修未发版**：**8 / 10**（新周期第 2–9 条：文库8搜索根治 A′~D′、文库8账号密码登录、微信读书番茄书章名黑色修复、文库8插件归入核心内核分组、内核状态检查支持三源；第 1 条黑框修复已随 v5.0.6 发布）
 - **发版说明**：v5.0.6 按用户明确发版指令启用（用户「直接发新版本」，无需等满 10 条），新周期第 1 条黑框修复随本版发布；tag `v5.0.6` 已推送触发 GitHub Actions 构建 Release，资产 `_Windows_v5.0.6.zip`。**Cookie 策略**：公开安装包**不内置真实 Cookie**（登录入口仍可用、本机打包仍内置）；工作流为可选 Secret 注入，无 Secret 时自动跳过。历史：v5.0.5 按用户明确发版指令启用（当时 7/10），新周期 7 条全部随本版发布。
 - **历史发版**：v5.0.4 按用户明确发版指令启用（当时 8/10），第 57–64 条全部随本版发布；v5.0.3 含第 54–56 条
 - **队列移除任务 / 清除未完成 / 番茄选封面预览 / 封面路径兜底 / 读者页缺少数据根治**：见下方第 54–56 条，已随 v5.0.3 发布
 - **发版包含**：v5.0.2 后新周期第 54–56 条（队列移除、番茄封面预览与本地封面兜底、完整浏览器头 + 重试根治读者页缺少数据失败）随 v5.0.3 发布
 - **六轮体检（第 52 条，追加项）**：静态与死代码 / 三语 / GUI 冒烟 / 双内核数据链路 / 线程与退出 / 结构冗余各一轮；已修 9 类问题（详见第 52 条），3 项待拍板重构已按推荐全部落地（见第 53 条）：弹窗 58 处国际化、七猫签名单一实现、CLI 归档 `src/legacy/`
-- **下一个待发布版本**：v5.0.7（满 10 条或用户明确发版指令才启用；当前新周期已 5 条：黑框修复(已发)、文库8搜索 A′~D′、账号密码登录；B′/C′ 真实网络及账号登录需用户本机验证，沙箱出口 IP 被文库8风控）
+- **下一个待发布版本**：v5.0.7（满 10 条或用户明确发版指令才启用；当前新周期已 8 条：黑框修复(已发)、文库8搜索 A′~D′、账号密码登录、章名颜色修复、插件分组、三源内核检查；B′/C′ 真实网络及账号登录需用户本机验证，沙箱出口 IP 被文库8风控）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
 - **阅读器补充**：阅读器专注模式退出入口 + EPUB 章节名 + 字号即时生效修复为用户追加项，另行登记于下方第 15 条，不计入本轮 10 条
@@ -36,6 +36,9 @@
 
 | 编号 | 简述 | 涉及文件 | 修复日期 |
 |------|------|----------|----------|
+| 80 | **（新周期第 9 条，用户「检查下载内核状态，希望三个下载源都可以检查」）** 内核自检从「七猫+番茄」扩到三源：`workers.py::ProtocolCheckWorker` 新增第 4 步文库8目录探测（`PROBE_WENKU8_ID=2580`，走 `book_source_for("wenku8").fetch_catalog`，带登录 Cookie、只读不写盘），结果字典新增 `wenku8` 字段，汇总文案「七猫 / 番茄 / 文库8 内核均正常」或列出异常源。**验证**：新增 `tests/test_source_check.py` 4 项（三源全 OK/文库8空目录失败/文库8异常/插件分组）全过、offscreen 主窗口检查按钮构建 OK。**沙箱 IP 被风控，文库8真实探测需用户本机验证** | `workers.py` | 2026-11-27 |
+| 79 | **（新周期第 8 条，用户「图中这个插件应该属于核心内核，不应该属于其他」）** 插件管理页「文库8真实下载内核」被归到「其他」分组：`plugins_view.py::_PLUGIN_META` 补上固定映射 `("core", "inazuma", "📖")`，与七猫/番茄同为「核心内核」分组。**验证**：分组映射断言三源均在 core + offscreen 构建确认 | `plugins_view.py` | 2026-11-27 |
+| 78 | **（新周期第 7 条，用户「卷名颜色正确、章名黑色；之前只有章名没卷名时章名正确；卷集章三级都要修复，确保每本书都正常」）** 微信读书导入番茄 EPUB：卷名橙棕正确、章名纯黑。根因——无卷名时章名用 `<h2 class=chapter-title>` 靠外部 CSS 生效；有卷名的层级 EPUB 章名改用 `<h3 class=chapter-title>`，微信读书把 h3 当目录标题用自己的黑色样式覆盖外部 CSS 类，而 h1 卷名未被识别故颜色保留。`qimao_core.py` 新增 `_plain_title_color()`（渐变取首色兜底）+ `title_inline_style()`（内联 color + -webkit-text-fill-color），build_txt 中卷 h1/集 h2/章 h3 三级统一「h 元素内联 + 内层 span 内联」双保险，非层级分支的 h2 章名同样处理；三源共用 build_txt 故每本书覆盖。**验证**：新增 `tests/test_title_color_epub.py` 4 项端到端测试（用假 BookSource 生成真实 EPUB 解压查三级标题内联色：卷集章三级/仅卷章/纯章/辅助函数）全过；全量 38 passed+2 skipped+23 subtests、compileall PASS、offscreen OK | `qimao_core.py` | 2026-11-27 |
 | 77 | **（新周期第 6 条，用户「把文库登录加一个账号密码可登录」）** 文库8登录新增账号密码方式：原登录入口只支持粘贴 Cookie。调研抓包协议（`guohuiyuan/go-novel-dl`、`chiro2001/Wenku8` 交叉验证）确认站点无验证码、POST `login.php?do=submit&jumpurl=` + `username/password(明文)/usecookie=315360000/action=login/submit(GBK「登录」)`，成功以响应 Cookie 含 `jieqiUserInfo` 判定。`wenku8_auth.py` 新增 `login_with_password()`（返回 `(ok, cookie字符串, 提示)`，成功后序列化会话 Cookie 交现有机制保存，密码不落盘）+ 纯函数 `_build_login_form()`；`is_logged_in` 域名改动态 `get_base_url()`；登录对话框改 QTabWidget 双页「账号密码 / Cookie」，后台线程登录不阻塞界面、回车触发、失败如实提示风控/密码错误（不伪造成功）；i18n 三语各 +10 键。**验证**：新增 `tests/test_wenku8_login.py` 9 项（协议字段/GBK 字节/URL构造/Cookie成功/文本成功/403风控/密码错误/网络异常）全过；全量 30 passed+2 skipped+23 subtests、compileall PASS、offscreen 对话框双 Tab 构建 + 三语 retranslate 全 OK。**沙箱 IP 被风控无法真实登录，需用户本机验证** | `wenku8_auth.py`、`wenku8_login_dialog.py`、`wenku8_core/__init__.py`、`i18n.py`、`tests/test_wenku8_login.py`(新增) | 2026-11-27 |
 | 76 | **（新周期第 5 条，用户「如果可以将 ABCD 全部实现」之 D′）** 文库8翻页失效修复：`workers.py::_search_by_source` 的 wenku8 分支原调用 `search_wenku8(keyword)` 丢弃 page，UI 点「下一页」永远抓同样页面；改为 `search_wenku8(keyword, page=page)`，站内接口附加 `&page`、分类页兜底用 `page_offset` 跳过前 N-1 组页码，翻页真正生效。验证：签名断言 page 参数存在 + page>1 走 offset 逻辑 | `workers.py`、`wenku8_search.py` | 2026-11-26 |
 | 75 | **（新周期第 4 条，ABCD 之 C′）** 文库8域名可配置 + 多域名回退：代码原全链路写死 `www.wenku8.cc`，但搜索引擎收录的活站是 `www.wenku8.net`、外部访问 .cc 曾返回「本站正式关闭」旧页。新增 `wenku8_auth.get_base_url()`（设置 `wenku8_base_url` > 探测缓存 `wenku8_base_cached` > 候选首项 .net）与 `probe_base_url()`（探测 .net/.cc/.com 第一个可用站并缓存）；`make_session` 的 Cookie domain 由写死 `.wenku8.cc` 改为随当前域名动态；`wenku8_reader` 所有 URL 拼接由写死 `BASE` 改为动态 `_base()`；设置页新增「站点域名」输入框 + 「自动探测」按钮，i18n 三语各 +2 键。**沙箱出口 IP 被风控无法实测探测，需用户本机确认** | `wenku8_auth.py`、`wenku8_reader.py`、`main_window.py`、`i18n.py`、`wenku8_core/__init__.py` | 2026-11-26 |
