@@ -19,6 +19,12 @@ _BASE_CANDIDATES = (
     "https://www.wenku8.cc",
     "https://www.wenku8.com",
 )
+# 线路名（用于「官网线路」管理页展示），未列出的自定义线路用域名本身。
+_LINE_LABELS = {
+    "https://www.wenku8.net": "wenku8.net（优先）",
+    "https://www.wenku8.cc": "wenku8.cc",
+    "https://www.wenku8.com": "wenku8.com",
+}
 _BASE_URL = _BASE_CANDIDATES[0]  # 兼容旧引用；实际取域名请用 get_base_url()
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -220,3 +226,220 @@ def login_with_password(username: str, password: str,
     # 序列化会话 Cookie 为 'k=v; k=v' 供现有机制保存
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
     return True, cookie_str, "登录成功"
+
+
+# ---------------------------------------------------------------------------
+# 官网线路管理（参考 mikufoxxx/Wenku8_Flutter 的「官网线路」设计）
+# 每条线路独立：域名 / 登录 Cookie / 检测结果 / 使用中标记。
+# 存储：DataStore 设置项 wenku8_lines = JSON {
+#   "lines": [{"base", "label", "cookie", "state", "detail"}],
+#   "active": "<base>", "keep_login": bool }
+# 与旧设置兼容：wenku8_base_url / wenku8_cookie 仍为「当前生效线路」的快捷方式。
+# ---------------------------------------------------------------------------
+
+_LINES_KEY = "wenku8_lines"
+
+
+def _default_lines() -> dict:
+    lines = []
+    for base in _BASE_CANDIDATES:
+        lines.append({
+            "base": base,
+            "label": _LINE_LABELS.get(base, base.replace("https://www.", "")),
+            "cookie": "",      # 每条线路独立 Cookie
+            "state": "unchecked",  # unchecked/ok/guest/closed/blocked/error
+            "detail": "",
+        })
+    return {"lines": lines, "active": _BASE_CANDIDATES[0], "keep_login": True}
+
+
+def get_lines_state() -> dict:
+    """读取线路管理状态；损坏/缺失时回退默认并落盘规范化。"""
+    import json
+    try:
+        from gui.datastore import DataStore
+        raw = str(DataStore().settings_get(_LINES_KEY, "") or "").strip()
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict) or not isinstance(data.get("lines"), list):
+            raise ValueError("bad lines state")
+        # 规范化每条线路字段
+        normalized = []
+        for item in data["lines"]:
+            if not isinstance(item, dict) or not item.get("base"):
+                continue
+            base = str(item["base"]).strip().rstrip("/")
+            normalized.append({
+                "base": base,
+                "label": str(item.get("label") or _LINE_LABELS.get(base, base)),
+                "cookie": str(item.get("cookie") or ""),
+                "state": str(item.get("state") or "unchecked"),
+                "detail": str(item.get("detail") or ""),
+            })
+        if not normalized:
+            raise ValueError("empty lines")
+        data["lines"] = normalized
+        data.setdefault("keep_login", True)
+        data["active"] = str(data.get("active") or normalized[0]["base"])
+        return data
+    except Exception:  # noqa: BLE001
+        default = _default_lines()
+        save_lines_state(default)
+        return default
+
+
+def save_lines_state(data: dict) -> None:
+    import json
+    try:
+        from gui.datastore import DataStore
+        DataStore().settings_set(_LINES_KEY, json.dumps(data, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def get_active_base() -> str:
+    """当前使用中线路域名。优先线路状态里的 active，其次旧设置，默认 .net。"""
+    try:
+        state = get_lines_state()
+        if state.get("active"):
+            return str(state["active"]).rstrip("/")
+    except Exception:  # noqa: BLE001
+        pass
+    return get_base_url()
+
+
+def set_active_base(base: str) -> str:
+    """切换使用中线路：更新 active + 旧快捷设置，并把该线路 Cookie 同步为当前生效值。
+
+    返回实际切换到的 base。目标不存在时自动追加为自定义线路。
+    """
+    base = str(base or "").strip().rstrip("/")
+    state = get_lines_state()
+    bases = {ln["base"]: ln for ln in state["lines"]}
+    if base not in bases:
+        state["lines"].append({
+            "base": base, "label": _LINE_LABELS.get(base, base.replace("https://www.", "")),
+            "cookie": "", "state": "unchecked", "detail": "",
+        })
+        bases[base] = state["lines"][-1]
+    state["active"] = base
+    save_lines_state(state)
+    # 同步旧快捷设置，使 get_base_url()/make_session() 立即生效
+    try:
+        from gui.datastore import DataStore
+        DataStore().settings_set("wenku8_base_url", base)
+    except Exception:  # noqa: BLE001
+        pass
+    # 把该线路 Cookie 同步为当前生效 Cookie（无则清空，回退内置）
+    set_cookie(bases[base].get("cookie") or "")
+    return base
+
+
+def save_line_cookie(base: str, cookie: str) -> None:
+    """保存某线路的登录 Cookie；若该线路正是使用中线路，同步为当前生效值。"""
+    base = str(base or "").strip().rstrip("/")
+    state = get_lines_state()
+    for ln in state["lines"]:
+        if ln["base"] == base:
+            ln["cookie"] = str(cookie or "").strip()
+            break
+    else:
+        state["lines"].append({
+            "base": base, "label": _LINE_LABELS.get(base, base.replace("https://www.", "")),
+            "cookie": str(cookie or "").strip(), "state": "unchecked", "detail": "",
+        })
+    save_lines_state(state)
+    if state.get("active") == base:
+        set_cookie(cookie or "")
+
+
+def add_line(base: str) -> tuple[bool, str, str]:
+    """新增自定义线路。返回 (ok, 规范化base, 提示)。"""
+    base = str(base or "").strip().rstrip("/")
+    if not base:
+        return False, "", "线路地址不能为空"
+    if not base.startswith(("http://", "https://")):
+        base = "https://" + base
+    state = get_lines_state()
+    if any(ln["base"] == base for ln in state["lines"]):
+        return False, base, "该线路已存在"
+    state["lines"].append({
+        "base": base, "label": base.replace("https://www.", "").replace("https://", ""),
+        "cookie": "", "state": "unchecked", "detail": "",
+    })
+    save_lines_state(state)
+    return True, base, "线路已添加"
+
+
+def remove_line(base: str) -> bool:
+    """删除自定义线路；内置候选线路不可删除。返回是否成功。"""
+    base = str(base or "").strip().rstrip("/")
+    if base in _BASE_CANDIDATES:
+        return False
+    state = get_lines_state()
+    state["lines"] = [ln for ln in state["lines"] if ln["base"] != base]
+    if state.get("active") == base:
+        state["active"] = state["lines"][0]["base"] if state["lines"] else _BASE_CANDIDATES[0]
+        set_cookie("")
+        try:
+            from gui.datastore import DataStore
+            DataStore().settings_set("wenku8_base_url", state["active"])
+        except Exception:  # noqa: BLE001
+            pass
+    save_lines_state(state)
+    return True
+
+
+def set_line_checked(base: str, state_value: str, detail: str = "") -> None:
+    """记录某线路的检测结果（state: ok/guest/closed/blocked/error/unchecked）。"""
+    base = str(base or "").strip().rstrip("/")
+    data = get_lines_state()
+    for ln in data["lines"]:
+        if ln["base"] == base:
+            ln["state"] = state_value
+            ln["detail"] = str(detail or "")
+            break
+    save_lines_state(data)
+
+
+def classify_line_response(status: int, final_url: str, text: str) -> tuple[str, str]:
+    """纯函数：把一次线路探测响应归类为 (state, detail)，便于单测。
+
+    state: ok(已登录/可用) / guest(可访问未登录) / closed(关站) /
+           blocked(风控拦截) / error(其它异常)
+    """
+    url = str(final_url or "")
+    body = str(text or "")
+    if status == 403 or "人机验证" in body or "cloudflare" in body.lower():
+        return "blocked", "站点风控拦截（403/人机验证）"
+    if "本站正式关闭" in body or "正式关闭" in body:
+        return "closed", "站点已关闭（关站旧页）"
+    if "login.php" in url.lower():
+        return "guest", "可访问，但未登录（跳转登录页）"
+    if any(k in body for k in ("会员中心", "我的书架", "退出登录")):
+        return "ok", "可访问，登录态有效"
+    if "轻小说文库" in body or "/book/" in body or "小说排行榜" in body:
+        return "guest", "可访问，未识别到登录态"
+    return "guest", "线路可访问（页面结构未知）"
+
+
+def check_line(base: str, cookie: str = "", timeout: int = 8) -> tuple[str, str]:
+    """检测单条线路连接状态，返回 (state, detail)，不抛异常、不写数据。"""
+    base = str(base or "").strip().rstrip("/")
+    sess = requests.Session()
+    sess.headers.update({"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9"})
+    if cookie:
+        host = base.split("//", 1)[-1].split("/", 1)[0]
+        domain = host[4:] if host.startswith("www.") else host
+        for k, v in parse_cookie(cookie).items():
+            sess.cookies.set(k, v, domain="." + domain)
+    try:
+        resp = sess.get(base + "/", timeout=timeout, allow_redirects=True)
+        text = resp.text or ""
+        if not text:
+            resp.encoding = "gbk"
+            text = resp.text or ""
+        state, detail = classify_line_response(resp.status_code, resp.url, text)
+    except Exception as exc:  # noqa: BLE001
+        state, detail = "error", f"连接失败：{exc}"
+    set_line_checked(base, state, detail)
+    return state, detail

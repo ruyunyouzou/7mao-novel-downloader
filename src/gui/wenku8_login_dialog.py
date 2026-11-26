@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QCheckBox, QApplication, QTabWidget, QWidget, QFormLayout,
+    QScrollArea, QFrame, QSizePolicy,
 )
 
 from .i18n import tr
@@ -59,8 +60,27 @@ class _LoginWorker(QThread):
         self.finished_ok.emit(ok, cookie, msg)
 
 
+class _LineCheckWorker(QThread):
+    """后台检测单条线路连接状态，避免阻塞界面。"""
+
+    finished_ok = Signal(str, str, str)  # base, state, detail
+
+    def __init__(self, base: str, cookie: str, parent=None) -> None:
+        super().__init__(parent)
+        self.base = base
+        self.cookie = cookie
+
+    def run(self) -> None:  # noqa: C901
+        try:
+            from .wenku8_core.wenku8_auth import check_line
+            state, detail = check_line(self.base, self.cookie)
+        except Exception as exc:  # noqa: BLE001
+            state, detail = "error", str(exc)
+        self.finished_ok.emit(self.base, state, detail)
+
+
 class Wenku8LoginDialog(QDialog):
-    """文库8 登录弹窗：账号密码 / Cookie 双方式。"""
+    """文库8 登录弹窗：账号密码 / Cookie / 官网线路 三方式。"""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -68,6 +88,7 @@ class Wenku8LoginDialog(QDialog):
         self.setMinimumWidth(520)
         self._verify_worker = None
         self._login_worker = None
+        self._line_workers = []
         self._build()
         self._refresh_status()
         try:
@@ -109,6 +130,7 @@ class Wenku8LoginDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_password_tab(), tr("wenku8.login.tab_password"))
         self.tabs.addTab(self._build_cookie_tab(), tr("wenku8.login.tab_cookie"))
+        self.tabs.addTab(self._build_lines_tab(), tr("wenku8.login.tab_lines"))
         root.addWidget(self.tabs)
 
     def _build_password_tab(self) -> QWidget:
@@ -189,6 +211,226 @@ class Wenku8LoginDialog(QDialog):
         lay.addWidget(self.result_label)
         lay.addStretch()
         return page
+
+    # ------------------------------------------------------------------ 官网线路
+    def _build_lines_tab(self) -> QWidget:
+        """官网线路管理页：每条线路独立检测/切换，可连接其他线路。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(4, 12, 4, 4)
+        lay.setSpacing(10)
+
+        hint = QLabel(tr("wenku8.login.lines_hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        lay.addWidget(hint)
+
+        # 顶部：检测全部 + 连接其他线路
+        top = QHBoxLayout()
+        self.check_all_btn = QPushButton(tr("wenku8.login.check_all"))
+        self.check_all_btn.clicked.connect(self._on_check_all)
+        self._style_button(self.check_all_btn)
+        top.addWidget(self.check_all_btn)
+        top.addStretch()
+        lay.addLayout(top)
+
+        # 线路列表（可滚动）
+        self.lines_scroll = QScrollArea()
+        self.lines_scroll.setWidgetResizable(True)
+        self.lines_scroll.setFrameShape(QFrame.NoFrame)
+        self.lines_host = QWidget()
+        self.lines_vbox = QVBoxLayout(self.lines_host)
+        self.lines_vbox.setContentsMargins(0, 0, 0, 0)
+        self.lines_vbox.setSpacing(8)
+        self.lines_scroll.setWidget(self.lines_host)
+        self.lines_scroll.setMinimumHeight(230)
+        lay.addWidget(self.lines_scroll, 1)
+
+        # 连接其他官网线路
+        add_row = QHBoxLayout()
+        self.new_line_edit = QLineEdit()
+        self.new_line_edit.setPlaceholderText(tr("wenku8.login.new_line_ph"))
+        self.add_line_btn = QPushButton(tr("wenku8.login.add_line"))
+        self.add_line_btn.clicked.connect(self._on_add_line)
+        self._style_button(self.add_line_btn)
+        add_row.addWidget(self.new_line_edit, 1)
+        add_row.addWidget(self.add_line_btn)
+        lay.addLayout(add_row)
+
+        self.lines_result = QLabel("")
+        self.lines_result.setWordWrap(True)
+        lay.addWidget(self.lines_result)
+
+        # 保持登录开关
+        state = self._line_state()
+        self.keep_login_check = QCheckBox(tr("wenku8.login.keep_login"))
+        self.keep_login_check.setChecked(bool(state.get("keep_login", True)))
+        self.keep_login_check.stateChanged.connect(self._on_keep_login_changed)
+        lay.addWidget(self.keep_login_check)
+
+        self._render_lines()
+        return page
+
+    def _line_state(self) -> dict:
+        from .wenku8_core.wenku8_auth import get_lines_state
+        return get_lines_state()
+
+    def _state_text(self, state: str) -> str:
+        mapping = {
+            "unchecked": tr("wenku8.login.line_unchecked"),
+            "ok": tr("wenku8.login.line_ok"),
+            "guest": tr("wenku8.login.line_guest"),
+            "closed": tr("wenku8.login.line_closed"),
+            "blocked": tr("wenku8.login.line_blocked"),
+            "error": tr("wenku8.login.line_error"),
+        }
+        return mapping.get(state, state)
+
+    def _render_lines(self) -> None:
+        """重建线路卡片列表。"""
+        # 同步清空旧卡片
+        while self.lines_vbox.count():
+            item = self.lines_vbox.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        state = self._line_state()
+        active = str(state.get("active") or "")
+        for ln in state["lines"]:
+            base = ln["base"]
+            card = QFrame()
+            card.setStyleSheet(
+                f"QFrame {{ background-color: {self._line_card_bg()}; "
+                f"border: 1px solid {BORDER_LIGHT}; border-radius: 10px; }}"
+            )
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            cv = QVBoxLayout(card)
+            cv.setContentsMargins(12, 10, 12, 10)
+            cv.setSpacing(6)
+
+            is_active = base == active
+            title = QLabel(ln.get("label") or base)
+            title.setStyleSheet(
+                f"font-weight: bold; font-size: 13px; color: "
+                + (ACCENT if self._dark else ACCENT_DARK) + ";"
+            )
+            cv.addWidget(title)
+
+            status_parts = [base]
+            if ln.get("cookie"):
+                status_parts.append(tr("wenku8.login.line_saved"))
+            status_parts.append(self._state_text(ln.get("state", "unchecked")))
+            if ln.get("detail"):
+                status_parts.append(ln["detail"])
+            status = QLabel(" · ".join(status_parts))
+            status.setWordWrap(True)
+            status.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+            cv.addWidget(status)
+
+            row = QHBoxLayout()
+            check_btn = QPushButton(tr("wenku8.login.line_check"))
+            check_btn.clicked.connect(lambda _c=False, b=base: self._on_check_line(b))
+            self._style_button(check_btn)
+            row.addWidget(check_btn)
+            if is_active:
+                active_lbl = QLabel(tr("wenku8.login.line_active"))
+                active_lbl.setStyleSheet(
+                    f"color: {TEXT_DIM}; font-size: 12px; padding: 0 8px;")
+                row.addWidget(active_lbl)
+            else:
+                switch_btn = QPushButton(tr("wenku8.login.line_switch"))
+                switch_btn.clicked.connect(
+                    lambda _c=False, b=base: self._on_switch_line(b))
+                self._style_button(switch_btn)
+                row.addWidget(switch_btn)
+            # 自定义线路可删除
+            from .wenku8_core.wenku8_auth import _BASE_CANDIDATES
+            if base not in _BASE_CANDIDATES:
+                del_btn = QPushButton(tr("wenku8.login.line_remove"))
+                del_btn.clicked.connect(lambda _c=False, b=base: self._on_remove_line(b))
+                del_btn.setStyleSheet(
+                    "QPushButton { color: #c62828; background: transparent; "
+                    "border: none; font-size: 11px; }")
+                row.addWidget(del_btn)
+            row.addStretch()
+            cv.addLayout(row)
+            self.lines_vbox.addWidget(card)
+        self.lines_vbox.addStretch()
+
+    def _line_card_bg(self) -> str:
+        return "#2b2438" if self._dark else "#f3eff6"
+
+    def _on_check_all(self) -> None:
+        state = self._line_state()
+        self.check_all_btn.setEnabled(False)
+        self.lines_result.setText(tr("wenku8.login.checking_all"))
+        QApplication.processEvents()
+        self._check_remaining = len(state["lines"])
+        for ln in state["lines"]:
+            self._check_one_line(ln["base"], ln.get("cookie", ""),
+                                 on_done=self._on_one_check_batch_done)
+
+    def _on_one_check_batch_done(self) -> None:
+        """批量检测：最后一个完成后统一刷新卡片并恢复按钮。"""
+        self._check_remaining = getattr(self, "_check_remaining", 1) - 1
+        if self._check_remaining <= 0:
+            self.check_all_btn.setEnabled(True)
+            self.lines_result.setText(tr("wenku8.login.check_all_done"))
+            self._render_lines()
+
+    def _on_check_line(self, base: str) -> None:
+        state = self._line_state()
+        cookie = next(
+            (ln.get("cookie", "") for ln in state["lines"] if ln["base"] == base), "")
+        self.lines_result.setText(tr("wenku8.login.line_checking"))
+        self._check_one_line(base, cookie, on_done=self._render_lines)
+
+    def _check_one_line(self, base: str, cookie: str, on_done) -> None:
+        """启动单条线路检测；on_done 是完成后调用的回调（无参）。"""
+        worker = _LineCheckWorker(base, cookie, self)
+        self._line_workers.append(worker)
+
+        def _done(b, state, detail):
+            self.lines_result.setText(
+                tr("wenku8.login.line_checked", base=b, state=self._state_text(state)))
+            if callable(on_done):
+                on_done()
+        worker.finished_ok.connect(_done)
+        worker.start()
+
+    def _on_switch_line(self, base: str) -> None:
+        from .wenku8_core.wenku8_auth import set_active_base
+        set_active_base(base)
+        self.lines_result.setText(tr("wenku8.login.line_switched", base=base))
+        self.lines_result.setStyleSheet("color: #2e7d32;")
+        self._render_lines()
+        self._refresh_status()
+
+    def _on_add_line(self) -> None:
+        from .wenku8_core.wenku8_auth import add_line
+        raw = self.new_line_edit.text().strip()
+        ok, base, msg = add_line(raw)
+        if ok:
+            self.new_line_edit.clear()
+            self.lines_result.setText(msg)
+            self.lines_result.setStyleSheet("color: #2e7d32;")
+            self._render_lines()
+        else:
+            self.lines_result.setText(msg)
+            self.lines_result.setStyleSheet("color: #c62828;")
+
+    def _on_remove_line(self, base: str) -> None:
+        from .wenku8_core.wenku8_auth import remove_line
+        if remove_line(base):
+            self.lines_result.setText(tr("wenku8.login.line_removed", base=base))
+            self.lines_result.setStyleSheet(f"color: {TEXT_DIM};")
+            self._render_lines()
+
+    def _on_keep_login_changed(self, state) -> None:
+        from .wenku8_core.wenku8_auth import get_lines_state, save_lines_state
+        data = get_lines_state()
+        data["keep_login"] = bool(state)
+        save_lines_state(data)
 
     # ------------------------------------------------------------------ 账号密码
     def _on_login(self) -> None:
@@ -287,6 +529,7 @@ class Wenku8LoginDialog(QDialog):
         self.setWindowTitle(tr("wenku8.login.title"))
         self.tabs.setTabText(0, tr("wenku8.login.tab_password"))
         self.tabs.setTabText(1, tr("wenku8.login.tab_cookie"))
+        self.tabs.setTabText(2, tr("wenku8.login.tab_lines"))
         self.username_edit.setPlaceholderText(tr("wenku8.login.username"))
         self.password_edit.setPlaceholderText(tr("wenku8.login.password"))
         self.login_btn.setText(tr("wenku8.login.login_btn"))
@@ -294,4 +537,10 @@ class Wenku8LoginDialog(QDialog):
         self.save_btn.setText(tr("wenku8.login.save"))
         self.reset_btn.setText(tr("wenku8.login.reset"))
         self.show_check.setText(tr("wenku8.login.show"))
+        if hasattr(self, "check_all_btn"):
+            self.check_all_btn.setText(tr("wenku8.login.check_all"))
+            self.new_line_edit.setPlaceholderText(tr("wenku8.login.new_line_ph"))
+            self.add_line_btn.setText(tr("wenku8.login.add_line"))
+            self.keep_login_check.setText(tr("wenku8.login.keep_login"))
+            self._render_lines()
         self._refresh_status()
