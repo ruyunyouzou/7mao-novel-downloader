@@ -385,6 +385,8 @@ class QueueView(QWidget):
             ("btn_cancel", "queue.cancel", "inazuma", True, self.cancel_selected),
             ("btn_retry", "queue.retry", "liyue", False, self.retry_selected),
             ("btn_clear", "queue.clear_done", "sumeru", True, self.clear_finished),
+            ("btn_remove", "queue.remove", "fontaine", True, self.remove_selected),
+            ("btn_clear_unfinished", "queue.clear_unfinished", "natlan", True, self.clear_unfinished),
         ]
         for attr, key, nation, danger, cb in btn_specs:
             b = QPushButton(tr(key))
@@ -608,6 +610,39 @@ class QueueView(QWidget):
         self.refresh()
         self.count_label.setText(tr("queue.count_cleared", n=n))
 
+    def remove_selected(self, task_id: Optional[str] = None) -> None:
+        """移除指定（或当前选中）的任意状态任务，含正在下载的任务。
+
+        正在下载的任务会先协作取消线程，避免回调在任务删除后又写回状态；
+        取消是异步的，这里不等线程结束，回调里 queue_update 找不到任务会静默失败。
+        """
+        tid = task_id or self._selected_id
+        task = self.store.queue_find(tid) if tid else None
+        if not task:
+            QMessageBox.information(self, tr("common.tip"), tr("queue.select_remove"))
+            return
+        runner = self._runners.get(tid)
+        if runner is not None:
+            runner.cancel()
+        self.store.queue_remove(tid)
+        self._cleanup_runner(tid)
+        if self._selected_id == tid:
+            self._selected_id = ""
+        self.refresh()
+        self.count_label.setText(tr("queue.count_removed", n=1))
+
+    def clear_unfinished(self) -> None:
+        """批量清除所有未完成任务（等待/下载中/暂停/中断）。"""
+        # 先取消所有活跃下载线程，避免删除后回调把状态写回已不存在的任务
+        for tid, runner in list(self._runners.items()):
+            runner.cancel()
+            self._cleanup_runner(tid)
+        n = self.store.queue_clear_unfinished()
+        if self._selected_id:
+            self._selected_id = ""
+        self.refresh()
+        self.count_label.setText(tr("queue.count_cleared", n=n))
+
     def _go_search(self) -> None:
         """空状态「去搜索」：切到搜索页。"""
         goto_search_page(self)
@@ -630,6 +665,11 @@ class QueueView(QWidget):
             elif status in ("failed", "cancelled", "interrupted"):
                 a = menu.addAction(tr("queue.retry"))
                 a.triggered.connect(self.retry_selected)
+        # 无论任务当前状态，都可直接移除该任务 / 批量清除未完成
+        a = menu.addAction(tr("queue.remove"))
+        a.triggered.connect(lambda checked=False, tid=task_id: self.remove_selected(tid))
+        a = menu.addAction(tr("queue.clear_unfinished"))
+        a.triggered.connect(self.clear_unfinished)
         a = menu.addAction(tr("queue.clear_done"))
         a.triggered.connect(self.clear_finished)
         menu.exec(pos)
@@ -681,6 +721,8 @@ class QueueView(QWidget):
         self.btn_cancel.setText(tr("queue.cancel"))
         self.btn_retry.setText(tr("queue.retry"))
         self.btn_clear.setText(tr("queue.clear_done"))
+        self.btn_remove.setText(tr("queue.remove"))
+        self.btn_clear_unfinished.setText(tr("queue.clear_unfinished"))
         self.btn_go_search.setText(tr("queue.go_search"))
         self.empty_title.setText(tr("queue.empty_title"))
         self.empty_hint.setText(tr("queue.empty_hint"))

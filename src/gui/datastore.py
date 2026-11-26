@@ -207,6 +207,23 @@ class DataStore:
                 self._save(self.queue_path, self._queue)
             return removed
 
+    def queue_clear_unfinished(self) -> int:
+        """清除未完成的任务（等待/下载中/暂停/中断），返回清除数量。
+
+        与 queue_clear_finished 互补：后者清 done/failed/cancelled，
+        本方法清其余状态。残留 .part 临时文件由下载内核的取消流程自行回收。
+        """
+        with self._lock:
+            before = len(self._queue)
+            self._queue = [
+                t for t in self._queue
+                if t.get("status") not in ("waiting", "downloading", "paused", "interrupted")
+            ]
+            removed = before - len(self._queue)
+            if removed:
+                self._save(self.queue_path, self._queue)
+            return removed
+
     def queue_all(self) -> List[Dict[str, Any]]:
         with self._lock:
             return deepcopy(self._queue)
