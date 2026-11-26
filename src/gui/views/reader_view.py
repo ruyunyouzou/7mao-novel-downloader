@@ -23,7 +23,7 @@ from PySide6.QtGui import QFont, QKeySequence, QShortcut, QPixmap, QImage, QPain
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextBrowser, QListWidget, QPushButton,
     QComboBox, QSlider, QLabel, QSplitter, QMessageBox, QMenu,
-    QFrame, QScrollArea, QWidgetAction, QGraphicsOpacityEffect,
+    QFrame, QScrollArea, QWidgetAction, QGraphicsOpacityEffect, QCheckBox,
 )
 
 from ..datastore import DataStore
@@ -455,6 +455,13 @@ class ReaderView(QWidget):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_index_changed)
         row_mode.addWidget(self.mode_combo)
         v.addLayout(row_mode)
+
+        # 段落首行缩进开关：像读纸质文章一样每段空两格，仅影响阅读显示
+        self.indent_check = QCheckBox(tr("reader.indent"))
+        self.indent_check.setToolTip(tr("reader.indent_tip"))
+        self.indent_check.setChecked(bool(self.store.settings_get("reader_indent", True)))
+        self.indent_check.toggled.connect(self._on_indent_changed)
+        v.addWidget(self.indent_check)
 
         from PySide6.QtWidgets import QWidgetAction
         act = QWidgetAction(self.settings_menu)
@@ -1032,22 +1039,72 @@ class ReaderView(QWidget):
 
     # ------------------------------------------------------------------ 渲染与导航
 
+    _PARA_STYLE = "margin:0 0 0.75em; text-align:justify;"
+
+    @staticmethod
+    def _body_html(content: str, dark: bool, dialogue: bool) -> str:
+        """把章节纯文本渲染成正文 HTML（仅显示层，不改原始 content）。
+
+        每段以独立 <p> 承载（首行缩进由 _apply_indent 在 setHtml 后按文本块设置，
+        因为 Qt 富文本不支持 CSS text-indent，且全角空格会被 Qt 吞掉）。原文行首
+        已有的空格先去掉，避免与 textIndent 叠加成"缩进四字"。对话着色产出的
+        <span> 原样保留。
+        """
+        from html import escape
+        if dialogue:
+            # 着色返回 <br/> 连接的若干行，逐行拆开分别包成段落
+            lines = highlight_text(content, dark=dark).split("<br/>")
+            rendered = [ln.strip() for ln in lines]
+        else:
+            rendered = [escape(ln).strip() for ln in content.split("\n")]
+        rendered = [ln for ln in rendered if ln]
+        if not rendered:
+            return ""
+        return "".join(
+            f"<p style='{ReaderView._PARA_STYLE}'>{ln}</p>" for ln in rendered
+        )
+
+    def _apply_indent(self, enabled: bool) -> None:
+        """对每个正文文本块设置原生首行缩进（QTextBlockFormat.textIndent）。
+
+        相比在 HTML 里塞空格：字号自适应（2×当前字高≈两个中文字），且不改动
+        对话着色的 <span> 结构。enabled=False 时归零，恢复顶格排版。
+        """
+        from PySide6.QtGui import QTextCursor, QFontMetrics
+        doc = self.text.document()
+        px = QFontMetrics(self.text.font()).height() * 2 if enabled else 0
+        # 第 0 块永远是章节标题（h2），保持顶格；正文段落从块 1 起缩进
+        cur = QTextCursor(doc)
+        cur.movePosition(QTextCursor.Start)
+        cur.movePosition(QTextCursor.NextBlock)
+        cur.beginEditBlock()
+        while True:
+            fmt = cur.blockFormat()
+            if int(fmt.textIndent()) != int(px):
+                fmt.setTextIndent(px)
+                cur.setBlockFormat(fmt)
+            if not cur.movePosition(QTextCursor.NextBlock):
+                break
+        cur.endEditBlock()
+
     def _render_chapter(self, index: int) -> None:
         if index < 0 or index >= len(self.chapters):
             return
         self.current_index = index
         ch = self.chapters[index]
         from html import escape
-        # 对话着色只在渲染层生效：原始 ch["content"] 与导出/下载文件都不变
-        if getattr(self, "act_dialogue", None) is not None and self.act_dialogue.isChecked():
-            body = highlight_text(ch["content"], dark=self._paper_colors()[1])
-        else:
-            body = escape(ch["content"]).replace("\n", "<br/>")
+        # 对话着色 / 段落缩进都只在渲染层生效：原始 ch["content"] 与导出/下载文件都不变
+        dialogue = (getattr(self, "act_dialogue", None) is not None
+                    and self.act_dialogue.isChecked())
+        body = self._body_html(ch["content"], dark=self._paper_colors()[1],
+                               dialogue=dialogue)
         # 正文标题优先用带章数的目录标题，与目录一致
         heading = ch.get("catalog_title") or ch["title"]
         self.text.setHtml(
-            f"<div style='line-height:1.8;'><h2>{escape(heading)}</h2><p>{body}</p></div>"
+            f"<div style='line-height:1.8;'><h2>{escape(heading)}</h2>{body}</div>"
         )
+        # 首行缩进：按文本块设置原生 textIndent（字号自适应，兼容对话着色）
+        self._apply_indent(bool(self.store.settings_get("reader_indent", True)))
         self.text.verticalScrollBar().setValue(0)
         self.btn_prev.setEnabled(index > 0)
         self.btn_next.setEnabled(index < len(self.chapters) - 1)
@@ -1198,6 +1255,14 @@ class ReaderView(QWidget):
                 and self.act_dialogue.isChecked():
             self._pending_reflow = True
             self._reflow_timer.start()
+
+    def _on_indent_changed(self, checked: bool) -> None:
+        """段落缩进开关：持久化并只重渲染当前章，不动原始文本/导出文件。"""
+        self._save_setting("reader_indent", bool(checked))
+        if self.chapters:
+            scroll = self.text.verticalScrollBar().value()
+            self._render_chapter(self.current_index)
+            self.text.verticalScrollBar().setValue(scroll)
 
     def _toggle_dialogue(self, checked: bool = None) -> None:
         """对话着色开关：只重渲染当前章，不动原始数据。"""
@@ -1396,6 +1461,11 @@ class ReaderView(QWidget):
         midx = self.mode_combo.findData(str(mode))
         if midx >= 0:
             self.mode_combo.setCurrentIndex(midx)
+        # 恢复段落缩进开关（默认开；blockSignals 避免在 UI 就绪前触发重渲染）
+        if hasattr(self, "indent_check"):
+            self.indent_check.blockSignals(True)
+            self.indent_check.setChecked(bool(self.store.settings_get("reader_indent", True)))
+            self.indent_check.blockSignals(False)
         # 恢复对话着色开关（blockSignals 避免在 UI 就绪前触发重渲染）
         dialogue = bool(self.store.settings_get("dialogue_color", False))
         self.act_dialogue.blockSignals(True)
@@ -1458,6 +1528,9 @@ class ReaderView(QWidget):
             self.theme_combo.setItemText(i, tr(_THEME_LABELS.get(key, "reader.theme.light")))
         self.mode_combo.setItemText(0, tr("reader.mode.scroll"))
         self.mode_combo.setItemText(1, tr("reader.mode.page"))
+        if hasattr(self, "indent_check"):
+            self.indent_check.setText(tr("reader.indent"))
+            self.indent_check.setToolTip(tr("reader.indent_tip"))
         # 欢迎页
         if hasattr(self, "welcome_title"):
             self.welcome_title.setText(tr("reader.welcome_title"))

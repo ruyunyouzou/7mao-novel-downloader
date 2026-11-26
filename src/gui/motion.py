@@ -106,6 +106,22 @@ def fade_in_page(widget: Optional[QWidget], rise: int = 10) -> Optional[QPropert
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.setEasingCurve(_curve())
+
+        def _on_fade_finished():
+            # 淡入完成后立即摘除 effect：页面常驻 QGraphicsEffect 会与选色时
+            # central 上的过渡特效形成父子嵌套，触发离屏合成错位（文字被裁/
+            # 图标丢失/内容偏移）。淡入只是一瞬间，没必要让特效一直挂着。
+            if getattr(widget, "_motion_effect", None) is not effect:
+                return
+            try:
+                widget.setGraphicsEffect(None)
+                effect.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+            setattr(widget, "_motion_effect", None)
+            setattr(widget, "_motion_anim", None)
+
+        anim.finished.connect(_on_fade_finished)
         setattr(widget, "_motion_anim", anim)
         anim.start()
 
@@ -156,8 +172,15 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
                     fade_out: int = 90, fade_in: int = 150) -> bool:
     """交叉淡入淡出地执行一次性视图变更（主题/背景切换用）。
 
-    流程：把 widget 整体淡出到略透明 → 在最低点执行 ``apply_fn()``（重绘/换色）→
-    再淡入回不透明。这样把一次性、生硬的全量重绘藏在渐变里，观感丝滑。
+    流程：在 widget 上方盖一层半透明遮罩并逐渐加深 → 在最暗点执行 ``apply_fn()``
+    （重绘/换色）→ 遮罩渐隐消失。这样把一次性、生硬的全量重绘藏在渐变里。
+
+    **为什么用遮罩而不是给 widget 本身挂 QGraphicsOpacityEffect**：
+    central 容器内含 QSplitter、自定义绘制的导航栏、滚动区等复杂子控件，且当前页
+    （见 fade_in_page）本身可能也挂着 effect。父子同时挂 QGraphicsEffect 会触发 Qt
+    离屏合成冲突——表现为选色后导航栏图标丢失、文字被裁、内容区视觉错位、整体变暗。
+    用一层独立的、鼠标穿透的遮罩做淡入淡出，widget 自身永不挂 effect，从根本上消除
+    嵌套特效冲突；遮罩动画结束即删除，不会残留半透明状态。
 
     - ``apply_fn`` 必须是无参可调用，且只做同步视图变更；
     - 全局动效关闭 / offscreen 环境下：直接同步执行 ``apply_fn()``，返回 False；
@@ -177,38 +200,50 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
             # 动画中：不重启动画，只把最新视图变更记下来，结束时补执行
             setattr(widget, "_crossfade_pending", apply_fn)
             return True
-        effect = getattr(widget, "_crossfade_effect", None)
-        if effect is None:
-            effect = QGraphicsOpacityEffect(widget)
-            widget.setGraphicsEffect(effect)
-            setattr(widget, "_crossfade_effect", effect)
+
+        # 独立遮罩层：盖在 widget 之上、鼠标穿透，绝不改动 widget 自身的 effect
+        overlay = QWidget(widget)
+        overlay.setObjectName("crossfadeOverlay")
+        overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        overlay.setStyleSheet("QWidget#crossfadeOverlay { background: #000; border: none; }")
+        overlay.setGeometry(widget.rect())
+        overlay.raise_()
+        setattr(widget, "_crossfade_overlay", overlay)
+
+        effect = QGraphicsOpacityEffect(overlay)
+        effect.setOpacity(0.0)
+        overlay.setGraphicsEffect(effect)
 
         setattr(widget, "_crossfade_running", True)
         anim_out = QPropertyAnimation(effect, b"opacity")
         anim_out.setDuration(_duration("page", fade_out))
-        anim_out.setStartValue(1.0)
-        anim_out.setEndValue(0.35)
+        anim_out.setStartValue(0.0)
+        anim_out.setEndValue(0.28)  # 遮罩最深也只盖 28%，过渡柔和
         anim_out.setEasingCurve(_curve(QEasingCurve.InQuad))
 
         anim_in = QPropertyAnimation(effect, b"opacity")
         anim_in.setDuration(_duration("page", fade_in))
-        anim_in.setStartValue(0.35)
-        anim_in.setEndValue(1.0)
+        anim_in.setStartValue(0.28)
+        anim_in.setEndValue(0.0)
         anim_in.setEasingCurve(_curve(QEasingCurve.OutCubic))
 
         def _on_out_finished():
             try:
-                apply_fn()  # 在透明度最低点做重绘，藏住生硬切换
+                apply_fn()  # 在遮罩最暗点做重绘，藏住生硬切换
             finally:
+                # 重绘可能改变布局尺寸，先让遮罩重新贴合再淡出
+                overlay.setGeometry(widget.rect())
+                overlay.raise_()
                 anim_in.start()
 
         def _on_in_finished():
             try:
-                widget.setGraphicsEffect(None)
+                overlay.setGraphicsEffect(None)
                 effect.deleteLater()
+                overlay.deleteLater()
             except Exception:  # noqa: BLE001
                 pass
-            setattr(widget, "_crossfade_effect", None)
+            setattr(widget, "_crossfade_overlay", None)
             setattr(widget, "_crossfade_running", False)
             setattr(widget, "_crossfade_anim_out", None)
             setattr(widget, "_crossfade_anim_in", None)
@@ -229,6 +264,13 @@ def crossfade_apply(widget: Optional[QWidget], apply_fn, *,
         return True
     except Exception:  # noqa: BLE001
         # 任何异常都退回同步执行，保证视图变更一定发生
+        overlay = getattr(widget, "_crossfade_overlay", None)
+        if overlay is not None:
+            try:
+                overlay.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+        setattr(widget, "_crossfade_overlay", None)
         setattr(widget, "_crossfade_running", False)
         apply_fn()
         return False
@@ -246,13 +288,21 @@ def cancel_crossfade(widget: Optional[QWidget]) -> None:
             except Exception:  # noqa: BLE001
                 pass
             setattr(widget, key, None)
+    # 遮罩层随动画新方案创建，取消时一并清理（widget 自身从不挂 effect）
+    overlay = getattr(widget, "_crossfade_overlay", None)
+    if overlay is not None:
+        try:
+            overlay.setGraphicsEffect(None)
+            overlay.deleteLater()
+        except Exception:  # noqa: BLE001
+            pass
     effect = getattr(widget, "_crossfade_effect", None)
     if effect is not None:
         try:
-            widget.setGraphicsEffect(None)
             effect.deleteLater()
         except Exception:  # noqa: BLE001
             pass
+    setattr(widget, "_crossfade_overlay", None)
     setattr(widget, "_crossfade_effect", None)
     setattr(widget, "_crossfade_running", False)
     setattr(widget, "_crossfade_pending", None)
