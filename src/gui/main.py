@@ -39,9 +39,13 @@ def main() -> None:
     window = MainWindow(pm)
     # 第二个实例请求激活时，恢复并显示本窗口
     guard.activated.connect(window._restore_from_tray)
-    window.show()
-    # 窗口首次显示淡入（动效关闭时为 no-op）
+    # 关键：必须在 show() 之前就把窗口设为全透明。否则 show() 会先以系统
+    # 默认样式渲染一帧（空白内容 + 原生标题栏的"白框"），随后才被淡入动画
+    # 设为透明——这正是双击快捷方式启动时一闪而过的白框/空窗口的根因。
+    # 先透明再 show，之后动画从 0 淡入，彻底消除这一帧。
     from . import motion
+    motion.prepare_fade_in(window)
+    window.show()
     motion.fade_in_window(window)
     try:
         code = app.exec()

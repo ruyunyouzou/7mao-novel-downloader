@@ -464,15 +464,55 @@ def install_combo_wheel_guard() -> None:
     app.installEventFilter(_combo_guard)
 
 
+def prepare_fade_in(window: Optional[QWidget]) -> None:
+    """在 ``window.show()`` 之前预置全透明，消除系统默认标题栏的空白首帧。
+
+    双击快捷方式启动时，若先 show() 再设透明，窗口会以原生样式闪出一帧
+    （空白内容 + 系统标题栏，即用户看到的"白框"）。必须在 show() 之前就
+    把 opacity 设为 0，让首次可见即是透明状态，再由 fade_in_window 淡入。
+    动效关闭时不设透明，避免窗口永久隐形。
+    """
+    if window is None or not _startup_anim_allowed():
+        return
+    try:
+        window.setWindowOpacity(0.0)
+        setattr(window, "_motion_window_prepared", True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _startup_anim_allowed() -> bool:
+    """启动淡入是否允许：仅尊重系统"减少动画"偏好，不受 ui_motion 影响。
+
+    因为这里的淡入是为了消除首帧白框（功能必需），不是装饰动效；
+    即使用户关了界面动效，也必须先透明再淡入，否则白框依旧。
+    """
+    try:
+        app = QApplication.instance()
+        if app is not None and hasattr(app, "styleHints"):
+            return bool(app.styleHints().animationEnabled())
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
 def fade_in_window(window: Optional[QWidget]) -> None:
     """窗口整体淡入（首次显示时用）。"""
-    if window is None or not enabled():
+    if window is None or not _startup_anim_allowed():
+        # 不允许动画时确保恢复不透明（prepare 可能留下透明态）
+        try:
+            if window is not None:
+                window.setWindowOpacity(1.0)
+        except Exception:  # noqa: BLE001
+            pass
         return
     try:
         if getattr(window, "_motion_window_shown", False):
             return
         setattr(window, "_motion_window_shown", True)
-        window.setWindowOpacity(0.0)
+        # 若 prepare 已预置透明则不重复设置（避免 show 后再次归零产生闪烁）
+        if not getattr(window, "_motion_window_prepared", False):
+            window.setWindowOpacity(0.0)
         anim = QPropertyAnimation(window, b"windowOpacity")
         anim.setDuration(_duration("page", 220))
         anim.setStartValue(0.0)
