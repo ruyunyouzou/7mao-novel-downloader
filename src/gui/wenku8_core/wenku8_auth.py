@@ -141,7 +141,7 @@ def is_logged_in(session: Optional[requests.Session] = None) -> bool:
     """探测登录态是否有效：访问首页看是否跳 login.php / 是否含会员标记。"""
     sess = session or make_session()
     try:
-        resp = sess.get(_BASE_URL + "/", timeout=15, allow_redirects=True)
+        resp = sess.get(get_base_url() + "/", timeout=15, allow_redirects=True)
         resp.encoding = "gbk"
         if "login.php" in resp.url:
             return False
@@ -149,3 +149,74 @@ def is_logged_in(session: Optional[requests.Session] = None) -> bool:
         return ("会员中心" in text or "我的书架" in text or "退出" in text)
     except Exception:  # noqa: BLE001
         return False
+
+
+# ---------------------------------------------------------------------------
+# 账号密码登录（协议来自抓包分析，交叉验证 guohuiyuan/go-novel-dl 等开源实现）
+# POST /login.php?do=submit&jumpurl=...  Body: username/password/usecookie/action/submit
+# 成功判定：响应 Cookie 含 jieqiUserInfo（响应可能是挑战页但 Set-Cookie 已生效）
+# ---------------------------------------------------------------------------
+
+def _build_login_form(username: str, password: str) -> dict:
+    """构造登录 POST 表单（纯函数，便于单测校验协议字段）。"""
+    # submit 按钮值是 GBK 编码的「登录」，用 latin-1 保留字节，
+    # requests 以 x-www-form-urlencoded 发送时按字节透传。
+    submit_gbk = "登录".encode("gbk")
+    return {
+        "username": str(username or "").strip(),
+        "password": str(password or ""),  # 站点明文传输，不做转换
+        "usecookie": "315360000",         # 记住登录一年
+        "action": "login",
+        "submit": submit_gbk,
+    }
+
+
+def login_with_password(username: str, password: str,
+                        base: Optional[str] = None) -> tuple[bool, str, str]:
+    """用账号密码登录文库8，成功返回 (True, cookie字符串, 提示)。
+
+    失败返回 (False, "", 原因)。登录成功后把新会话 Cookie 序列化为字符串，
+    可直接交给 set_cookie() 保存，与现有 Cookie 登录机制无缝复用。
+
+    注意：站点可能被 Cloudflare 风控（403 / 人机验证页），此时如实返回失败，
+    不伪造成功；用户可改用 Cookie 登录方式。
+    """
+    username = str(username or "").strip()
+    password = str(password or "")
+    if not username or not password:
+        return False, "", "账号或密码为空"
+    site = (base or get_base_url()).rstrip("/")
+    from urllib.parse import quote
+    jumpurl = site.replace("https://", "http://", 1) + "/index.php"
+    login_url = site + "/login.php?do=submit&jumpurl=" + quote(jumpurl, safe="")
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": _UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Content-Type": "application/x-www-form-urlencoded",
+        # 页面 HTTP/HTTPS 混用，浏览器实际发的是 http 源
+        "Origin": jumpurl.rsplit("/", 1)[0] + "/",
+        "Referer": jumpurl.rsplit("/", 1)[0] + "/",
+    })
+    try:
+        resp = sess.post(login_url, data=_build_login_form(username, password),
+                         timeout=20, allow_redirects=True)
+    except Exception as exc:  # noqa: BLE001
+        return False, "", f"登录请求失败：{exc}"
+    if resp.status_code == 403:
+        return False, "", "登录被站点风控拦截（403），请改用 Cookie 登录"
+    # 优先以 Cookie 判定成功（最可靠，响应文本可能是挑战页）
+    cookies = sess.cookies.get_dict()
+    text = resp.text or ""
+    ok = "jieqiUserInfo" in cookies
+    if not ok and ("登录成功" in text or "退出登录" in text or username in text):
+        ok = True
+    if not ok:
+        # 常见失败文案
+        if any(k in text for k in ("密码错误", "用户名不存在", "验证码", "登录失败")):
+            return False, "", "账号或密码错误（或需要验证码），请检查后重试"
+        return False, "", "登录未成功（可能是站点风控或页面结构变化），请改用 Cookie 登录"
+    # 序列化会话 Cookie 为 'k=v; k=v' 供现有机制保存
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    return True, cookie_str, "登录成功"

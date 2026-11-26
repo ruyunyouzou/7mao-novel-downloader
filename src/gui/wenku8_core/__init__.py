@@ -35,6 +35,7 @@ __all__ = [
     "make_session",
     "get_base_url",
     "probe_base_url",
+    "login_with_password",
 ]
 
 
@@ -51,9 +52,10 @@ def __getattr__(name: str):
         from . import wenku8_reader
         return getattr(wenku8_reader, name)
     if name in ("get_cookie", "set_cookie", "is_logged_in",
-                "get_base_url", "probe_base_url"):
+                "get_base_url", "probe_base_url", "login_with_password"):
         from .wenku8_auth import (
             get_cookie, set_cookie, is_logged_in, get_base_url, probe_base_url,
+            login_with_password,
         )
         return {
             "get_cookie": get_cookie,
@@ -61,5 +63,6 @@ def __getattr__(name: str):
             "is_logged_in": is_logged_in,
             "get_base_url": get_base_url,
             "probe_base_url": probe_base_url,
+            "login_with_password": login_with_password,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
