@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeout
 from typing import List, Optional
 from urllib.parse import quote
 
@@ -25,6 +26,18 @@ from .wenku8_reader import _decode
 
 # 文库分类：1-14（见 articlelist.php 导航）
 _CLASSES = list(range(1, 15))
+
+# 超时与预算（秒）：站点正常响应一般 1-3 秒，15 秒过长会让失败通道
+# 累加到半分钟。缩短单请求超时 + 熔断 + 总预算，结果覆盖逻辑完全不变。
+_REQUEST_TIMEOUT = 6          # 单个搜索/分类请求超时
+_SEARCH_BUDGET = 20           # 分类兜底整体时间预算，到点返回已抓取结果
+_BLOCK_MARKERS = ("<h1>Welcome</h1>", "Attention Required", "cf-error", "Just a moment")
+
+
+def _is_blocked(html: str) -> bool:
+    """是否为占位页/风控页：这类页面说明整条线路不可用，应立即熔断。"""
+    text = html or ""
+    return any(m.lower() in text.lower() for m in _BLOCK_MARKERS)
 
 # 站内搜索候选：不同站点版本参数名不同，逐个尝试直到拿到结果。
 # 真实书源配置（JackiuDeepInkSource / 开源阅读器）用的是
@@ -119,14 +132,15 @@ def _search_via_so_post(keyword: str, session, base: str, page: int = 1) -> List
                 base + "/so.php",
                 data=body,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=15,
+                timeout=_REQUEST_TIMEOUT,
                 allow_redirects=True,
             )
             html = _decode(resp)
         except Exception:  # noqa: BLE001
             continue
-        if "<h1>Welcome</h1>" in html or "Attention Required" in html:
-            continue
+        if _is_blocked(html):
+            # 风控/占位页：整条线路不可用，换编码也不会变好，立即停止
+            break
         books = _extract_books(html, base)
         hits = [b for b in books if _matches(keyword, b["title"])]
         if hits:
@@ -151,20 +165,23 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
     if post_hits:
         return post_hits
     for kw in kw_variants:
+        blocked = False
         for tpl in _SEARCH_ENDPOINTS:
             url = base + tpl.format(kw=kw)
             # 分页参数：仅当 >1 时附加（不同站点分页参数不一，优先 page）
             if page > 1:
                 url += f"&page={page}"
             try:
-                resp = session.get(url, timeout=15)
+                resp = session.get(url, timeout=_REQUEST_TIMEOUT)
                 html = _decode(resp)
             except Exception:  # noqa: BLE001
                 continue
             # 部分镜像（如 .cc）的搜索路径只返回 Welcome 占位页，
-            # 不是「没有结果」，必须视为该通道失效并继续下一个候选/兜底。
-            if "<h1>Welcome</h1>" in html or "Attention Required" in html:
-                continue
+            # 命中风控/占位页说明整条线路不可用：熔断所有剩余候选与编码，
+            # 不再逐个等 15 秒超时（这是先前半分钟延迟的主因）。
+            if _is_blocked(html):
+                blocked = True
+                break
             books = _extract_books(html, base)
             if not books:
                 continue
@@ -174,6 +191,8 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
                     b["_rel"] = _relevance(keyword, b["title"])
                 hits.sort(key=lambda b: -b["_rel"])
                 return hits
+        if blocked:
+            break  # 整条线路被拦，换编码无意义
     return []
 
 
@@ -181,9 +200,11 @@ def _fetch_class_page(cls: int, page: int, session, base: str) -> List[dict]:
     """抓单个分类页的书籍列表。session 应为该工作线程独占的实例。"""
     url = f"{base}/modules/article/articlelist.php?class={cls}&page={page}"
     try:
-        resp = session.get(url, timeout=15)
+        resp = session.get(url, timeout=_REQUEST_TIMEOUT)
         html = _decode(resp)
     except Exception:  # noqa: BLE001
+        return []
+    if _is_blocked(html):
         return []
     return _extract_books(html, base)
 
@@ -221,17 +242,38 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
             tls.session = s
         return _fetch_class_page(cls, p, s, base)
 
-    pool = ThreadPoolExecutor(max_workers=max(1, min(16, workers)))
+    # 并发度提高（抓取页数不变，覆盖不受影响）：112 页从 14 批降到 ~5 批。
+    pool = ThreadPoolExecutor(max_workers=max(8, min(24, workers * 3)))
+    deadline = time.monotonic() + _SEARCH_BUDGET
     try:
         fmap = {
             pool.submit(_grab, cls, p): (cls, p)
             for cls, p in tasks
         }
-        for fut in as_completed(fmap):
-            try:
-                all_books.extend(fut.result() or [])
-            except Exception:  # noqa: BLE001
-                pass
+        done_count = 0
+        try:
+            iterator = as_completed(fmap, timeout=_SEARCH_BUDGET)
+            for fut in iterator:
+                try:
+                    books = fut.result() or []
+                except Exception:  # noqa: BLE001
+                    books = []
+                all_books.extend(books)
+                done_count += 1
+                # 熔断：前 16 页全部无书（正常站点不可能），说明整站不可用，
+                # 取消剩余任务立即返回，避免空等 112 页 = 半分钟。
+                if done_count >= 16 and not any(b["title"] for b in all_books):
+                    for pending in fmap:
+                        pending.cancel()
+                    break
+                if time.monotonic() > deadline:
+                    for pending in fmap:
+                        pending.cancel()
+                    break
+        except FutureTimeout:
+            # 总预算到点：返回已抓到的结果，不阻塞界面
+            for pending in fmap:
+                pending.cancel()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

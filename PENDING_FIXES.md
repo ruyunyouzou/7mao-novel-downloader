@@ -6,8 +6,8 @@
 
 ## 当前状态
 
-- **基线版本**：**v5.0.11**（2026-11-27，用户「到底是哪的问题？好好找一下」；新增 POST /so.php 真实搜索通道）
-- **已修未发版**：**0 / 10**——新周期第 86–89 条已全部随 v5.0.11 发版
+- **基线版本**：**v5.0.12**（2026-11-27，用户「搜索延迟巨大，接近半分钟，修复不要影响功能」）
+- **已修未发版**：**0 / 10**——新周期第 86–90 条已全部随 v5.0.12 发版
 - **搜索0结果待用户本机取证（第 86 条）**：用户已官网登录、线路显示连接正常但搜「邻家天使」仍 0 结果。沙箱实测确认三处问题：①站内搜索 `quote()` 默认 UTF-8 而站点 GBK（已修为 GBK 优先/UTF-8 兜底）；②真实搜索接口需 `searchtype=articlename` 参数（已补，来源 JackiuDeepInkSource 书源配置）；③站点未登录时搜索/分类页均跳登录页——用户本机登录态是唯一变量。诊断脚本已改为**自动读取软件保存的 Cookie/使用中线路**（零输入双击即跑），需用户本机跑一次拿真实返回。**沙箱出口 IP 被 Cloudflare 403，无法自测用户已登录场景**
 - **官网登录实现（第 85 条）**：新增 `wenku8_browser_login.py`（`Wenku8BrowserLoginDialog` 内嵌 QWebEngineView + `cookieStore().cookieAdded` 监听 jieqiUserInfo，登录成功自动切命中线路并回写 Cookie）；登录对话框新增第 2 个 tab「官网登录」；i18n 加 10 键三语对齐；build.spec 加 QtWebEngine hiddenimports（PyInstaller 自带 hook 收集进程/资源）。验证：新增 6 项纯逻辑测试 + GUI 冒烟（4 tab）+ cookie 捕获闭环实测，全量 70 passed。**真实登录未实测**（沙箱 IP 被风控）；注意 WebEngine 打包后安装包体积会显著增大。参考项目在线组件为 `unavailableOnline()` 空壳（见报告 21.11），正式版实现闭源，本实现为自研等效方案
 - **发版说明**：v5.0.7 按用户明确发版指令启用（用户「不测了直接发新版本」，新周期已满 10 条）；tag `v5.0.7` 推送触发 GitHub Actions 构建 Release，资产 `_Windows_v5.0.7.zip`。**Cookie 策略**：公开安装包**不内置真实 Cookie**（登录入口仍可用、本机打包仍内置）；工作流为可选 Secret 注入，无 Secret 时自动跳过。历史：v5.0.6 含第 1 条黑框修复、v5.0.5 按用户明确发版指令启用（当时 7/10），新周期 7 条全部随本版发布。
@@ -16,7 +16,7 @@
 - **队列移除任务 / 清除未完成 / 番茄选封面预览 / 封面路径兜底 / 读者页缺少数据根治**：见下方第 54–56 条，已随 v5.0.3 发布
 - **发版包含**：v5.0.2 后新周期第 54–56 条（队列移除、番茄封面预览与本地封面兜底、完整浏览器头 + 重试根治读者页缺少数据失败）随 v5.0.3 发布
 - **六轮体检（第 52 条，追加项）**：静态与死代码 / 三语 / GUI 冒烟 / 双内核数据链路 / 线程与退出 / 结构冗余各一轮；已修 9 类问题（详见第 52 条），3 项待拍板重构已按推荐全部落地（见第 53 条）：弹窗 58 处国际化、七猫签名单一实现、CLI 归档 `src/legacy/`
-- **下一个待发布版本**：v5.0.12（新周期从 0/10 重新计数）
+- **下一个待发布版本**：v5.0.13（新周期从 0/10 重新计数）
 - **诊断工具（不计入发版条目）**：`wenku8_diagnose.py` + `运行文库8检测.bat`——用户本机双击运行的零依赖诊断脚本，用于取证文库8搜索/登录/线路/目录在真实网络下的表现（沙箱出口 IP 被 Cloudflare 风控，无法自测）。脚本同时测 GBK/UTF-8 两种搜索编码，若证实 GBK 有效而 UTF-8 无效，将修正 `wenku8_search.py` 的 `quote()` 编码（详见功能筛查报告 21.7）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -40,6 +40,7 @@
 
 | 编号 | 简述 | 涉及文件 | 修复日期 |
 |------|------|----------|----------|
+| 90 | **（新周期第 6 条，用户「文库8的搜索延迟巨大，接近半分钟了。修复这个问题不要影响任何功能」）** 定位延迟来源：站内搜索 POST(2 次) + GET(2 编码×6 接口=12 次) 串行、每次超时 15 秒，全部失败时累加近半分钟；分类兜底 14 类×8 页=112 页、8 并发、每页 15 秒。修复：①统一单请求超时 `_REQUEST_TIMEOUT=6` 秒（正常站点 1-3 秒响应，不影响命中）；②新增 `_is_blocked()` 识别 Welcome/Cloudflare 页，POST 与 GET 命中后**立即熔断**所有剩余候选与编码，不再逐个空等；③分类兜底并发 8→`min(24, workers*3)`、前 16 页全空熔断、20 秒总预算兜底，抓取页数与匹配算法一字未改，结果覆盖不变；④新增 `tests/test_wenku8_search_speed.py` 4 项（超时值/熔断/风控识别/正常命中不受影响）。**验证**：全量 **91 passed + 2 skipped + 23 subtests**，compileall PASS | `wenku8_search.py`、`tests/test_wenku8_search_speed.py` | 2026-11-27 |
 | 89 | **（新周期第 5 条，用户「到底是哪的问题？好好找一下，我已经登录了，但是并没有搜到书籍，参考一下我给你的那个项目，然后好好修复这个问题」+ 两张截图：线路 wenku8.net 已保存登录且连接正常，但搜索 0 结果）** 重新逐条核对参考 App 发行包字符串，发现它同时包含 `/so.php`、`/modules/article/search.php`、`?searchtype=`、`&searchkey=`、`/modules/article/articleinfo.php`。官网首页搜索表单实际是 `method="post" action="/so.php"`，字段 searchtype/searchkey/charset=gbk/Submit；此前所有搜索尝试均为 GET `/modules/article/search.php`，在部分线路落到 Welcome 占位页，导致「登录正常但搜不到」。修复：①`wenku8_search.py` 新增 `_search_via_so_post()`，按官网表单用 GBK 百分号编码 POST `/so.php`，命中即返回，优先于 GET 候选；②`_extract_books()` 增加 Jieqi 老模板 `articleinfo.php?id=|aid=` 书籍链接解析；③`wenku8_web_search.py` 浏览器兜底通道改为 POST /so.php 优先、GET 兜底；④新增 `tests/test_wenku8_search_post.py` 3 项（GBK body、articleinfo 解析、POST 优先跳过 GET）。**验证**：全量 **87 passed + 2 skipped + 23 subtests**，compileall PASS。**沙箱 .net 仍 403，需用户本机验证** | `wenku8_search.py`、`wenku8_web_search.py`、`tests/test_wenku8_search_post.py` | 2026-11-27 |
 | 88 | **（新周期第 4 条，用户提供账号密码 + 「轻小说文库不只有网站，还有 App」+「必须把这个问题给我解决了」）** 文库8搜索根治：用真实账号在 `.cc` 线路实测确认登录成功但站内搜索仍 0 命中；进一步抓到 `/modules/article/search.php`、`/so.php`、`app.wenku8.com/android.php` 均只返回 `<h1>Welcome</h1>` 占位页，根路径 `/search.php` 是已失效的 Google CSE。对照 mikufoxxx/Wenku8_Flutter 发行包提取到关键事实：①它硬编码 `www.wenku8.net`；②搜索地址带 `charset=gbk`；③用 WebView + Edge 143 指纹完成 Cloudflare 质询后同源 fetch。修复：`wenku8_search.py` 搜索地址补 `charset=gbk` 并识别 Welcome 占位页；`wenku8_auth.py` UA 对齐发行版 Edge 143；新增 `wenku8_web_search.py`——普通 requests 无结果时由内嵌 Chromium 加载官网首页、同源 fetch 搜索接口、按 GBK 解码并复用现有模糊匹配解析；`main_window.py` 接入该兜底通道（每轮搜索仅一次，防递归）。**验证**：新增 `tests/test_wenku8_web_search.py` 3 项；全量 **84 passed + 2 skipped + 23 subtests**；主窗口离屏创建通过；WebEngine 搜索通道离屏实测可执行（占位页返回空结果而不报错）。**沙箱 .net 仍被 Cloudflare 403，最终真实搜索需用户本机验证** | `wenku8_search.py`、`wenku8_auth.py`、`wenku8_web_search.py`（新增）、`main_window.py`、`tests/test_wenku8_web_search.py` | 2026-11-27 |
 | 87 | **（新周期第 3 条，用户「将有关于文库 8 功能的所有模块，都给我进行筛查。看看还有什么问题，不要等着我来问你。给我进行 10 遍审查。对每个有关功能模块10遍审查」）** 文库8 全模块 10 维度审查（登录态/Cookie、域名线路、搜索、详情目录正文、下载插件、并发线程、UI 集成、i18n 导出、异常边界、测试记账），覆盖 19 个源文件 + 7 个测试文件，发现 8 严重 + 8 中等问题并修复：①`check_line`/`probe_base_url` 先读 `resp.text` 再设 gbk，GBK 中文乱码致线路状态误判 guest / 域名探测必失败——改为先设 gbk 再读；②`Wenku8LoginDialog.retranslate` tab 顺序错位（新增官网登录 tab 后未同步），切语言后标题错乱——修正为 4 tab 正确顺序；③设置页改域名只写 `wenku8_base_url` 不同步线路 active，致搜索域名与官网线路页 active 分裂、Cookie 带错域名——`set_active_base(base, sync_cookie=False)`；④设置页改 Cookie 不同步线路独立 Cookie——补 `save_line_cookie`；⑤`verify_cookie_on_lines` 命中域名时清除线路残留「未登录」误标记；⑥`_search_categories` 多工作线程共享非线程安全 `requests.Session`——改为每工作线程独立 session（threading.local）；⑦`_LineCheckWorker` 完成后从存活列表移除、`closeEvent` 断开信号+中断+wait 避免关闭时竞态崩溃；⑧`fetch_chapter_text` 版权声明过滤的 and/or 优先级与漏过滤——改括号明确 + 只删明显来源推广句。**验证**：新增 `tests/test_wenku8_audit_fixes.py` 6 项（GBK 解码顺序、域名同步、tab 顺序、closeEvent 安全）；全量 **81 passed + 2 skipped + 23 subtests**；compileall PASS；i18n 三语零差异。`verify_cookie_on_lines` 兜底逻辑经测试约束保持不变（含 jieqiUserInfo 标志 + 网络受限时判有效，避免回归用户第 84 条修复） | `wenku8_auth.py`、`wenku8_login_dialog.py`、`main_window.py`、`wenku8_search.py`、`wenku8_reader.py`、`tests/test_wenku8_audit_fixes.py` | 2026-11-27 |
@@ -170,6 +171,7 @@
 
 | 版本 | 发布日期 | 包含的 bug 数 | 备注 |
 |------|----------|---------------|------|
+| v5.0.12 | 2026-11-27 | 1（新周期第 90 条） | 用户反馈搜索接近半分钟。超时 15→6 秒、风控页熔断、分类并发 8→24 + 20 秒预算；抓取页数/匹配逻辑不变，结果覆盖不受影响。全量 91 passed + 2 skipped + 23 subtests |
 | v5.0.11 | 2026-11-27 | 1（新周期第 89 条） | 用户追问「到底是哪的问题」后重新核对参考 App 与官网表单：新增 POST /so.php 真实搜索通道、兼容 articleinfo.php?id= 链接、浏览器兜底改 POST 优先。全量 87 passed + 2 skipped + 23 subtests |
 | v5.0.10 | 2026-11-27 | 3（新周期第 86–88 条） | 按用户「必须把文库8搜索问题解决了」启用。①搜索 GBK 编码 + searchtype 参数；②文库8全模块 10 遍审查修复 16 项；③对照参考 App 发行包根治搜索：补 charset=gbk、UA 换 Edge 143、识别 Welcome 占位页、新增内嵌浏览器同源 fetch 兜底通道。全量 84 passed + 2 skipped + 23 subtests，离屏 GUI 与 WebEngine 通道通过。沙箱 .net 仍被 Cloudflare 403，需用户本机验证 |
 | v5.0.9 | 2026-11-27 | 1（新周期第 85 条） | 用户「发布新版本」启用。新增「官网登录」：登录对话框内嵌浏览器打开官网登录页，用真实网页环境登录（可过人机验证/不被风控），成功后自动捕获 jieqiUserInfo 登录态、切到对应官网线路、回写 Cookie 并关窗回到软件，无需手动复制 document.cookie。全量 70 passed + 2 skipped + 23 subtests；三语 10 新键零差异。注意：安装包因内嵌 WebEngine 体积增大；真实官网登录沙箱未实测，需用户本机验证 |
