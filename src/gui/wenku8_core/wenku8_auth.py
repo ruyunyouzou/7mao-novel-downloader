@@ -118,13 +118,18 @@ def probe_base_url(session=None, timeout: int = 8) -> str:
     return _BASE_CANDIDATES[0]
 
 
-def make_session(cookie: Optional[str] = None, timeout: int = 20) -> requests.Session:
+def make_session(cookie: Optional[str] = None, timeout: int = 20,
+                 base: Optional[str] = None) -> requests.Session:
     """构造带登录态、浏览器头的 Session，供详情/目录/正文复用。
 
-    Cookie 的 domain 随当前站点域名动态调整（.net/.cc/.com），
-    避免旧版写死 `.wenku8.cc` 导致换域名后登录态失效。
+    Cookie 的 domain 随站点域名动态调整（.net/.cc/.com），避免旧版写死
+    `.wenku8.cc` 导致换域名后登录态失效。
+
+    :param base: 显式指定站点域名。验证用户粘贴的 Cookie 时必须传入 Cookie
+        实际来源的域名——否则默认 base 可能是 .net，而 Cookie 来自 .cc，
+        域名不匹配导致登录态被判无效。
     """
-    base = get_base_url()
+    base = (base or get_base_url()).rstrip("/")
     host = base.split("//", 1)[-1].split("/", 1)[0]
     cookie_domain = host[4:] if host.startswith("www.") else host
     sess = requests.Session()
@@ -143,16 +148,40 @@ def make_session(cookie: Optional[str] = None, timeout: int = 20) -> requests.Se
     return sess
 
 
-def is_logged_in(session: Optional[requests.Session] = None) -> bool:
-    """探测登录态是否有效：访问首页看是否跳 login.php / 是否含会员标记。"""
-    sess = session or make_session()
+def is_logged_in(session: Optional[requests.Session] = None,
+                 base: Optional[str] = None, strict: bool = False) -> bool:
+    """探测登录态是否有效。
+
+    判定优先级：
+    1. 宽松模式（strict=False，默认）：Session Cookie 含 jieqiUserInfo
+       （Jieqi CMS 登录标志）即判有效。这是最可靠的离线判据——不受域名
+       匹配 / Cloudflare 风控 / 站点改版文案变化影响。用户从浏览器复制的
+       完整 Cookie 含此标志，过去因域名不匹配或风控被误判「无效」。
+    2. 网络判定：访问首页，跳 login.php → 无效；含会员标记 → 有效。
+       注意文库8首页对游客公开，不能仅凭「没跳登录页 / 有书籍链接」判有效。
+
+    :param strict: True 时跳过 Cookie 标志判据，只认首页会员标记。
+        逐线路推断 Cookie 来源域名时用，避免含标志的 Cookie 在每条线路都命中。
+    """
+    site = (base or get_base_url()).rstrip("/")
+    sess = session or make_session(base=site)
+    if not strict:
+        try:
+            if str(sess.cookies.get_dict().get("jieqiUserInfo", "")).strip():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
     try:
-        resp = sess.get(get_base_url() + "/", timeout=15, allow_redirects=True)
-        resp.encoding = "gbk"
-        if "login.php" in resp.url:
+        resp = sess.get(site + "/", timeout=15, allow_redirects=True)
+        if "login.php" in resp.url.lower():
             return False
-        text = resp.text
-        return ("会员中心" in text or "我的书架" in text or "退出" in text)
+        # 站点全站 GBK；显式按 gbk 解码避免 requests 误判 utf-8 导致中文乱码
+        resp.encoding = "gbk"
+        text = resp.text or ""
+        # 登录后首页才出现的会员标记（游客首页没有）
+        if any(k in text for k in ("会员中心", "我的书架", "退出登录", "个人中心")):
+            return True
+        return False
     except Exception:  # noqa: BLE001
         return False
 
@@ -399,6 +428,64 @@ def set_line_checked(base: str, state_value: str, detail: str = "") -> None:
             ln["detail"] = str(detail or "")
             break
     save_lines_state(data)
+
+
+def verify_cookie_on_lines(cookie: str, timeout: int = 8) -> tuple[bool, str, str]:
+    """验证粘贴的完整 Cookie 是否为有效登录态，返回 (有效, 命中域名, 提示)。
+
+    用户从浏览器复制的 Cookie 只属于某一个域名（如 wenku8.cc），但软件
+    默认请求域名可能是另一个（如 .net）。过去把 Cookie 拿到错误域名验证，
+    站点不认 → 跳登录页 → 误判「登录态无效」。这里改为两层判定：
+
+    1. 逐线路严格探测（strict=True）：只认首页会员标记，用于推断 Cookie
+       真正来源域名；命中后设为使用中线路，下载立即用正确域名。
+    2. Cookie 标志兜底：Cookie 含 jieqiUserInfo 即确认登录态有效。即使
+       Cloudflare 风控导致所有线路探测失败，也不再把完整 Cookie 误判无效；
+       此时沿用当前使用中线路并如实提示「网络探测受限」。
+
+    不改 Cookie 值本身；网络异常不抛异常。
+    """
+    cookie = str(cookie or "").replace("\r", "").replace("\n", ";").strip()
+    if not cookie:
+        return False, "", "Cookie 为空"
+
+    # 登录态权威标志：Jieqi CMS 登录后写入，未登录时不存在
+    parsed = parse_cookie(cookie)
+    has_marker = bool(str(parsed.get("jieqiUserInfo", "")).strip())
+
+    state = get_lines_state()
+    bases = [ln["base"] for ln in state["lines"]]
+    # 兜底：状态里没有候选时补默认三条
+    for b in _BASE_CANDIDATES:
+        if b not in bases:
+            bases.append(b)
+
+    # 第一层：逐线路严格探测，推断来源域名
+    for base in bases:
+        try:
+            sess = make_session(cookie, timeout=timeout, base=base)
+            ok = is_logged_in(sess, base=base, strict=True)
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
+            # 命中域名 → 设为使用中线路，并同步 Cookie 到该线路
+            try:
+                set_active_base(base)
+                save_line_cookie(base, cookie)
+            except Exception:  # noqa: BLE001
+                pass
+            return True, base, f"登录态有效（线路：{base}）"
+
+    # 第二层：网络探测全失败时，登录标志明确仍判有效（如 Cloudflare 风控）
+    if has_marker:
+        active = get_active_base()
+        try:
+            save_line_cookie(active, cookie)
+        except Exception:  # noqa: BLE001
+            pass
+        return True, active, "登录态有效（依据 Cookie 登录标志；网络探测受限）"
+
+    return False, "", "Cookie 中未找到登录标志（jieqiUserInfo），且所有线路均未识别到登录态，请重新获取完整 Cookie"
 
 
 def classify_line_response(status: int, final_url: str, text: str) -> tuple[str, str]:

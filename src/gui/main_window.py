@@ -3117,9 +3117,9 @@ class MainWindow(QMainWindow):
 
         def _verify(c=cookie):
             try:
-                from gui.wenku8_core.wenku8_auth import make_session, is_logged_in
-                ok = is_logged_in(make_session(c))
-                msg = "文库8登录态有效 ✅" if ok else "文库8登录态无效，请重新获取 Cookie"
+                from gui.wenku8_core.wenku8_auth import verify_cookie_on_lines
+                ok, base, detail = verify_cookie_on_lines(c)
+                msg = f"文库8登录态有效 ✅（{detail}）" if ok else f"文库8登录态无效：{detail}"
             except Exception as exc:  # noqa: BLE001
                 msg = f"文库8 Cookie 校验失败：{exc}"
             self.log(msg)

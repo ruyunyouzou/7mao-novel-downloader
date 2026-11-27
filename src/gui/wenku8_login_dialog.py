@@ -33,9 +33,11 @@ class _VerifyWorker(QThread):
 
     def run(self) -> None:  # noqa: C901
         try:
-            from .wenku8_core.wenku8_auth import make_session, is_logged_in
-            ok = bool(is_logged_in(make_session(self.cookie)))
-            msg = tr("wenku8.login.valid") if ok else tr("wenku8.login.invalid")
+            from .wenku8_core.wenku8_auth import verify_cookie_on_lines
+            # 跨线路验证：Cookie 来自 .cc 就拿 .cc 验证，不再默认用 .net，
+            # 且以 jieqiUserInfo 标志兜底，避免完整 Cookie 被误判无效。
+            ok, _base, detail = verify_cookie_on_lines(self.cookie)
+            msg = detail if ok else f"{tr('wenku8.login.invalid')}：{detail}"
         except Exception as exc:  # noqa: BLE001
             ok, msg = False, tr("wenku8.login.error", err=str(exc))
         self.finished_ok.emit(ok, msg)

@@ -38,7 +38,7 @@ __all__ = [
     "login_with_password",
     "get_lines_state", "save_lines_state", "get_active_base", "set_active_base",
     "save_line_cookie", "add_line", "remove_line", "set_line_checked",
-    "classify_line_response", "check_line",
+    "classify_line_response", "check_line", "verify_cookie_on_lines",
 ]
 
 
@@ -70,7 +70,8 @@ def __getattr__(name: str):
         }[name]
     if name in ("get_lines_state", "save_lines_state", "get_active_base",
                 "set_active_base", "save_line_cookie", "add_line", "remove_line",
-                "set_line_checked", "classify_line_response", "check_line"):
+                "set_line_checked", "classify_line_response", "check_line",
+                "verify_cookie_on_lines"):
         from . import wenku8_auth
         return getattr(wenku8_auth, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
