@@ -27,7 +27,9 @@ from ..help_content import load_manual, manual_path
 from ..help_demos import DEMOS, demo_image
 from ..i18n import tr
 from ..resource_path import resource_path
-from ..style import accent_color, modern_scrollbar_qss
+from ..style import (
+    ACCENT_LABELS, ACCENT_PALETTES, accent_color, modern_scrollbar_qss,
+)
 from ..widgets import nation_icon
 from ..version import VERSION_LABEL
 
@@ -83,6 +85,183 @@ def _parse_sections(markdown: str) -> List[Tuple[str, str]]:
         result.append(("概览", "\n".join(intro).strip()))
     result.extend(sections)
     return result
+
+
+class _AccentDot(QFrame):
+    """色彩对话框里的主题色圆点，选中态用白色描边标识。"""
+
+    def __init__(self, key: str, palette: tuple, on_pick, parent=None) -> None:
+        super().__init__(parent)
+        self.key = key
+        self.on_pick = on_pick
+        self.setFixedSize(28, 28)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(ACCENT_LABELS.get(key, key))
+        main = palette[0] if palette else "#B39DDB"
+        gradient = palette[3] if len(palette) > 3 and palette[3] else ""
+        bg = ""
+        if gradient:
+            try:
+                from .. import nation_theme as nt
+                bg = f"background: {nt.qss_gradient(gradient)};"
+            except Exception:  # noqa: BLE001
+                bg = ""
+        if not bg:
+            bg = f"background-color: {main};"
+        self._bg = bg
+        self._selected = False
+        self._paint()
+
+    def _paint(self) -> None:
+        border = "#ffffff" if self._selected else "rgba(255,255,255,0.30)"
+        self.setStyleSheet(
+            f"QFrame {{ {self._bg} border: 2px solid {border}; border-radius: 14px; }}")
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+        self._paint()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.on_pick(self.key)
+
+
+class HelpColorDialog(QDialog):
+    """使用说明页内的色彩修改入口：主题色 + 深浅模式 + 完整配色中心。"""
+
+    def __init__(self, view: "HelpView", parent=None) -> None:
+        super().__init__(parent or view)
+        self.view = view
+        self.store = view.store
+        self.setWindowTitle(tr("help.color_title"))
+        self.setModal(True)
+        self.setMinimumWidth(440)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
+
+        hint = QLabel(tr("help.color_hint"))
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        root.addWidget(self._section_label(tr("help.color_accent")))
+        dot_row = QHBoxLayout()
+        dot_row.setSpacing(12)
+        self.dots = {}
+        cur = str(self.store.settings_get("accent_color", "purple") or "purple")
+        for key, palette in ACCENT_PALETTES.items():
+            dot = _AccentDot(key, palette, self._pick_accent, self)
+            dot.set_selected(key == cur)
+            self.dots[key] = dot
+            cell = QVBoxLayout()
+            cell.setSpacing(4)
+            cell.addWidget(dot, 0, Qt.AlignHCenter)
+            cap = QLabel(ACCENT_LABELS.get(key, key))
+            cap.setAlignment(Qt.AlignHCenter)
+            cell.addWidget(cap)
+            dot_row.addLayout(cell)
+        dot_row.addStretch(1)
+        root.addLayout(dot_row)
+
+        root.addWidget(self._section_label(tr("help.color_mode")))
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.dark_btn = QPushButton(tr("help.color_dark"))
+        self.light_btn = QPushButton(tr("help.color_light"))
+        self.dark_btn.setCheckable(True)
+        self.light_btn.setCheckable(True)
+        self.dark_btn.clicked.connect(lambda: self._set_theme(True))
+        self.light_btn.clicked.connect(lambda: self._set_theme(False))
+        mode_row.addWidget(self.dark_btn)
+        mode_row.addWidget(self.light_btn)
+        mode_row.addStretch(1)
+        root.addLayout(mode_row)
+
+        root.addStretch(1)
+
+        actions = QHBoxLayout()
+        more_btn = QPushButton(tr("help.color_more"))
+        more_btn.clicked.connect(self._open_settings)
+        close_btn = QPushButton(tr("help.color_close"))
+        close_btn.clicked.connect(self.accept)
+        actions.addWidget(more_btn)
+        actions.addStretch(1)
+        actions.addWidget(close_btn)
+        root.addLayout(actions)
+
+        self._refresh()
+        self._apply_dialog_style()
+
+    @staticmethod
+    def _section_label(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setStyleSheet("font-weight: 600; font-size: 13px;")
+        return lab
+
+    def _apply_dialog_style(self) -> None:
+        dark = getattr(self.view, "_dark", True)
+        if dark:
+            bg, text, dim = "#211e19", "#e8dfcf", "#a99c86"
+            border, btn_bg = "#463f33", "#2b2721"
+        else:
+            bg, text, dim = "#f5f1e8", "#4a4136", "#9a9082"
+            border, btn_bg = "#d8cfbc", "#ffffff"
+        accent = getattr(self.view, "_accent", "#B39DDB")
+        self.setStyleSheet(
+            f"QDialog {{ background: {bg}; }}"
+            f"QLabel {{ color: {text}; background: transparent; }}"
+            f"QPushButton {{ background: {btn_bg}; color: {text}; "
+            f"border: 1px solid {border}; border-radius: 8px; padding: 7px 14px; }}"
+            f"QPushButton:checked {{ border: 2px solid {accent}; color: {accent}; "
+            f"font-weight: 600; }}"
+            f"QPushButton:hover {{ border-color: {accent}; }}")
+        for lab in self.findChildren(QLabel):
+            if lab.text() == tr("help.color_hint"):
+                lab.setStyleSheet(f"color: {dim}; background: transparent;")
+
+    def _refresh(self) -> None:
+        cur = str(self.store.settings_get("accent_color", "purple") or "purple")
+        for key, dot in self.dots.items():
+            dot.set_selected(key == cur)
+        dark = getattr(self.view, "_dark", True)
+        self.dark_btn.setChecked(bool(dark))
+        self.light_btn.setChecked(not dark)
+
+    def _reapply(self) -> None:
+        mw = self.view.main_window
+        apply = getattr(mw, "apply_style_animated", None)
+        if callable(apply):
+            apply()
+        else:
+            legacy = getattr(mw, "_apply_theme_color", None)
+            if callable(legacy):
+                legacy()
+        self.view.apply_colors()
+        self._apply_dialog_style()
+        self._refresh()
+
+    def _pick_accent(self, key: str) -> None:
+        self.store.settings_set("accent_color", key)
+        self._reapply()
+
+    def _set_theme(self, dark: bool) -> None:
+        mode = "dark" if dark else "light"
+        self.store.settings_set("theme_mode", mode)
+        mw = self.view.main_window
+        setter = getattr(mw, "set_theme_mode", None)
+        if callable(setter):
+            setter(mode)
+        self._reapply()
+
+    def _open_settings(self) -> None:
+        mw = self.view.main_window
+        tabs = getattr(mw, "tabs", None)
+        settings_view = getattr(mw, "settings_view", None)
+        if tabs is not None and settings_view is not None:
+            idx = tabs.indexOf(settings_view)
+            if idx >= 0:
+                tabs.setCurrentIndex(idx)
+        self.accept()
 
 
 class HelpView(QWidget):
@@ -170,6 +349,12 @@ class HelpView(QWidget):
         self.font_reset_btn.clicked.connect(self._reset_font_size)
         head.addWidget(self.font_reset_btn)
         self._update_font_btn()
+
+        # 色彩修改入口：首次引导用过一次后就消失，这里常驻工具栏
+        self.color_btn = QPushButton()
+        self.color_btn.setObjectName("helpColorBtn")
+        self.color_btn.clicked.connect(self._open_color_dialog)
+        head.addWidget(self.color_btn)
 
         self.open_btn = QPushButton()
         self.open_btn.setObjectName("helpOpenFile")
@@ -473,6 +658,11 @@ class HelpView(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    def _open_color_dialog(self) -> None:
+        """打开色彩修改对话框（主题色 / 深浅模式 / 完整配色中心）。"""
+        dlg = HelpColorDialog(self, self)
+        dlg.exec()
+
     # -------------------------------------------------------------- 搜索过滤
     def _filter_sections(self, keyword: str) -> None:
         """搜索：有关键词时在正文页显示匹配的章节列表；清空则回首页。"""
@@ -703,10 +893,16 @@ class HelpView(QWidget):
 
         # 工具按钮
         self.open_btn.setStyleSheet(
-            f"QPushButton {{ background: {btn_bg}; color: {btn_text}; "
+            f"QPushButton#helpOpenFile {{ background: {btn_bg}; color: {btn_text}; "
             f"border: 1px solid {border}; border-radius: 18px; padding: 7px 16px; "
             f"font-family: {serif}; font-size: 12px; }}"
-            f"QPushButton:hover {{ background: {hover}; }}")
+            f"QPushButton#helpOpenFile:hover {{ background: {hover}; }}")
+        # 色彩入口用强调色实心按钮，避免像初版那样选完就找不到了
+        self.color_btn.setStyleSheet(
+            f"QPushButton#helpColorBtn {{ background: {self._accent}; color: #ffffff; "
+            f"border: none; border-radius: 18px; padding: 7px 16px; "
+            f"font-family: {serif}; font-size: 12px; font-weight: 600; }}"
+            f"QPushButton#helpColorBtn:hover {{ opacity: 0.85; }}")
         for btn in (self.back_btn, self.font_smaller_btn, self.font_size_btn,
                     self.font_bigger_btn, self.font_reset_btn):
             btn.setStyleSheet(
@@ -734,6 +930,8 @@ class HelpView(QWidget):
         self.setWindowTitle(self.window_title)
         self.title_label.setText(tr("help.title"))
         self.search_edit.setPlaceholderText(tr("help.search_placeholder"))
+        self.color_btn.setText(tr("help.color_btn"))
+        self.color_btn.setToolTip(tr("help.color_title"))
         self.open_btn.setText(tr("help.open_file"))
         self.back_btn.setText("‹ " + tr("help.back"))
         self.back_btn.setToolTip(tr("help.back"))
