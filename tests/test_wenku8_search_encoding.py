@@ -16,7 +16,6 @@ wenku8_search.py 旧代码 quote() 默认 UTF-8，把中文编成 %E9%82%BB...�
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))

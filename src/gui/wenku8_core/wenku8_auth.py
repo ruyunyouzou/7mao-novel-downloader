@@ -237,7 +237,10 @@ def login_with_password(username: str, password: str,
     except Exception as exc:  # noqa: BLE001
         return False, "", f"登录请求失败：{exc}"
     if resp.status_code == 403:
-        return False, "", "登录被站点风控拦截（403），请改用 Cookie 登录"
+        return False, "", "登录被站点风控拦截（403），请改用官网浏览器登录"
+    # 站点为 GBK：必须先显式设编码再取 text，否则中文失败文案会被
+    # requests 误判为 ISO-8859-1 而乱码，导致"密码错误/验证码"匹配失败。
+    resp.encoding = "gbk"
     # 优先以 Cookie 判定成功（最可靠，响应文本可能是挑战页）
     cookies = sess.cookies.get_dict()
     text = resp.text or ""
@@ -248,7 +251,7 @@ def login_with_password(username: str, password: str,
         # 常见失败文案
         if any(k in text for k in ("密码错误", "用户名不存在", "验证码", "登录失败")):
             return False, "", "账号或密码错误（或需要验证码），请检查后重试"
-        return False, "", "登录未成功（可能是站点风控或页面结构变化），请改用 Cookie 登录"
+        return False, "", "登录未成功（可能是站点风控或页面结构变化），请改用官网浏览器登录"
     # 序列化会话 Cookie 为 'k=v; k=v' 供现有机制保存
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
     return True, cookie_str, "登录成功"

@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import zipfile
+import re
 from typing import Any, Dict, Optional
 
 from .logutil import logger
@@ -197,7 +198,9 @@ def safe_extract(zip_path: str, target_dir: str, progress_cb=None) -> Dict[str, 
         with zipfile.ZipFile(zip_path) as zf:
             members = zf.infolist()
             bad = [m.filename for m in members
-                   if m.filename.startswith(("/", "\\")) or ".." in m.filename.replace("\\", "/").split("/")]
+                   if m.filename.startswith(("/", "\\"))
+                   or re.match(r"^[a-zA-Z]:", m.filename)  # Windows 盘符绝对路径
+                   or ".." in m.filename.replace("\\", "/").split("/")]
             if bad:
                 return {"ok": False, "error": "安装包包含非法路径，已拒绝解压"}
             total = len(members)

@@ -4,8 +4,6 @@
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from gui.wenku8_web_search import build_search_url, parse_search_html  # noqa: E402

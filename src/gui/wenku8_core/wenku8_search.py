@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeout
-from typing import List, Optional
+from typing import List
 from urllib.parse import quote
 
 from bs4 import BeautifulSoup

@@ -98,7 +98,7 @@ class TestLoginWithPassword(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(cookie, "")
         self.assertIn("403", msg)
-        self.assertIn("Cookie", msg)
+        self.assertIn("官网浏览器", msg)
 
     def test_wrong_password(self) -> None:
         sess, _ = _fake_session(cookies={}, text="密码错误，请重新输入")
@@ -107,6 +107,14 @@ class TestLoginWithPassword(unittest.TestCase):
             ok, cookie, msg = login_with_password("user", "wrong")
         self.assertFalse(ok)
         self.assertIn("密码错误", msg)
+
+    def test_login_response_decoded_as_gbk(self) -> None:
+        # 回归：登录响应必须显式设 GBK，否则中文失败文案乱码导致匹配失败。
+        sess, resp = _fake_session(cookies={}, text="验证码错误")
+        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+                   return_value=sess):
+            login_with_password("user", "pass")
+        self.assertEqual(resp.encoding, "gbk")
 
     def test_network_exception(self) -> None:
         sess, _ = _fake_session()

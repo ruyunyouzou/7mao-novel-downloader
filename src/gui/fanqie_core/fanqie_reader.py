@@ -430,7 +430,6 @@ def fetch_catalog_with_volumes(book_id: str, timeout: int = 12) -> list:
     if not bid:
         return []
     try:
-        sess = _get_session()
         page = fetch_page(f"https://fanqienovel.com/page/{bid}", retries=2, timeout=timeout)
         state = _initial_state(page)
         pg = state.get("page", {}) or {}
