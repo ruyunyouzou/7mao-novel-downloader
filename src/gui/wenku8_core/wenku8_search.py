@@ -31,6 +31,8 @@ _CLASSES = list(range(1, 15))
 #   /modules/article/search.php?searchtype=articlename&searchkey={kw}  (charset=gbk)
 # 参数 searchtype=articlename 是老接口必需，缺失时部分站点返回 Welcome 空页。
 _SEARCH_ENDPOINTS = (
+    # 与官网搜索表单（及 mikufoxxx/Wenku8_Flutter）完全一致：charset=gbk 必带
+    "/modules/article/search.php?searchtype=articlename&searchkey={kw}&charset=gbk",
     "/modules/article/search.php?searchtype=articlename&searchkey={kw}",
     "/modules/article/search.php?searchkey={kw}",
     "/search.php?keyword={kw}",
@@ -105,6 +107,10 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
                 resp = session.get(url, timeout=15)
                 html = _decode(resp)
             except Exception:  # noqa: BLE001
+                continue
+            # 部分镜像（如 .cc）的搜索路径只返回 Welcome 占位页，
+            # 不是「没有结果」，必须视为该通道失效并继续下一个候选/兜底。
+            if "<h1>Welcome</h1>" in html or "Attention Required" in html:
                 continue
             books = _extract_books(html, base)
             if not books:

@@ -2339,6 +2339,8 @@ class MainWindow(QMainWindow):
             source = (_source_key_from_index(combo.currentIndex())
                       if combo is not None else "qimao")
         self._search_source = source
+        # 文库8浏览器兜底每次新搜索只尝试一次，避免空结果递归
+        self._web_search_fallback_used = False
         self._update_pager_ui(False)
         self.search_btn.setEnabled(False)
         self.refresh_btn.setEnabled(False)
@@ -2451,6 +2453,12 @@ class MainWindow(QMainWindow):
         self._update_pager_ui(True)
         # 用本次实际发起搜索的关键词（翻页时输入框可能为空或已改），而非输入框当前文本
         keyword = getattr(self, "_search_keyword", "") or self.search_edit.text().strip()
+        # 文库8：requests 通道拿不到结果（站点搜索占位页 / Cloudflare）时，
+        # 按参考 App 的做法改用内嵌浏览器同源 fetch 再搜一次。
+        if (not results and getattr(self, "_search_source", "") == "wenku8"
+                and not getattr(self, "_web_search_fallback_used", False)):
+            self._start_wenku8_web_search(keyword, gen)
+            return
         self.pm.emit(Hook.ON_SEARCH, keyword, results)
         self.search_results = results
 
@@ -2485,6 +2493,41 @@ class MainWindow(QMainWindow):
                 self._load_detail(results[0])
 
         self.log(f"搜索完成，共 {len(results)} 条结果")
+
+    def _start_wenku8_web_search(self, keyword: str, gen: Optional[int]) -> None:
+        """文库8浏览器兜底搜索（GUI 线程 WebEngine，参考上游 App 的 WebView 通道）。"""
+        if gen is not None and gen != getattr(self, "_search_gen", 0):
+            return
+        self._web_search_fallback_used = True
+        old = getattr(self, "web_search", None)
+        if old is not None:
+            try:
+                old.finished.disconnect()
+                old.failed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        try:
+            from .wenku8_web_search import Wenku8WebSearch
+            self.web_search = Wenku8WebSearch(
+                keyword, page=getattr(self, "_search_page", 1), parent=self)
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"文库8浏览器搜索不可用：{exc}")
+            self._on_search_done([], gen)
+            return
+        self.web_search.finished.connect(
+            lambda rs, g=gen: self._on_web_search_done(rs, g))
+        self.web_search.failed.connect(
+            lambda msg, g=gen: self._on_web_search_failed(msg, g))
+        self.log(f"正在通过官网浏览器通道搜索文库8：{keyword} …")
+
+    def _on_web_search_done(self, results: list, gen: Optional[int]) -> None:
+        self.web_search = None
+        self._on_search_done(results or [], gen)
+
+    def _on_web_search_failed(self, message: str, gen: Optional[int]) -> None:
+        self.web_search = None
+        self.log(f"文库8浏览器搜索失败：{message}")
+        self._on_search_done([], gen)
 
     def _on_search_failed(self, message: str, gen: Optional[int] = None) -> None:
         # 代次校验：被取消的旧请求失败不应弹窗干扰用户

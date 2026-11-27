@@ -26,9 +26,11 @@ _LINE_LABELS = {
     "https://www.wenku8.com": "wenku8.com",
 }
 _BASE_URL = _BASE_CANDIDATES[0]  # 兼容旧引用；实际取域名请用 get_base_url()
+# 与 mikufoxxx/Wenku8_Flutter 发行版一致：WebView 走桌面 Edge 指纹，
+# Cloudflare 放行 WebView 后，requests 复用同一 UA 才能带 clearance 正常访问。
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
 )
 
 
