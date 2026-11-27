@@ -504,19 +504,20 @@ def test_search_via_novellist_matches_bracket_alias():
     assert hits[0]["cover_aid"] == "9999"
 
 
-def test_search_wenku8_uses_novellist_when_app_search_empty(monkeypatch):
-    """App API search 空时，搜索主流程要降级到榜单别名匹配。"""
+def test_search_wenku8_uses_local_index_when_site_search_empty(monkeypatch):
+    """站内搜索空时，搜索主流程降级到本地全站索引（通用别名覆盖）。"""
     from gui.wenku8_core import wenku8_search as s
+    from gui.wenku8_core import wenku8_index as idx
 
-    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_app_api",
-                        lambda kw, page=1: [])
-    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_novellist",
-                        lambda kw, session=None, pages=3: [{
-                            "id": "1034", "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
-                            "author": "晓佳奈", "cover_aid": "1034", "source": "wenku8",
-                        }])
-    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.enrich_app_books",
-                        lambda books, session=None: books)
+    monkeypatch.setattr(s, "_search_on_site", lambda *a, **k: [])
+    monkeypatch.setattr(idx, "search_index", lambda kw, limit=40: ["2353"])
+    monkeypatch.setattr(idx, "ensure_index_async", lambda **k: None)
+    monkeypatch.setattr("gui.wenku8_core.wenku8_reader.fetch_detail",
+                        lambda aid, session=None: {
+                            "id": aid,
+                            "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
+                            "author": "晓佳奈", "source": "wenku8",
+                        })
     results = s.search_wenku8("紫罗兰")
     assert len(results) == 1
     assert "紫罗兰永恒花园" in results[0]["title"]
@@ -576,38 +577,47 @@ def test_fetch_cover_data_falls_back_to_binary(monkeypatch):
     assert calls["bin"] == 1
 
 
-def test_alias_index_violet(monkeypatch):
-    """「紫罗兰」命中别名直达索引 → 返回 aid=2353 的详情页结果。"""
-    from gui.wenku8_core import wenku8_search as search
-    from gui.wenku8_core import wenku8_reader as reader
+def test_local_index_matches_any_alias(monkeypatch, tmp_path):
+    """通用索引对任意书名别名生效（非特判）：从列表页提取完整标题即可命中。"""
+    from gui.wenku8_core import wenku8_index as idx
 
-    monkeypatch.setattr(reader, "fetch_detail", lambda aid, session=None: {
-        "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
-        "author": "晓佳奈", "tags": "爱情,治愈", "words_num": "123456",
-        "intro": "自动手记人偶", "cover": "http://x/2353s.jpg",
+    fake_index = tmp_path / "wenku8_index.json"
+    monkeypatch.setattr(idx, "_INDEX_FILE", str(fake_index))
+    idx.save_index({
+        "2353": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
+        "1034": "恶魔高校DxD(High School DxD)",
+        "7777": "某冷门书(随便什么别名)",
     })
-    hits = search._search_alias_index("紫罗兰", None, "https://www.wenku8.cc")
-    assert len(hits) == 1
-    assert hits[0]["id"] == "2353"
-    assert "紫罗兰" in hits[0]["title"]
-    assert hits[0]["author"] == "晓佳奈"
+    assert idx.search_index("紫罗兰") == ["2353"]
+    assert idx.search_index("恶魔高校") == ["1034"]
+    assert idx.search_index("随便什么别名") == ["7777"]
+    assert idx.search_index("不存在") == []
 
 
-def test_alias_index_no_single_char(monkeypatch):
-    """单字查询不触发别名直达，避免误命中。"""
-    from gui.wenku8_core import wenku8_search as search
-    assert search._search_alias_index("紫", None, "https://www.wenku8.cc") == []
+def test_local_index_extracts_full_title_with_alias():
+    """列表页链接文本含括号别名，必须原样入索引。"""
+    from gui.wenku8_core import wenku8_index as idx
+
+    html = '''
+    <a href="/book/2353.htm">薇尔莉特·伊芙加登(紫罗兰永恒花园)</a>
+    <a href="/novel/1/1034/">恶魔高校DxD(High School DxD)</a>
+    <a href="articleinfo.php?id=7777">某冷门书(随便什么别名)</a>
+    <a href="/book/1.htm">我要阅读</a>
+    '''
+    got = idx.extract_books(html, "https://www.wenku8.cc")
+    assert got["2353"] == "薇尔莉特·伊芙加登(紫罗兰永恒花园)"
+    assert got["1034"] == "恶魔高校DxD(High School DxD)"
+    assert got["7777"] == "某冷门书(随便什么别名)"
+    assert "1" not in got
 
 
-def test_alias_index_demon_king(monkeypatch):
-    """「恶魔高校」命中 aid=1034。"""
-    from gui.wenku8_core import wenku8_search as search
-    from gui.wenku8_core import wenku8_reader as reader
-    monkeypatch.setattr(reader, "fetch_detail", lambda aid, session=None: {
-        "title": "恶魔高校DxD(High School DxD)", "author": "石踏一荣",
-    })
-    hits = search._search_alias_index("恶魔高校", None, "https://www.wenku8.cc")
-    assert hits and hits[0]["id"] == "1034"
+def test_local_index_no_single_char(monkeypatch, tmp_path):
+    """单字查询不走索引兜底，避免海量弱命中。"""
+    from gui.wenku8_core import wenku8_index as idx
+
+    monkeypatch.setattr(idx, "_INDEX_FILE", str(tmp_path / "i.json"))
+    idx.save_index({"2353": "薇尔莉特·伊芙加登(紫罗兰永恒花园)"})
+    assert idx.search_index("紫") == []
 
 
 def test_epub_cover_download_uses_ua_and_validates_image(monkeypatch):
