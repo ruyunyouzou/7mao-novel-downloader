@@ -317,7 +317,9 @@ class Wenku8LoginDialog(QDialog):
             cv.addWidget(title)
 
             status_parts = [base]
-            if ln.get("cookie"):
+            # 用「有效 Cookie」判断：线路自身没存但全局已登录也算有登录态，
+            # 否则历史数据会显示成未登录、误导用户
+            if str(ln.get("cookie") or "").strip() or self._effective_line_cookie(ln):
                 status_parts.append(tr("wenku8.login.line_saved"))
             status_parts.append(self._state_text(ln.get("state", "unchecked")))
             if ln.get("detail"):
@@ -360,6 +362,18 @@ class Wenku8LoginDialog(QDialog):
     def _line_card_bg(self) -> str:
         return "#2b2438" if self._dark else "#f3eff6"
 
+    def _effective_line_cookie(self, ln: dict) -> str:
+        """线路独立 Cookie 优先，缺失时回退全局登录态（兼容历史数据与只在
+        Cookie/账号密码页登录过的用户），避免明明已登录却检测出「未登录」。"""
+        own = str(ln.get("cookie") or "").strip()
+        if own:
+            return own
+        try:
+            from .wenku8_core.wenku8_auth import get_cookie
+            return str(get_cookie() or "").strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _on_check_all(self) -> None:
         state = self._line_state()
         self.check_all_btn.setEnabled(False)
@@ -367,7 +381,7 @@ class Wenku8LoginDialog(QDialog):
         QApplication.processEvents()
         self._check_remaining = len(state["lines"])
         for ln in state["lines"]:
-            self._check_one_line(ln["base"], ln.get("cookie", ""),
+            self._check_one_line(ln["base"], self._effective_line_cookie(ln),
                                  on_done=self._on_one_check_batch_done)
 
     def _on_one_check_batch_done(self) -> None:
@@ -380,8 +394,8 @@ class Wenku8LoginDialog(QDialog):
 
     def _on_check_line(self, base: str) -> None:
         state = self._line_state()
-        cookie = next(
-            (ln.get("cookie", "") for ln in state["lines"] if ln["base"] == base), "")
+        ln = next((ln for ln in state["lines"] if ln["base"] == base), None)
+        cookie = self._effective_line_cookie(ln) if ln else ""
         self.lines_result.setText(tr("wenku8.login.line_checking"))
         self._check_one_line(base, cookie, on_done=self._render_lines)
 
@@ -509,7 +523,31 @@ class Wenku8LoginDialog(QDialog):
     def _save_cookie(self, cookie: str) -> None:
         DataStore().settings_set("wenku8_cookie", cookie)
         self.cookie_edit.setText(cookie)
+        # 关键：同步到「使用中」线路的独立 Cookie。否则官网线路页检测时
+        # 拿到的是空 Cookie，带空登录态访问必然跳 login.php，明明登录成功
+        # 却显示「可访问（未登录）」。
+        try:
+            from .wenku8_core.wenku8_auth import get_active_base, save_line_cookie
+            save_line_cookie(get_active_base(), cookie)
+        except Exception:  # noqa: BLE001
+            pass
         self._refresh_status()
+        # 登录成功后把使用中线路直接标记为已登录，避免卡片仍显示「未登录」
+        try:
+            from .wenku8_core.wenku8_auth import (
+                get_active_base, get_lines_state, save_lines_state,
+            )
+            active = get_active_base()
+            state = get_lines_state()
+            for ln in state["lines"]:
+                if ln["base"] == active and cookie:
+                    ln["state"] = "ok"
+                    ln["detail"] = tr("wenku8.login.line_ok")
+            save_lines_state(state)
+        except Exception:  # noqa: BLE001
+            pass
+        if hasattr(self, "lines_vbox"):
+            self._render_lines()
         # 同步设置页里的 Cookie 输入框（若主窗口已构建）
         app = QApplication.instance()
         if app:

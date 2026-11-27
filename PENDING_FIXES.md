@@ -7,14 +7,14 @@
 ## 当前状态
 
 - **基线版本**：**v5.0.7**（2026-11-27，用户「不测了直接发新版本」；版本真源 `APP_VERSION`、`update-manifest.json` 均已升至 5.0.7，含新周期第 2–11 条共 10 项改动，外加本机诊断脚本工具）
-- **已修未发版**：**0 / 10（新周期刚开启）**——前一周期 10 条（第 2–11 条）已全部随 v5.0.7 发布
+- **已修未发版**：**1 / 10（新周期第 82 条）**——用户实测「账号密码登录成功但官网线路仍显示未登录」，登录态未同步到线路独立 Cookie，已修复；前一周期 10 条（第 2–11 条）已随 v5.0.7 发布
 - **发版说明**：v5.0.7 按用户明确发版指令启用（用户「不测了直接发新版本」，新周期已满 10 条）；tag `v5.0.7` 推送触发 GitHub Actions 构建 Release，资产 `_Windows_v5.0.7.zip`。**Cookie 策略**：公开安装包**不内置真实 Cookie**（登录入口仍可用、本机打包仍内置）；工作流为可选 Secret 注入，无 Secret 时自动跳过。历史：v5.0.6 含第 1 条黑框修复、v5.0.5 按用户明确发版指令启用（当时 7/10），新周期 7 条全部随本版发布。
 - **文库8真实网络未实测声明**：发布环境出口 IP 被 Cloudflare 风控（.net/.com 403、.cc 跳 login.php），搜索/账号密码登录/线路检测的真实结果**未经沙箱实测**；已附 `wenku8_diagnose.py` 供用户本机取证，若证实站内搜索编码需 GBK，下版修正 `wenku8_search.py` 的 `quote()` 编码
 - **历史发版**：v5.0.4 按用户明确发版指令启用（当时 8/10），第 57–64 条全部随本版发布；v5.0.3 含第 54–56 条
 - **队列移除任务 / 清除未完成 / 番茄选封面预览 / 封面路径兜底 / 读者页缺少数据根治**：见下方第 54–56 条，已随 v5.0.3 发布
 - **发版包含**：v5.0.2 后新周期第 54–56 条（队列移除、番茄封面预览与本地封面兜底、完整浏览器头 + 重试根治读者页缺少数据失败）随 v5.0.3 发布
 - **六轮体检（第 52 条，追加项）**：静态与死代码 / 三语 / GUI 冒烟 / 双内核数据链路 / 线程与退出 / 结构冗余各一轮；已修 9 类问题（详见第 52 条），3 项待拍板重构已按推荐全部落地（见第 53 条）：弹窗 58 处国际化、七猫签名单一实现、CLI 归档 `src/legacy/`
-- **下一个待发布版本**：v5.0.8（新周期已开启 0/10；如需提前发版可由用户明确指令启用）
+- **下一个待发布版本**：v5.0.8（新周期已 1/10；如需提前发版可由用户明确指令启用）
 - **诊断工具（不计入发版条目）**：`wenku8_diagnose.py` + `运行文库8检测.bat`——用户本机双击运行的零依赖诊断脚本，用于取证文库8搜索/登录/线路/目录在真实网络下的表现（沙箱出口 IP 被 Cloudflare 风控，无法自测）。脚本同时测 GBK/UTF-8 两种搜索编码，若证实 GBK 有效而 UTF-8 无效，将修正 `wenku8_search.py` 的 `quote()` 编码（详见功能筛查报告 21.7）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -38,6 +38,7 @@
 
 | 编号 | 简述 | 涉及文件 | 修复日期 |
 |------|------|----------|----------|
+| 83 | **（新周期第 1 条，用户发两张截图：「我明明已经登录了，但是它这条线路又写的是我可访问未登录，这是咋回事儿？」）** 账号密码登录显示「登录成功，登录态已保存」，但官网线路页 wenku8.cc 仍显示「可访问（未登录）· 可访问，但未登录（跳转登录页）」。根因：登录成功只把 Cookie 写到全局 `wenku8_cookie`，而官网线路管理里每条线路有**独立 Cookie 字段** `wenku8_lines.lines[].cookie` 未被同步；检测/渲染时取到空 Cookie，带空登录态访问必然跳 login.php，被归类为 guest。修复（`wenku8_login_dialog.py`）：①`_save_cookie()` 同步写入「使用中」线路的独立 Cookie（`save_line_cookie(get_active_base(), cookie)`），并把该线路状态直接标为 `ok`（登录态有效），同时刷新线路卡片；②新增 `_effective_line_cookie()`——线路自身 Cookie 优先、缺失时回退全局登录态，兼容历史数据与只在 Cookie 页登录过的用户；③单条/批量检测均改用有效 Cookie，不再带空串检测；④线路卡片「已保存登录」标记也按有效 Cookie 判断。**验证**：新增 `tests/test_wenku8_login_sync.py` 4 项（登录后同步使用中线路并标 ok / 空线路 Cookie 回退全局且自身优先 / 单条检测带有效 Cookie / 批量检测每条带有效 Cookie）全过；全量 53 passed+2 skipped+23 subtests；compileall PASS；offscreen 冒烟确认登录后线路卡片不再含「未登录」而显示「已保存登录 + 登录态有效」 | `wenku8_login_dialog.py`、`tests/test_wenku8_login_sync.py`(新增) | 2026-11-27 |
 | 82 | **（新周期第 11 条，用户「给使用说明这一页加一个色彩修改功能，第一次用的时候我记着有选择色彩的，但是选择完成之后就没有那个选项了，加一个」）** 使用说明页顶部工具栏常驻「修改色彩」按钮（强调色实心，避免像初版引导那样选完即消失）。点击弹出 `HelpColorDialog`：五种主题色圆点（紫/青/蓝/绿/橙，选中白描边）+ 深色/浅色模式切换 + 「更多配色…」跳设置页完整配色中心 + 关闭；选色与切模式均即时落盘并调用主窗口 `apply_style_animated()`（兼容 `_apply_theme_color()`）与帮助页 `apply_colors()` 同步重绘，深浅模式同时走 `set_theme_mode()` 保持全应用一致。新增 `_AccentDot` 自绘圆点类，未依赖设置页私有控件；i18n 三语各 +9 键。**验证**：新增 `tests/test_help_color.py` 6 项（按钮常驻/五种圆点/选色即时生效/浅色模式即时生效/更多配色无 tabs 安全退出/三语文案同步）全过；全量 49 passed+2 skipped+23 subtests、compileall PASS、offscreen 对话框实弹+选色+切模式 OK。**本条使新周期满 10/10** | `views/help_view.py`、`i18n.py`、`tests/test_help_color.py`(新增) | 2026-11-27 |
 | 81 | **（新周期第 10 条，用户给出参考项目 mikufoxxx/Wenku8_Flutter 的「官网线路」检测做法截图，要求参考升级路径检测）** 原域名检测是「一次性探测返回首个可用」，参考项目做法是多线路各自保存登录/各自检测/可切换。升级：`wenku8_auth.py` 新增线路管理——`wenku8_lines` JSON 存储（内置 .net/.cc/.com + 自定义线路，每条独立 Cookie/检测状态/使用中标记），`get_lines_state/save_lines_state/get_active_base/set_active_base/save_line_cookie/add_line/remove_line/set_line_checked`，纯函数 `classify_line_response`（ok/guest/closed/blocked/error）+ `check_line`（逐线路检测不写数据），与旧 `wenku8_cookie`/`wenku8_base_url` 兼容（切换时同步）；`__init__.py` 导出；登录对话框新增第三个 Tab「官网线路」——线路卡片（域名+已保存登录+状态+检测/登录并切换/移除）、检测连接（全部/单条，后台线程）、连接其他线路、保持登录开关，i18n 三语各 +23 键。**验证**：新增 `tests/test_wenku8_lines.py` 5 项（默认线路/增删/切换同步Cookie/响应归类/检测落盘）全过；全量 43 passed+2 skipped+23 subtests、compileall PASS、offscreen 三 Tab 构建+3 线路卡片+三语切换 OK。**沙箱 IP 被风控，线路真实检测结果需用户本机验证** | `wenku8_auth.py`、`wenku8_login_dialog.py`、`wenku8_core/__init__.py`、`i18n.py`、`tests/test_wenku8_lines.py`(新增) | 2026-11-27 |
 | 80 | **（新周期第 9 条，用户「检查下载内核状态，希望三个下载源都可以检查」）** 内核自检从「七猫+番茄」扩到三源：`workers.py::ProtocolCheckWorker` 新增第 4 步文库8目录探测（`PROBE_WENKU8_ID=2580`，走 `book_source_for("wenku8").fetch_catalog`，带登录 Cookie、只读不写盘），结果字典新增 `wenku8` 字段，汇总文案「七猫 / 番茄 / 文库8 内核均正常」或列出异常源。**验证**：新增 `tests/test_source_check.py` 4 项（三源全 OK/文库8空目录失败/文库8异常/插件分组）全过、offscreen 主窗口检查按钮构建 OK。**沙箱 IP 被风控，文库8真实探测需用户本机验证** | `workers.py` | 2026-11-27 |
