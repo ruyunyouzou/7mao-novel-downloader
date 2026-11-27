@@ -216,11 +216,7 @@ class Wenku8LoginDialog(QDialog):
         if custom:
             self.status_label.setText(tr("wenku8.login.status_custom"))
         else:
-            from .wenku8_core.wenku8_auth import get_cookie
-            if get_cookie().strip():
-                self.status_label.setText(tr("wenku8.login.status_builtin"))
-            else:
-                self.status_label.setText(tr("wenku8.login.status_none"))
+            self.status_label.setText(tr("wenku8.login.status_none"))
 
     def _save_cookie(self, cookie: str) -> None:
         """保存账号密码/官网登录成功后站点返回的会话（内部机制，非用户侧功能）。"""

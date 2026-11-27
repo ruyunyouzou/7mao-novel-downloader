@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""文库8 Cookie 管理。
+"""文库8会话管理。
 
-Cookie 由用户在设置页填入（浏览器 F12 → Console → document.cookie），
-持久化到 DataStore 设置项 wenku8_cookie。所有 network 请求统一经
-make_session() 注入，避免散落各处的登录态处理。
+会话 Cookie 由账号密码登录或官网浏览器登录成功后写入 DataStore 设置项
+wenku8_cookie，只保存在本机；软件不内置任何账号凭据。
+所有 network 请求统一经 make_session() 注入，避免散落各处的登录态处理。
 """
 
 from __future__ import annotations
@@ -35,22 +35,14 @@ _UA = (
 
 
 def get_cookie() -> str:
-    """读取文库8 Cookie：用户设置优先，未配置时回退到软件内置登录态。
+    """读取文库8会话 Cookie：仅来自本机用户自己登录后的设置项。
 
-    内置值来自用户本人账号的 Cookie，随软件打包，开箱即有登录态；
-    用户在设置页填写的新值始终优先，Cookie 过期后可直接覆盖，无需改代码。
+    软件不内置任何账号凭据；未登录时返回空字符串。
+    会话由账号密码登录或官网浏览器登录成功后写入，只保存在本机。
     """
     try:
         from gui.datastore import DataStore
-        custom = str(DataStore().settings_get("wenku8_cookie", "") or "").strip()
-        if custom:
-            return custom
-    except Exception:  # noqa: BLE001
-        pass
-    # 用户未配置 → 用内置登录态
-    try:
-        from ._builtin_cookie import BUILTIN_WENKU8_COOKIE
-        return str(BUILTIN_WENKU8_COOKIE or "").strip()
+        return str(DataStore().settings_get("wenku8_cookie", "") or "").strip()
     except Exception:  # noqa: BLE001
         return ""
 
