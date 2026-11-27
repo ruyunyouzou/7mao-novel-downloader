@@ -1,24 +1,36 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title 文库8本机诊断
+title Wenku8 Diagnose
+
 echo ============================================================
-echo  文库8本机诊断 - 请把运行结果整段复制给开发者
-echo  说明：默认跳过登录交互，一次跑完；重点看 [6] App API 那段
+echo  Wenku8 local diagnose -- copy the WHOLE output to developer
+echo  Login is skipped by default. Focus on section [6] App API.
 echo ============================================================
 echo.
-where python >nul 2>nul
-if %errorlevel%==0 (
-    python wenku8_diagnose.py --skip-login
-    goto done
-)
+
+rem Prefer the "py" launcher: it bypasses the Microsoft Store alias
+rem that hijacks the plain "python" command on many Windows installs.
 where py >nul 2>nul
 if %errorlevel%==0 (
     py -3 wenku8_diagnose.py --skip-login
     goto done
 )
-echo [错误] 未找到 Python。请先安装 Python 3，安装时勾选 "Add Python to PATH"。
+
+rem Fallback: a real python on PATH (not the Store stub).
+python -c "import sys; exit(0 if sys.version_info[0]==3 else 1)" >nul 2>nul
+if %errorlevel%==0 (
+    python wenku8_diagnose.py --skip-login
+    goto done
+)
+
+echo [ERROR] Python 3 launcher not found.
+echo Try:  py -3 wenku8_diagnose.py --skip-login
+echo Or install Python 3 from python.org and CHECK "Add Python to PATH".
+echo If "python" opens Microsoft Store, disable it in:
+echo Settings ^> Apps ^> Advanced app settings ^> App execution aliases
+
 :done
 echo.
-echo 检测结束。请在窗口内选中全部内容（右键-标记-全选）后复制给开发者。
+echo Done. Select all in window (right-click - Mark - Select All) and copy.
 pause
