@@ -304,11 +304,22 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
     kw = str(keyword or "").strip()
     if not kw:
         return []
-    sess = session or make_session()
-    base = get_base_url()
     page = max(1, int(page or 1))
 
-    # 1) 站内搜索优先
+    # 0) 官方 App API 优先（多个第三方客户端验证过的专门接口，Android UA，
+    #    CF 策略与网页不同；参考 App 发行版正是走这条通道，故能正常搜索）。
+    try:
+        from .wenku8_app_api import search_via_app_api
+        app_hits = search_via_app_api(kw, page=page)
+    except Exception:  # noqa: BLE001
+        app_hits = []
+    if app_hits:
+        return [{k: v for k, v in b.items() if k != "_rel"} for b in app_hits]
+
+    sess = session or make_session()
+    base = get_base_url()
+
+    # 1) 站内搜索优先（网页表单，可能被 Cloudflare 拦）
     hits = _search_on_site(kw, sess, base, page=page)
     if hits:
         return [{k: v for k, v in b.items() if k != "_rel"} for b in hits]

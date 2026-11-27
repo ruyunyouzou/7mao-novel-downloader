@@ -69,6 +69,9 @@ def test_search_wenku8_prefers_post_and_skips_get_when_hit(monkeypatch):
     s = _Session(HTML)
     monkeypatch.setattr("gui.wenku8_core.wenku8_search.get_base_url",
                         lambda: "https://www.wenku8.net")
+    # App API 通道在该测试里固定返回空，隔离网络，专注验证网页 POST 优先。
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_app_api",
+                        lambda *a, **k: [])
     results = search_wenku8("邻家天使", session=s)
     assert results and results[0]["id"] == "2580"
     assert s.posts, "应先走官网表单 POST /so.php"
