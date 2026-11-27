@@ -1,6 +1,10 @@
 name: WK8 API 协议诊断
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'tools/wk8_probe.py'
+      - '.github/workflows/wk8-diagnose.yml'
 
 jobs:
   probe:
