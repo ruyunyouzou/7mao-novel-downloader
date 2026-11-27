@@ -40,6 +40,17 @@ def build_search_url(base: str, keyword: str, page: int = 1) -> str:
     return url
 
 
+def build_search_post_body(keyword: str, page: int = 1, enc: str = "gbk") -> str:
+    """构造官网搜索表单 POST /so.php 的请求体（GBK 字节的百分号编码）。"""
+    raw = str(keyword or "").strip()
+    kw = quote(raw.encode(enc))
+    submit = quote("轻小说搜索".encode(enc))
+    body = f"searchtype=articlename&searchkey={kw}&charset=gbk&Submit={submit}"
+    if page > 1:
+        body += f"&page={page}"
+    return body
+
+
 def parse_search_html(html: str, keyword: str, base: str) -> List[dict]:
     """把搜索页 HTML 解析为命中书目（含相关性排序）。"""
     books = _extract_books(html or "", base)
@@ -131,16 +142,24 @@ class Wenku8WebSearch(QObject):
     def _on_home_loaded(self, ok: bool) -> None:
         # 首次加载首页：建立 Cloudflare clearance；随后同源 fetch 搜索接口
         url = build_search_url(self.base, self.keyword, self.page_no)
+        body = build_search_post_body(self.keyword, self.page_no)
         # Qt 的 runJavaScript 不会等待 Promise：把结果写入页面全局变量再轮询。
+        # 先按官网表单 POST /so.php（真实浏览器通道），失败/占位页再退回 GET。
         js = (
             "window.__wk8result='PENDING';"
             "(async function(){"
             f"const u={json.dumps(url)};"
-            "try{const r=await fetch(u,{credentials:'include',"
-            "headers:{'Accept':'text/html,application/xhtml+xml'}});"
-            "const b=await r.arrayBuffer();"
-            "window.__wk8result=new TextDecoder('gbk').decode(b);}"
-            "catch(e){window.__wk8result='ERR:'+e;}})();"
+            f"const body={json.dumps(body)};"
+            "async function grab(u,opt){"
+            "const r=await fetch(u,opt);const b=await r.arrayBuffer();"
+            "return new TextDecoder('gbk').decode(b);}"
+            "let t='';"
+            "try{t=await grab('/so.php',{method:'POST',body:body,"
+            "credentials:'include',headers:{'Content-Type':"
+            "'application/x-www-form-urlencoded'}});}catch(e){}"
+            "if(!t||t.indexOf('<h1>Welcome</h1>')>=0){"
+            "try{t=await grab(u,{credentials:'include'});}catch(e){}}"
+            "window.__wk8result=t||'ERR:empty';})();"
         )
         try:
             self.webpage.runJavaScript(js)

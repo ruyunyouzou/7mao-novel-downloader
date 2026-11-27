@@ -52,6 +52,9 @@ def _extract_books(html: str, base: str) -> List[dict]:
         if not m:
             m = re.search(r"/novel/\d+/(\d+)/", href)
         if not m:
+            # Jieqi CMS 老模板（搜索结果/榜单常见）：articleinfo.php?id=2580
+            m = re.search(r"articleinfo\.php\?(?:id|aid)=(\d+)", href, re.I)
+        if not m:
             continue
         bid = m.group(1)
         if bid in seen:
@@ -88,6 +91,52 @@ def _encode_keyword_variants(keyword: str) -> List[str]:
     return out
 
 
+def _search_via_so_post(keyword: str, session, base: str, page: int = 1) -> List[dict]:
+    """按官网搜索表单的原始方式请求：POST /so.php。
+
+    官网首页表单是 ``method="post" action="/so.php"``，字段为
+    ``searchtype / searchkey / charset=gbk / Submit``。此前只 GET
+    ``/modules/article/search.php``，在部分线路上会落到 Welcome 占位页；
+    POST 表单是参考 App 与浏览器实际走的通道，必须优先尝试。
+    """
+    raw = str(keyword or "").strip()
+    if not raw:
+        return []
+    for enc in ("gbk", "utf-8"):
+        try:
+            kw = quote(raw.encode(enc))
+            submit = quote("轻小说搜索".encode(enc))
+        except Exception:  # noqa: BLE001
+            continue
+        body = (
+            f"searchtype=articlename&searchkey={kw}"
+            f"&charset=gbk&Submit={submit}"
+        ).encode("ascii")
+        if page > 1:
+            body += f"&page={page}".encode("ascii")
+        try:
+            resp = session.post(
+                base + "/so.php",
+                data=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=15,
+                allow_redirects=True,
+            )
+            html = _decode(resp)
+        except Exception:  # noqa: BLE001
+            continue
+        if "<h1>Welcome</h1>" in html or "Attention Required" in html:
+            continue
+        books = _extract_books(html, base)
+        hits = [b for b in books if _matches(keyword, b["title"])]
+        if hits:
+            for b in hits:
+                b["_rel"] = _relevance(keyword, b["title"])
+            hits.sort(key=lambda b: -b["_rel"])
+            return hits
+    return []
+
+
 def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dict]:
     """尝试站内搜索接口，返回命中的书籍（已按相关性排序）。
 
@@ -97,6 +146,10 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
     kw_variants = _encode_keyword_variants(keyword)
     if not kw_variants:
         return []
+    # 0) 官网真实表单 POST /so.php（浏览器/参考 App 通道），优先于 GET 候选
+    post_hits = _search_via_so_post(keyword, session, base, page=page)
+    if post_hits:
+        return post_hits
     for kw in kw_variants:
         for tpl in _SEARCH_ENDPOINTS:
             url = base + tpl.format(kw=kw)
