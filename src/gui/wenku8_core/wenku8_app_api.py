@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """文库8「官方 App API」通道。
 
-多个第三方客户端（zsakvo/wenku8x、go-novel-dl 等）用这条接口实现在线搜索，
-它是站点专门提供给 App 的接口，与网页搜索页是两套服务：
+多个第三方客户端用这条接口实现在线搜索，它是站点专门提供给 App 的接口，
+与网页搜索页是两套服务：
 
     POST http://app.wenku8.com/android.php
     form:
@@ -11,28 +11,36 @@
         timetoken = 毫秒时间戳
     headers: Android UA
 
-搜索返回 UTF-8 XML：
-    <root><item aid="2580">邻家的天使大人</item>...</root>
-登录返回纯文本 "1"（成功）/ "4"（会话失效）。
-
-编码要点（参考 wenku8x 实测可用实现）
+协议来源与编码要点（重要，此前踩过坑）
 ------------------------------------
-* ``searchkey`` 直接放**原始中文**，由 ``build_form`` 对整个参数串做
-  base64(UTF-8)。**不能**预先 percent 编码，否则服务器解码后拿到字面的
-  ``%E9%82%BB...``，中文书名永远搜不到（这是此前搜索失败的一个根因）。
-* 响应是 UTF-8 XML，必须显式按 UTF-8 解码；requests 对未声明 charset 的
-  XML 默认用 ISO-8859-1，会把中文书名解成乱码进而匹配失败。
+本模块协议严格对齐两个真实客户端的权威源码：
 
-为什么加这条通道
-----------------
-网页搜索（/so.php、/modules/article/search.php）由 Cloudflare 保护，脚本
-请求指纹易被拦；App API 面对的是 Android 客户端，CF 策略不同，用 Android
-UA + base64 请求体通常可正常访问。参考 App 发行版正是走这条接口，所以能
-「美化官网」般正常搜索。本模块把它作为搜索的第一优先级通道，网页通道
-保留兜底。
+1. MewX/light-novel-library_Wenku8_Android（原作者，2014 起）
+   ``previous_versions/v0.5.2.1/.../api/Wenku8Interface.java``:
+       searchkey = LightNetwork.encodeToHttp(novelName)
+                 = URLEncoder.encode(novelName, "UTF-8")   // 中文 -> %E9%82%BB...
+       request   = LightBase64.EncodeBase64(param)         // base64(UTF-8)
+   ``util/LightNetwork.java`` 注释明确：encodeToHttp("妹") == "%E5%A6%B9"。
 
-沙箱出口 IP 被文库8全系域名拦截，无法在此实时验证；本模块的协议严格按
-wenku8x 源码（lib/http/api.dart + ajax.dart）实现，可离线单测协议正确性。
+2. zsakvo/wenku8x（appver=1.13）``lib/http/api.dart``:
+       "action=search&searchtype=articlename&searchkey=$bookName&t=0"
+   表面看是直接拼原始中文，但它经 Dio ``FormData.fromMap`` +
+   ``contentType: formUrlEncodedContentType`` 传输，base64 串由 Dio 负责编码。
+   二者对服务器而言等价：服务器 base64 解码后会对 searchkey 做 URL 解码，
+   ``%E9%82%BB...`` 与 ``邻家...`` 都能命中。
+
+   本模块手动构造 form，因此**必须自己把中文做 UTF-8 percent 编码**，
+   不能照搬 zsakvo 的"原始中文"字面写法（那是 Dio 代劳的结果）。
+
+返回 XML 有两种历史格式，都要兼容：
+    <result><item aid='1699'/></result>              （MewX 1.x，仅 aid）
+    <root><item aid="2580">邻家的天使大人</item>...</root>  （新版，带书名）
+仅 aid 的结果无法在本地做书名模糊匹配，此时信任服务端搜索结果直接保留。
+
+响应统一是 UTF-8，必须显式按 UTF-8 解码；requests 对未声明 charset 的
+XML 默认用 ISO-8859-1，会把中文书名解成乱码进而匹配失败。
+
+沙箱出口 IP 被文库8全系域名拦截，无法在此实时验证；协议正确性由离线单测保证。
 """
 
 from __future__ import annotations
@@ -40,13 +48,14 @@ from __future__ import annotations
 import base64
 import time
 from typing import List
+from urllib.parse import quote
 
 import requests
 
 # App API 固定端点（Android 客户端接口，不走 www 网页域名）
 APP_API_URL = "http://app.wenku8.com/android.php"
 APP_VER = "1.13"
-# 与 wenku8x 发行版一致的 Android 指纹
+# 与客户端发行版一致的 Android 指纹
 ANDROID_UA = (
     "Dalvik/2.1.0 (Linux; U; Android 11; IN2010 Build/RP1A.201005.001)"
 )
@@ -58,16 +67,21 @@ def encode_request(param: str) -> str:
     return base64.b64encode(str(param or "").encode("utf-8")).decode("ascii")
 
 
+def encode_keyword(keyword: str) -> str:
+    """按 MewX encodeToHttp：UTF-8 percent 编码（中文 -> %E9%82%BB...）。"""
+    return quote(str(keyword or "").strip(), safe="", encoding="utf-8")
+
+
 def build_search_param(keyword: str, search_type: str = "articlename",
                        page: int = 1) -> str:
-    """构造搜索请求参数串：searchkey 放原始中文，整体交给 base64(UTF-8)。
+    """构造搜索请求参数串：searchkey 先 UTF-8 URL 编码，再由 form 整体 base64。
 
-    与 wenku8x 的 ``searchNovelByNovelName`` 完全一致：参数串里是原始中文，
-    再由 ``build_form`` 对整个串做 base64(UTF-8)。切勿预先 percent 编码，
-    否则服务器 base64 解码后拿到字面的 ``%E9%82%BB...``，搜不到中文书名。
+    对齐 MewX ``Wenku8Interface.searchNovelByNovelName``：
+        action=search&searchtype=articlename&searchkey=<urlencoded>&t=0
+    t 为语言 id，0 = 简体中文。
     """
-    raw = str(keyword or "").strip()
-    param = f"action=search&searchtype={search_type}&searchkey={raw}&t=0"
+    kw = encode_keyword(keyword)
+    param = f"action=search&searchtype={search_type}&searchkey={kw}&t=0"
     if page > 1:
         param += f"&page={page}"
     return param
@@ -85,22 +99,28 @@ def build_form(param: str, timetoken_ms: int | None = None) -> dict:
 
 
 def parse_search_xml(xml_text: str) -> List[dict]:
-    """解析 App API 搜索结果 XML：<item aid="id">书名</item>。"""
+    """解析 App API 搜索结果，兼容两种历史格式：
+
+    * ``<item aid="2580">书名</item>``  —— 带书名
+    * ``<item aid='1699'/>``            —— 仅 aid（MewX 1.x）
+    """
     import re
     out: List[dict] = []
     seen = set()
     if not xml_text:
         return out
-    # 兼容 <item aid="2580">书名</item> 与属性顺序变化
-    for m in re.finditer(r"<item\b[^>]*\baid\s*=\s*[\"'](\d+)[\"'][^>]*>(.*?)</item>",
+    for m in re.finditer(r"<item\b([^>]*?)(?:/>|>(.*?)</item>)",
                          xml_text, re.I | re.S):
-        aid = m.group(1)
+        attrs = m.group(1) or ""
+        am = re.search(r"\baid\s*=\s*[\"'](\d+)[\"']", attrs, re.I)
+        if not am:
+            continue
+        aid = am.group(1)
         if aid in seen:
             continue
         seen.add(aid)
-        title = re.sub(r"<[^>]+>", "", m.group(2)).strip()
-        if not title:
-            continue
+        inner = m.group(2) or ""
+        title = re.sub(r"<[^>]+>", "", inner).strip()
         out.append({
             "id": aid, "title": title, "author": "", "intro": "",
             "cover": "", "source": "wenku8", "_rel": 0,
@@ -141,10 +161,17 @@ def search_via_app_api(keyword: str, session=None, page: int = 1) -> List[dict]:
             or "just a moment" in low or "cf-error" in low):
         return []
     books = parse_search_xml(text)
-    hits = [b for b in books if _matches(keyword, b["title"])]
+    if not books:
+        return []
+    # 带书名的结果做本地模糊匹配；仅 aid 的结果信任服务端搜索，直接保留。
+    named = [b for b in books if b["title"]]
+    aid_only = [b for b in books if not b["title"]]
+    hits = [b for b in named if _matches(keyword, b["title"])]
     for b in hits:
         b["_rel"] = _relevance(keyword, b["title"])
     hits.sort(key=lambda b: -b["_rel"])
+    # 仅 aid 的结果排在带书名命中之后
+    hits.extend(aid_only)
     # _rel 只用于内部相关性排序，对外返回保持与其他搜索结果一致的干净结构
     for b in hits:
         b.pop("_rel", None)

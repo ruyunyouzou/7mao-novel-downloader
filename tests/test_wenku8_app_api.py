@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """文库8官方 App API 通道协议单测（离线，全 mock）。
 
-协议来自 zsakvo/wenku8x 的 lib/http/api.dart + ajax.dart 交叉验证：
-POST app.wenku8.com/android.php，form 含 appver/request(base64 UTF-8)/timetoken，
-Android UA，搜索返回 XML：<item aid="id">书名</item>。
+协议以 MewX 原作者源码为准（previous_versions/v0.5.2.1）：
+searchkey 先 UTF-8 percent 编码，整体再 base64(UTF-8)；Android UA；
+返回 XML 兼容 <item aid="id">书名</item> 与 <item aid='id'/> 两种格式。
 """
 
 import os
@@ -21,16 +21,23 @@ def test_encode_request_is_base64_utf8():
         "action=search&searchtype=articlename"
 
 
-def test_build_search_param_keeps_raw_keyword():
-    # 关键契约：searchkey 必须是原始中文，不能预先 percent 编码。
-    # 参考 wenku8x：参数串里是原始中文，整体再做 base64(UTF-8)。
+def test_build_search_param_urlencodes_keyword():
+    # 权威契约（MewX encodeToHttp = URLEncoder.encode(str, "UTF-8")）：
+    # searchkey 必须先做 UTF-8 percent 编码，"妹" -> "%E5%A6%B9"。
     param = api.build_search_param("邻家天使")
-    assert param == "action=search&searchtype=articlename&searchkey=邻家天使&t=0"
+    assert param.startswith("action=search&searchtype=articlename&searchkey=")
+    assert "searchkey=%E9%82%BB%E5%AE%B6%E5%A4%A9%E4%BD%BF" in param
+    assert param.endswith("&t=0")
     paged = api.build_search_param("邻家天使", page=3)
-    assert paged.endswith("&page=3")
-    # 整串经 base64(UTF-8) 后必须能无损还原，证明没有双重编码
+    assert "&page=3" in paged
+    # 整串经 base64(UTF-8) 后可无损还原
     import base64
     assert base64.b64decode(api.encode_request(paged)).decode("utf-8") == paged
+
+
+def test_encode_keyword_matches_mewx():
+    # MewX 源码注释：encodeToHttp("妹") == "%E5%A6%B9"
+    assert api.encode_keyword("妹") == "%E5%A6%B9"
 
 
 def test_build_form_has_three_fields():
@@ -53,6 +60,31 @@ def test_parse_search_xml_items():
     assert books[0]["id"] == "2580"
     assert books[0]["title"] == "邻家的天使大人"
     assert books[0]["source"] == "wenku8"
+
+
+def test_parse_search_xml_aid_only_format():
+    """MewX 1.x 返回 <item aid='1699'/> 仅 aid 自闭合格式，也要能解析。"""
+    xml = "<result><item aid='1699'/><item aid='1638'/><item aid='1699'/></result>"
+    books = api.parse_search_xml(xml)
+    assert len(books) == 2
+    assert books[0]["id"] == "1699"
+    assert books[0]["title"] == ""  # 仅 aid，无书名
+
+
+def test_search_via_app_api_keeps_aid_only_results(monkeypatch):
+    """仅 aid 的结果无法本地模糊匹配，信任服务端搜索结果直接保留。"""
+    xml = "<result><item aid='1699'/><item aid='1638'/></result>"
+
+    class _Resp:
+        text = xml
+
+    class _Sess:
+        def post(self, *a, **k):
+            return _Resp()
+
+    hits = api.search_via_app_api("邻家天使", session=_Sess())
+    assert len(hits) == 2
+    assert {h["id"] for h in hits} == {"1699", "1638"}
 
 
 def test_parse_search_xml_empty_on_welcome():
