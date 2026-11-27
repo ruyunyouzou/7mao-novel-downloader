@@ -50,6 +50,8 @@ hiddenimports = [
     "gmssl", "gmssl.sm3", "gmssl.func", "Cryptodome",
     "PySide6.QtMultimedia", "PySide6.QtTextToSpeech", "PySide6.QtNetwork",
     "PySide6.QtNetwork.QLocalServer", "PySide6.QtNetwork.QLocalSocket",  # 单实例保护
+    # 官网登录：内嵌 Chromium（QWebEngineView + cookie 监听），PyInstaller hook 需收集
+    "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore", "PySide6.QtWebEngine",
 ]
 
 # 递归收集 gui / SLQimao / plugins 的所有子模块（views、plugin、gui/fanqie_core 内置番茄内核等），

@@ -131,9 +131,11 @@ class Wenku8LoginDialog(QDialog):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_password_tab(), tr("wenku8.login.tab_password"))
+        self.tabs.addTab(self._build_browser_tab(), tr("wenku8.login.tab_browser"))
         self.tabs.addTab(self._build_cookie_tab(), tr("wenku8.login.tab_cookie"))
         self.tabs.addTab(self._build_lines_tab(), tr("wenku8.login.tab_lines"))
         root.addWidget(self.tabs)
+        self._browser_dlg = None  # 内嵌浏览器登录对话框，强引用保活
 
     def _build_password_tab(self) -> QWidget:
         page = QWidget()
@@ -170,6 +172,73 @@ class Wenku8LoginDialog(QDialog):
         lay.addWidget(self.pwd_result)
         lay.addStretch()
         return page
+
+    def _build_browser_tab(self) -> QWidget:
+        """官网登录页：软件内嵌浏览器打开官网，登录后自动回写 Cookie。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(4, 12, 4, 4)
+        lay.setSpacing(12)
+
+        hint = QLabel(tr("wenku8.browser.open_hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_DIM}; font-size: 12px;")
+        lay.addWidget(hint)
+
+        from .wenku8_core.wenku8_auth import get_active_base
+        base = get_active_base()
+        base_row = QHBoxLayout()
+        base_lbl = QLabel(f"{base}")
+        base_lbl.setWordWrap(True)
+        base_lbl.setStyleSheet("font-size: 12px;")
+        base_row.addWidget(base_lbl)
+        lay.addLayout(base_row)
+
+        self.browser_open_btn = QPushButton(tr("wenku8.browser.open"))
+        self.browser_open_btn.clicked.connect(self._on_open_browser_login)
+        self._style_button(self.browser_open_btn)
+        lay.addWidget(self.browser_open_btn)
+
+        self.browser_result = QLabel("")
+        self.browser_result.setWordWrap(True)
+        lay.addWidget(self.browser_result)
+        lay.addStretch()
+        return page
+
+    def _on_open_browser_login(self) -> None:
+        """打开内嵌浏览器登录窗口，登录成功后自动回写 Cookie 与使用中线路。"""
+        from .wenku8_browser_login import Wenku8BrowserLoginDialog
+        from .wenku8_core.wenku8_auth import get_active_base
+
+        base = get_active_base()
+        self._browser_dlg = Wenku8BrowserLoginDialog(base, self)
+        self._browser_dlg.login_captured.connect(
+            lambda cookie, hit_base: self._on_browser_login_done(cookie, hit_base))
+        self._browser_dlg.show()
+
+    def _on_browser_login_done(self, cookie: str, hit_base: str) -> None:
+        """浏览器登录成功：切到命中线路、回写 Cookie、标记登录并刷新界面。"""
+        cookie = str(cookie or "").strip()
+        if not cookie:
+            self.browser_result.setText(tr("wenku8.browser.failed"))
+            self.browser_result.setStyleSheet("color: #c62828;")
+            return
+        try:
+            from .wenku8_core.wenku8_auth import set_active_base
+            if hit_base:
+                set_active_base(hit_base)
+        except Exception:  # noqa: BLE001
+            pass
+        self._save_cookie(cookie)
+        from .wenku8_core.wenku8_auth import get_active_base
+        self.browser_result.setText(
+            tr("wenku8.browser.done", base=hit_base or get_active_base()))
+        self.browser_result.setStyleSheet("color: #2e7d32;")
+        self.status_label.setText(tr("wenku8.login.status_custom"))
+        self.cookie_edit.setText(cookie)
+        # 刷新官网线路卡片（登录态已同步到命中线路）
+        if hasattr(self, "lines_vbox"):
+            self._render_lines()
 
     def _build_cookie_tab(self) -> QWidget:
         page = QWidget()
