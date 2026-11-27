@@ -47,18 +47,8 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install PySide6 pyinstaller
 
-      - name: 注入文库8内置登录态（可选 Secret）
-        shell: pwsh
-        env:
-          WENKU8_COOKIE_SECRET: ${{ secrets.WENKU8_BUILTIN_COOKIE }}
-        run: |
-          if ($env:WENKU8_COOKIE_SECRET) {
-            python -c "import os; c=os.environ['WENKU8_COOKIE_SECRET']; open('src/gui/wenku8_core/_builtin_cookie.py','w',encoding='utf-8').write('# -*- coding: utf-8 -*-\nBUILTIN_WENKU8_COOKIE = ' + repr(c) + '\n')"
-            Write-Host '已注入内置 Cookie，exe 开箱即有文库8登录态'
-          } else {
-            Write-Host '未配置 WENKU8_BUILTIN_COOKIE Secret，本次构建不含内置登录态（登录入口仍可用）'
-          }
-
+      # 隐私：不再注入任何内置登录态。软件不含用户账号/Cookie，
+      # 三端（番茄/七猫/文库8）均由用户自行登录，会话只存本机。
       - name: PyInstaller 打包 GUI
         run: python -m PyInstaller build.spec --clean --noconfirm
 
