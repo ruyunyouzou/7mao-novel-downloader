@@ -54,13 +54,21 @@ def build_search_post_body(keyword: str, page: int = 1, enc: str = "gbk") -> str
 
 
 def parse_search_html(html: str, keyword: str, base: str) -> List[dict]:
-    """把搜索页 HTML 解析为命中书目（含相关性排序）。"""
+    """把搜索页 HTML 解析为命中书目（含相关性排序）。
+
+    补齐与 UI 同构的字段（words_num/tags/score），避免结果表格硬取键崩溃。
+    """
     books = _extract_books(html or "", base)
     hits = [b for b in books if _matches(keyword, b.get("title", ""))]
+    # 用 _rel 排序后移除，对外返回干净结构（与其他搜索通道一致）
     for b in hits:
         b["_rel"] = _relevance(keyword, b.get("title", ""))
+    hits.sort(key=lambda b: b["_rel"], reverse=True)
+    for b in hits:
         b.pop("_rel", None)
-    hits.sort(key=lambda b: _relevance(keyword, b.get("title", "")) , reverse=True)
+        b.setdefault("words_num", "")
+        b.setdefault("tags", "")
+        b.setdefault("score", "")
     return hits
 
 

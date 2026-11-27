@@ -291,6 +291,25 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
     return results
 
 
+def _normalize_result(book: dict) -> dict:
+    """把内部书目条目转为与 UI 一致的同构结果。
+
+    搜索页表格与详情区会读取 words_num/tags/score 等字段；文库8内核本身
+    不提供这些信息，缺失时补空值，避免消费方硬取键 KeyError。
+    """
+    out = {k: v for k, v in (book or {}).items() if k != "_rel"}
+    out.setdefault("id", "")
+    out.setdefault("title", "")
+    out.setdefault("author", "")
+    out.setdefault("intro", "")
+    out.setdefault("cover", "")
+    out.setdefault("words_num", "")
+    out.setdefault("tags", "")
+    out.setdefault("score", "")
+    out.setdefault("source", "wenku8")
+    return out
+
+
 def search_wenku8(keyword: str, session=None, max_pages: int = 8,
                   workers: int = 8, page: int = 1) -> List[dict]:
     """按关键词搜索文库8书籍。
@@ -314,7 +333,7 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
     except Exception:  # noqa: BLE001
         app_hits = []
     if app_hits:
-        return [{k: v for k, v in b.items() if k != "_rel"} for b in app_hits]
+        return [_normalize_result(b) for b in app_hits]
 
     sess = session or make_session()
     base = get_base_url()
@@ -322,9 +341,9 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
     # 1) 站内搜索优先（网页表单，可能被 Cloudflare 拦）
     hits = _search_on_site(kw, sess, base, page=page)
     if hits:
-        return [{k: v for k, v in b.items() if k != "_rel"} for b in hits]
+        return [_normalize_result(b) for b in hits]
 
     # 2) 分类页兜底
     results = _search_categories(kw, sess, base, max_pages=max_pages,
                                  workers=workers, page_offset=page - 1)
-    return [{k: v for k, v in b.items() if k != "_rel"} for b in results]
+    return [_normalize_result(b) for b in results]

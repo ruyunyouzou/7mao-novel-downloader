@@ -2446,10 +2446,12 @@ class MainWindow(QMainWindow):
         # 隐藏表格保持数据同步（供插件与兼容逻辑读取）
         self.result_table.setRowCount(len(results))
         for row, item in enumerate(results):
-            self.result_table.setItem(row, 0, QTableWidgetItem(item["title"]))
-            self.result_table.setItem(row, 1, QTableWidgetItem(item["author"]))
-            self.result_table.setItem(row, 2, QTableWidgetItem(str(item["words_num"])))
-            self.result_table.setItem(row, 3, QTableWidgetItem(item["id"]))
+            self.result_table.setItem(row, 0, QTableWidgetItem(str(item.get("title") or "")))
+            self.result_table.setItem(row, 1, QTableWidgetItem(str(item.get("author") or "")))
+            # 文库8/浏览器兜底结果无 words_num 字段，硬取会 KeyError 导致整个
+            # 搜索结果渲染失败（表现：搜到了却空白）。统一用 get 兜底。
+            self.result_table.setItem(row, 2, QTableWidgetItem(str(item.get("words_num") or "")))
+            self.result_table.setItem(row, 3, QTableWidgetItem(str(item.get("id") or "")))
 
         # 卡片列表（用户实际看到的区域）：暂停重绘，避免 clear→重建的闪烁
         self.card_list.setUpdatesEnabled(False)

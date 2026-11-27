@@ -76,3 +76,6 @@ def test_search_wenku8_prefers_post_and_skips_get_when_hit(monkeypatch):
     assert results and results[0]["id"] == "2580"
     assert s.posts, "应先走官网表单 POST /so.php"
     assert not s.gets, "POST 已命中时不应再走 GET 候选"
+    # 回归：结果须含 UI 所需同构字段，避免搜索结果表格 KeyError 崩溃
+    for key in ("words_num", "tags", "score", "source", "title", "author"):
+        assert key in results[0]

@@ -29,6 +29,9 @@ def test_parse_search_html_fuzzy_match():
     assert hits[0]["id"] == "2580"
     assert hits[0]["title"] == "邻家的天使"
     assert "_rel" not in hits[0]
+    # 回归：结果须含 UI 所需同构字段，否则结果表格硬取键会崩溃
+    for key in ("words_num", "tags", "score", "source"):
+        assert key in hits[0]
 
 
 def test_parse_search_html_ignores_welcome_stub():
