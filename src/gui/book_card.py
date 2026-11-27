@@ -53,8 +53,9 @@ class CoverLoader(QThread):
     def run(self) -> None:
         try:
             if self.app_aid:
-                from .wenku8_core.wenku8_app_api import fetch_cover_bytes
-                raw = fetch_cover_bytes(self.app_aid)
+                from .wenku8_core.wenku8_app_api import fetch_cover_data
+                # 图片直链优先（参考项目同款），失败回退 App API 二进制接口
+                raw = fetch_cover_data(self.app_aid)
                 img = QImage.fromData(raw) if raw else QImage()
                 if not img.isNull():
                     self.loaded.emit(self.app_aid, img)

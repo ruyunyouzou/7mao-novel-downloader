@@ -13,24 +13,32 @@
 
 协议来源与编码要点（重要，此前踩过坑）
 ------------------------------------
-本模块协议严格对齐两个真实客户端的权威源码：
+本模块协议严格对齐真实客户端的权威源码。**以 zsakvo/wenku8x（appver=1.13，
+与本模块同版本）为准**——它是能在本机正常搜到「紫罗兰」等别名书的现行实现：
 
-1. MewX/light-novel-library_Wenku8_Android（原作者，2014 起）
-   ``previous_versions/v0.5.2.1/.../api/Wenku8Interface.java``:
-       searchkey = LightNetwork.encodeToHttp(novelName)
-                 = URLEncoder.encode(novelName, "UTF-8")   // 中文 -> %E9%82%BB...
-       request   = LightBase64.EncodeBase64(param)         // base64(UTF-8)
-   ``util/LightNetwork.java`` 注释明确：encodeToHttp("妹") == "%E5%A6%B9"。
-
-2. zsakvo/wenku8x（appver=1.13）``lib/http/api.dart``:
+   zsakvo/wenku8x ``lib/http/ajax.dart:49-51``:
+       _encrypt(param) = base64Encode(utf8.encode(param))   // param 含原始中文
+   ``lib/http/api.dart:78-87``:
        "action=search&searchtype=articlename&searchkey=$bookName&t=0"
-   表面看是直接拼原始中文，但它经 Dio ``FormData.fromMap`` +
-   ``contentType: formUrlEncodedContentType`` 传输，base64 串由 Dio 负责编码。
-   二者对服务器而言等价：服务器 base64 解码后会对 searchkey 做 URL 解码，
-   ``%E9%82%BB...`` 与 ``邻家...`` 都能命中。
+       // bookName 原样插入，**没有** Uri.encodeComponent
+   ``lib/screen/search/search_provider.dart:62-63``:
+       names  = _search(key, searchNovelByNovelName)   // searchtype=articlename
+       authors= _search(key, searchNovelByAuthorName)  // searchtype=author
+       // 两个通道同时搜，合并去重
 
-   本模块手动构造 form，因此**必须自己把中文做 UTF-8 percent 编码**，
-   不能照搬 zsakvo 的"原始中文"字面写法（那是 Dio 代劳的结果）。
+关键结论（此前两次把方向搞反，导致服务端收不到正确关键词）：
+  * base64 编码的是**含原始中文**的参数串；服务端 base64 解码后直接得到
+    ``searchkey=紫罗兰``。原始中文写法在服务端「做不做 URL 解码」两种情况
+    下都能命中，严格更优。
+  * percent 编码（MewX 2014 老版 encodeToHttp）只在服务端额外做一次 URL
+    解码时才成立。此前武断认定"服务端会 URL 解码"而只发 percent 版本，
+    服务端解码后拿到字面量 ``%E7%B4%AB...`` -> 搜不到，这是根本原因。
+  * 因此本模块默认发**原始中文**（对齐 zsakvo），并同时并发发 percent 版本
+    兼容老服务端；再叠加 author 通道。多通道取并集，不再赌单一假设。
+
+MewX 权威源码 line 292/299 的 Title ``恶魔高校DxD(High School DxD)`` 证明
+数据库 Title 字段本身就带括号别名，服务端 articlename 对整个 Title 做匹配，
+别名书（如「紫罗兰永恒花园」）本就能命中——问题一直在编码，不在"别名没索引"。
 
 返回 XML 有两种历史格式，都要兼容：
     <result><item aid='1699'/></result>              （MewX 1.x，仅 aid）
@@ -99,19 +107,27 @@ def encode_request(param: str) -> str:
 
 
 def encode_keyword(keyword: str) -> str:
-    """按 MewX encodeToHttp：UTF-8 percent 编码（中文 -> %E9%82%BB...）。"""
-    return quote(str(keyword or "").strip(), safe="", encoding="utf-8")
+    """返回原始中文关键词（对齐 zsakvo：searchkey 原样插入，不 percent 编码）。
+
+    服务端 base64 解码后直接得到 ``searchkey=紫罗兰``。这是现行客户端能搜到
+    别名书的正确写法；旧实现用 percent 编码会让服务端拿到字面量 %E7%B4%AB...。
+    """
+    return str(keyword or "").strip()
 
 
 def build_search_param(keyword: str, search_type: str = "articlename",
-                       page: int = 1) -> str:
-    """构造搜索请求参数串：searchkey 先 UTF-8 URL 编码，再由 form 整体 base64。
+                       page: int = 1, *, urlencode: bool = False) -> str:
+    """构造搜索请求参数串，中文默认原样（对齐 zsakvo/wenku8x appver=1.13）。
 
-    对齐 MewX ``Wenku8Interface.searchNovelByNovelName``：
-        action=search&searchtype=articlename&searchkey=<urlencoded>&t=0
-    t 为语言 id，0 = 简体中文。
+    对齐 zsakvo ``API.searchNovelByNovelName``/``searchNovelByAuthorName``：
+        action=search&searchtype=<articlename|author>&searchkey=<原始中文>&t=0
+    再由 form ``base64(UTF-8(param))`` 整体编码。t 为语言 id，0 = 简体中文。
+
+    :param urlencode: True 时对关键词做 UTF-8 percent 编码（老服务端兼容路径），
+                      默认 False —— 现行服务端用原始中文，覆盖最广。
     """
-    kw = encode_keyword(keyword)
+    raw = str(keyword or "").strip()
+    kw = quote(raw, safe="", encoding="utf-8") if urlencode else raw
     param = f"action=search&searchtype={search_type}&searchkey={kw}&t=0"
     if page > 1:
         param += f"&page={page}"
@@ -129,8 +145,61 @@ def build_info_param(aid: str) -> str:
 
 
 def build_cover_param(aid: str) -> str:
-    """构造封面二进制参数（MewX getNovelCover）。"""
+    """构造封面二进制参数（MewX getNovelCover，图片 URL 失败时的兜底）。"""
     return f"action=book&do=cover&aid={str(aid or '').strip()}"
+
+
+def build_cover_url(aid: str) -> str:
+    """封面图片直链（zsakvo/wenku8x ``Util.getCover`` 同款）。
+
+        https://img.wenku8.com/image/{aid//1000}/{aid}/{aid}s.jpg
+
+    这是普通图片 URL，直接 HTTP GET 即可，比 App API 的 base64 二进制封面
+    接口更稳（后者在部分线路返回风控占位页）。参考项目正是用这个 URL 展示
+    封面，因此这里作为封面加载的第一优先。
+    """
+    bid = str(aid or "").strip()
+    if not bid.isdigit():
+        return ""
+    ia = int(bid)
+    return f"https://img.wenku8.com/image/{ia // 1000}/{bid}/{bid}s.jpg"
+
+
+def _is_image_bytes(content: bytes) -> bool:
+    head = (content or b"")[:512].lower()
+    blocked = (b"<h1>welcome</h1>" in head or b"attention required" in head
+               or b"just a moment" in head or b"cf-error" in head)
+    if blocked:
+        return False
+    return (
+        content.startswith(b"\xff\xd8")                 # JPEG
+        or content.startswith(b"\x89PNG\r\n\x1a\n")     # PNG
+        or content.startswith(b"GIF8")                  # GIF
+        or (content[:4] == b"RIFF" and content[8:12] == b"WEBP")
+    )
+
+
+def fetch_cover_data(aid: str, session=None) -> bytes:
+    """封面数据：优先图片直链（参考项目同款），失败回退 App API 二进制接口。
+
+    返回图片原始字节；两种通道都失败/被拦时返回空字节。抽成纯函数便于离线
+    测试加载策略，CoverLoader 只负责 QThread 调度和 QImage 解码。
+    """
+    bid = str(aid or "").strip()
+    if not bid.isdigit():
+        return b""
+    url = build_cover_url(bid)
+    if url:
+        try:
+            getter = session.get if session is not None else requests.get
+            resp = getter(url, timeout=_COVER_TIMEOUT,
+                          headers={"User-Agent": "Mozilla/5.0"})
+            content = getattr(resp, "content", None) or b""
+            if _is_image_bytes(content):
+                return content
+        except Exception:  # noqa: BLE001
+            pass
+    return fetch_cover_bytes(bid, session=session)
 
 
 def build_catalog_param(aid: str) -> str:
@@ -365,19 +434,7 @@ def fetch_cover_bytes(aid: str, session=None) -> bytes:
     if resp is None:
         return b""
     content = getattr(resp, "content", None) or b""
-    if not content:
-        return b""
-    head = content[:512].lower()
-    if (b"<h1>welcome</h1>" in head or b"attention required" in head
-            or b"just a moment" in head or b"cf-error" in head):
-        return b""
-    is_image = (
-        content.startswith(b"\xff\xd8")                    # JPEG
-        or content.startswith(b"\x89PNG\r\n\x1a\n")        # PNG
-        or content.startswith(b"GIF8")                     # GIF
-        or (content[:4] == b"RIFF" and content[8:12] == b"WEBP")
-    )
-    return content if is_image else b""
+    return content if _is_image_bytes(content) else b""
 
 
 def _clean_xml_text(value: str) -> str:
@@ -587,24 +644,83 @@ def enrich_app_books(books: List[dict], session=None,
     return out
 
 
-def search_via_app_api(keyword: str, session=None, page: int = 1) -> List[dict]:
-    """通过官方 App API 搜索，命中返回书目列表，失败返回空列表（不抛异常）。
+def _search_one_channel(keyword: str, search_type: str, urlencode: bool,
+                        page: int, session=None, timeout: int = _TIMEOUT) -> List[dict]:
+    """单通道搜索：一种 searchtype × 一种编码。命中书目，失败返回空。"""
+    param = build_search_param(keyword, search_type=search_type, page=page,
+                               urlencode=urlencode)
+    text = _decode_response(_post(param, session, timeout=timeout))
+    if _is_blocked_text(text):
+        return []
+    return parse_search_xml(text)
 
-    重要：服务端已经按 articlename 做了检索，这里不能再做本地 ``matches``
-    二次过滤。此前搜「紫罗兰」时服务端返回了《紫罗兰永恒花园》，却被本地
-    模糊匹配误杀，造成 0 结果。本地相关性只用于排序，不用于裁剪。
+
+def search_via_app_api(keyword: str, session=None, page: int = 1) -> List[dict]:
+    """通过官方 App API 搜索；对齐 zsakvo —— articlename + author 双通道。
+
+    为避免再次赌错单一假设，这里并发发出 4 种组合并取并集：
+        searchtype=articlename × 原始中文   （现行客户端主通道，最关键）
+        searchtype=author      × 原始中文   （参考 App 第二通道）
+        searchtype=articlename × percent    （老服务端兼容）
+        searchtype=author      × percent    （老服务端兼容）
+
+    服务端已按各自字段检索，这里**不做本地 matches 二次过滤**（此前误杀
+    「紫罗兰」的教训）。本地相关性只用于排序。
+
+    传入 session（单测/外部）时串行，规避 requests.Session 跨线程竞态；
+    生产路径并发，用总预算控制，避免被拦时叠加超时拖慢搜索。
     """
     from .wenku8_match import relevance as _relevance
 
-    param = build_search_param(keyword, page=page)
-    text = _decode_response(_post(param, session, timeout=_TIMEOUT))
-    if _is_blocked_text(text):
-        return []
-    books = parse_search_xml(text)
+    combos = [
+        ("articlename", False),
+        ("author", False),
+        ("articlename", True),
+        ("author", True),
+    ]
+    raw: List[dict] = []
+    if session is not None:
+        for st, ue in combos:
+            raw.extend(_search_one_channel(keyword, st, ue, page,
+                                           session=session))
+    else:
+        from concurrent.futures import as_completed, TimeoutError as FTimeout
+        deadline = time.monotonic() + _TIMEOUT + 2
+        pool = ThreadPoolExecutor(max_workers=len(combos))
+        try:
+            fmap = {
+                pool.submit(_search_one_channel, keyword, st, ue, page,
+                            None, _TIMEOUT): (st, ue)
+                for st, ue in combos
+            }
+            try:
+                for fut in as_completed(fmap, timeout=_TIMEOUT + 2):
+                    try:
+                        raw.extend(fut.result() or [])
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if time.monotonic() > deadline:
+                        break
+            except FTimeout:
+                pass
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    # 按 aid 去重合并；有书名的排前面（仅 aid 的老格式放后面）
+    merged: Dict[str, dict] = {}
+    for b in raw:
+        bid = b.get("id")
+        if not bid:
+            continue
+        old = merged.get(bid)
+        if old is None or (not old.get("title") and b.get("title")):
+            merged[bid] = b
+    books = list(merged.values())
     if not books:
         return []
-    named = [b for b in books if b["title"]]
-    aid_only = [b for b in books if not b["title"]]
+
+    named = [b for b in books if b.get("title")]
+    aid_only = [b for b in books if not b.get("title")]
     for b in named:
         b["_rel"] = _relevance(keyword, b["title"])
     named.sort(key=lambda b: -b["_rel"])

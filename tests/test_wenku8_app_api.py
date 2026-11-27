@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """文库8官方 App API 通道协议单测（离线，全 mock）。
 
-协议以 MewX 原作者源码为准（previous_versions/v0.5.2.1）：
-searchkey 先 UTF-8 percent 编码，整体再 base64(UTF-8)；Android UA；
+协议以 zsakvo/wenku8x（appver=1.13，现行可搜到别名书的客户端）为准：
+searchkey 用原始中文（不 percent 编码），整体 base64(UTF-8)；Android UA；
+搜索同时走 articlename + author 双通道；兼容 percent 编码老服务端。
 返回 XML 兼容 <item aid="id">书名</item> 与 <item aid='id'/> 两种格式。
 """
 
@@ -21,13 +22,11 @@ def test_encode_request_is_base64_utf8():
         "action=search&searchtype=articlename"
 
 
-def test_build_search_param_urlencodes_keyword():
-    # 权威契约（MewX encodeToHttp = URLEncoder.encode(str, "UTF-8")）：
-    # searchkey 必须先做 UTF-8 percent 编码，"妹" -> "%E5%A6%B9"。
+def test_build_search_param_uses_raw_chinese():
+    # 权威契约（zsakvo/wenku8x appver=1.13，现行能搜到别名书的客户端）：
+    # searchkey 原样插入，服务端 base64 解码后直接得到 "邻家天使"。
     param = api.build_search_param("邻家天使")
-    assert param.startswith("action=search&searchtype=articlename&searchkey=")
-    assert "searchkey=%E9%82%BB%E5%AE%B6%E5%A4%A9%E4%BD%BF" in param
-    assert param.endswith("&t=0")
+    assert param == "action=search&searchtype=articlename&searchkey=邻家天使&t=0"
     paged = api.build_search_param("邻家天使", page=3)
     assert "&page=3" in paged
     # 整串经 base64(UTF-8) 后可无损还原
@@ -35,9 +34,16 @@ def test_build_search_param_urlencodes_keyword():
     assert base64.b64decode(api.encode_request(paged)).decode("utf-8") == paged
 
 
-def test_encode_keyword_matches_mewx():
-    # MewX 源码注释：encodeToHttp("妹") == "%E5%A6%B9"
-    assert api.encode_keyword("妹") == "%E5%A6%B9"
+def test_build_search_param_percent_compat_path():
+    # 老服务端兼容路径：urlencode=True 时做 UTF-8 percent 编码
+    param = api.build_search_param("妹", urlencode=True)
+    assert "searchkey=%E5%A6%B9" in param
+    assert api.build_search_param("妹") == \
+        "action=search&searchtype=articlename&searchkey=妹&t=0"
+
+
+def test_encode_keyword_returns_raw_chinese():
+    assert api.encode_keyword("妹") == "妹"
 
 
 def test_build_form_has_three_fields():
@@ -135,6 +141,31 @@ def test_search_via_app_api_decodes_utf8_content(monkeypatch):
     assert hits[0]["title"] == "邻家的天使大人"
 
 
+def test_search_fires_both_articlename_and_author_channels():
+    """对齐 zsakvo：搜索必须同时发 articlename 与 author 两个通道。
+
+    此前只发 articlename，作者名命中的书（以及服务端仅在 author 索引里
+    返回的别名书）会漏搜。这里断言两种 searchtype 都在原始中文通道里发出。
+    """
+    sess = _app_session({}, search_xml="<result/>")
+
+    class _RecordingSess:
+        def __init__(self):
+            self.params = []
+
+        def post(self, url, data=None, headers=None, timeout=None):
+            import base64
+            param = base64.b64decode(data["request"]).decode("utf-8")
+            self.params.append(param)
+            return _app_session({}, search_xml="<result/>").post(
+                url, data=data, headers=headers, timeout=timeout)
+
+    rec = _RecordingSess()
+    api.search_via_app_api("紫罗兰", session=rec)
+    assert any("searchtype=articlename&searchkey=紫罗兰" in p for p in rec.params)
+    assert any("searchtype=author&searchkey=紫罗兰" in p for p in rec.params)
+
+
 def test_search_via_app_api_blocked_returns_empty(monkeypatch):
     class _Resp:
         text = "<html><body><h1>Welcome</h1></body></html>"
@@ -146,8 +177,12 @@ def test_search_via_app_api_blocked_returns_empty(monkeypatch):
     assert api.search_via_app_api("邻家天使", session=_Sess()) == []
 
 
-def _app_session(responses):
-    """按解码后的 request 参数串返回预设响应，便于验证 meta/cover 协议。"""
+def _app_session(responses, search_xml=""):
+    """按解码后的 request 参数串返回预设响应，便于验证 meta/cover 协议。
+
+    ``search_xml`` 为任意 ``action=search`` 请求统一返回的 XML：搜索现在并发
+    发 articlename/author × 原始/percent 四种组合，用统一响应模拟服务端命中。
+    """
     import base64
 
     class _Resp:
@@ -162,7 +197,10 @@ def _app_session(responses):
         def post(self, url, data=None, headers=None, timeout=None):
             param = base64.b64decode(data["request"]).decode("utf-8")
             self.calls.append(param)
-            body = responses.get(param, "")
+            if param.startswith("action=search") and search_xml:
+                body = search_xml
+            else:
+                body = responses.get(param, "")
             if isinstance(body, bytes):
                 content = body
             else:
@@ -210,6 +248,20 @@ def test_fetch_meta_uses_meta_endpoint_and_fills_book():
     assert book["intro"] == "详细简介"
 
 
+def test_build_cover_url_matches_reference_app():
+    """封面直链严格对齐 zsakvo/wenku8x Util.getCover。
+
+    aid//1000 分目录，如 2580 -> image/2/2580/2580s.jpg。这是普通图片 URL，
+    比 App API 二进制接口更稳，是封面加载的第一优先。
+    """
+    assert api.build_cover_url("2580") == \
+        "https://img.wenku8.com/image/2/2580/2580s.jpg"
+    assert api.build_cover_url("1034") == \
+        "https://img.wenku8.com/image/1/1034/1034s.jpg"
+    assert api.build_cover_url("") == ""
+    assert api.build_cover_url("abc") == ""
+
+
 def test_fetch_cover_bytes_accepts_jpeg_and_rejects_placeholder():
     jpeg = b"\xff\xd8\xff\xe0JFIF-test"
     sess = _app_session({api.build_cover_param("2580"): jpeg})
@@ -230,10 +282,8 @@ def test_search_enriches_title_and_marks_cover_aid():
         '<data name="Author" value="石踏一荣"/>'
         '<data name="BookLength" value="123456"/>'
     )
-    sess = _app_session({
-        api.build_search_param("恶魔高校"): search_xml,
-        api.build_meta_param("2580"): meta_xml,
-    })
+    sess = _app_session({api.build_meta_param("2580"): meta_xml},
+                        search_xml=search_xml)
     hits = api.search_via_app_api("恶魔高校", session=sess)
     assert len(hits) == 1
     assert hits[0]["id"] == "2580"
@@ -246,12 +296,13 @@ def test_search_enriches_title_and_marks_cover_aid():
 
 def test_search_no_longer_filters_server_results():
     """服务端返回的书名即使本地匹配不到也必须保留，修复「紫罗兰」漏搜。"""
-    search_xml = '<root><item aid="1034">Violet Evergarden</item></root>'
-    sess = _app_session({api.build_search_param("紫罗兰"): search_xml})
+    search_xml = ('<root><item aid="1034">'
+                  '薇尔莉特·伊芙加登(紫罗兰永恒花园)</item></root>')
+    sess = _app_session({}, search_xml=search_xml)
     hits = api.search_via_app_api("紫罗兰", session=sess)
     assert len(hits) == 1
     assert hits[0]["id"] == "1034"
-    assert hits[0]["title"] == "Violet Evergarden"
+    assert "紫罗兰永恒花园" in hits[0]["title"]
 
 
 def test_fetch_detail_uses_app_meta_when_web_is_blocked(monkeypatch):
@@ -459,3 +510,57 @@ def test_search_wenku8_uses_novellist_when_app_search_empty(monkeypatch):
     results = s.search_wenku8("紫罗兰")
     assert len(results) == 1
     assert "紫罗兰永恒花园" in results[0]["title"]
+
+
+def test_fetch_cover_data_prefers_image_url(monkeypatch):
+    """封面数据优先走图片直链；命中即返回，不再调二进制接口。"""
+    from PIL import Image
+    import io
+
+    bio = io.BytesIO()
+    Image.new("RGB", (60, 80), (10, 120, 200)).save(bio, "PNG")
+    png = bio.getvalue()
+    expected_url = api.build_cover_url("2580")
+    calls = {"url": 0, "bin": 0}
+
+    class _Resp:
+        content = png
+
+    def fake_get(url, *a, **k):
+        calls["url"] += 1
+        assert url == expected_url, f"应请求图片直链，实际 {url}"
+        return _Resp()
+
+    def fake_bytes(aid, session=None):
+        calls["bin"] += 1
+        return png
+
+    # fetch_cover_data 里走模块级 requests.get
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.requests.get", fake_get)
+    monkeypatch.setattr(api, "fetch_cover_bytes", fake_bytes)
+
+    data = api.fetch_cover_data("2580")
+    assert data == png
+    assert calls["url"] == 1 and calls["bin"] == 0
+
+
+def test_fetch_cover_data_falls_back_to_binary(monkeypatch):
+    """图片直链失败（占位页/异常）时，回退 App API 二进制封面接口。"""
+    calls = {"bin": 0}
+
+    class _Resp:
+        content = b"<html><body><h1>Welcome</h1></body></html>"
+
+    def fake_get(url, *a, **k):
+        return _Resp()
+
+    def fake_bytes(aid, session=None):
+        calls["bin"] += 1
+        return b"\xff\xd8\xff\xe0JFIF-fallback"
+
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.requests.get", fake_get)
+    monkeypatch.setattr(api, "fetch_cover_bytes", fake_bytes)
+
+    data = api.fetch_cover_data("2580")
+    assert data == b"\xff\xd8\xff\xe0JFIF-fallback"
+    assert calls["bin"] == 1
