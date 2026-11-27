@@ -91,7 +91,8 @@ def test_parse_search_xml_empty_on_welcome():
     assert api.parse_search_xml("<html><body><h1>Welcome</h1></body></html>") == []
 
 
-def test_search_via_app_api_fuzzy_match_and_relevance(monkeypatch):
+def test_search_via_app_api_keeps_server_results_and_sorts():
+    """服务端已按书名检索：本地相关性只排序，不再二次过滤误杀结果。"""
     xml = (
         '<root><item aid="2580">邻家的天使大人</item>'
         '<item aid="999">别的书</item></root>'
@@ -108,9 +109,12 @@ def test_search_via_app_api_fuzzy_match_and_relevance(monkeypatch):
             return _Resp()
 
     hits = api.search_via_app_api("邻家天使", session=_Sess())
-    assert len(hits) == 1
+    # 关键回归：此前「别的书」会被本地 matches 过滤，「紫罗兰永恒花园」
+    # 这类服务端命中也会被误杀。现在全部保留，仅按相关性排序。
+    assert len(hits) == 2
     assert hits[0]["id"] == "2580"
-    assert "_rel" not in hits[0]
+    assert hits[1]["id"] == "999"
+    assert all("_rel" not in h for h in hits)
 
 
 def test_search_via_app_api_decodes_utf8_content(monkeypatch):
@@ -140,3 +144,254 @@ def test_search_via_app_api_blocked_returns_empty(monkeypatch):
             return _Resp()
 
     assert api.search_via_app_api("邻家天使", session=_Sess()) == []
+
+
+def _app_session(responses):
+    """按解码后的 request 参数串返回预设响应，便于验证 meta/cover 协议。"""
+    import base64
+
+    class _Resp:
+        def __init__(self, content: bytes) -> None:
+            self.content = content
+            self.text = content.decode("utf-8", errors="replace")
+
+    class _Sess:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def post(self, url, data=None, headers=None, timeout=None):
+            param = base64.b64decode(data["request"]).decode("utf-8")
+            self.calls.append(param)
+            body = responses.get(param, "")
+            if isinstance(body, bytes):
+                content = body
+            else:
+                content = str(body).encode("utf-8")
+            return _Resp(content)
+
+    return _Sess()
+
+
+def test_build_meta_info_cover_params():
+    assert api.build_meta_param("2580") == "action=book&do=meta&aid=2580&t=0"
+    assert api.build_info_param("2580") == "action=book&do=info&aid=2580&t=0"
+    assert api.build_cover_param("2580") == "action=book&do=cover&aid=2580"
+
+
+def test_parse_meta_xml_keeps_full_title_with_alias():
+    xml = (
+        '<data name="Title" aid="1306">'
+        '<![CDATA[向森之魔物献上花束(向森林的魔兽少女献花)]]></data>'
+        '<data name="Author" value="小木君人"/>'
+        '<data name="BookLength" value="105985"/>'
+        '<data name="IntroPreview"><![CDATA[简介 &amp; 别名说明]]></data>'
+    )
+    meta = api.parse_meta_xml(xml)
+    assert meta["title"] == "向森之魔物献上花束(向森林的魔兽少女献花)"
+    assert meta["author"] == "小木君人"
+    assert meta["booklength"] == "105985"
+    assert meta["intropreview"] == "简介 & 别名说明"
+
+
+def test_fetch_meta_uses_meta_endpoint_and_fills_book():
+    meta_xml = (
+        '<data name="Title"><![CDATA[恶魔高校DxD(High School DxD)]]></data>'
+        '<data name="Author" value="石踏一荣"/>'
+        '<data name="BookLength" value="123456"/>'
+        '<data name="IntroPreview"><![CDATA[详细简介]]></data>'
+    )
+    sess = _app_session({api.build_meta_param("2580"): meta_xml})
+    meta = api.fetch_meta("2580", session=sess)
+    assert sess.calls == [api.build_meta_param("2580")]
+    book = api.meta_to_book(meta, {"id": "2580", "title": "恶魔高校DxD"})
+    assert book["title"] == "恶魔高校DxD(High School DxD)"  # 括号别名保留
+    assert book["author"] == "石踏一荣"
+    assert book["words_num"] == "123456"
+    assert book["intro"] == "详细简介"
+
+
+def test_fetch_cover_bytes_accepts_jpeg_and_rejects_placeholder():
+    jpeg = b"\xff\xd8\xff\xe0JFIF-test"
+    sess = _app_session({api.build_cover_param("2580"): jpeg})
+    assert api.fetch_cover_bytes("2580", session=sess) == jpeg
+    assert sess.calls == [api.build_cover_param("2580")]
+
+    blocked = _app_session({
+        api.build_cover_param("2580"): "<html><body><h1>Welcome</h1></body></html>"
+    })
+    assert api.fetch_cover_bytes("2580", session=blocked) == b""
+
+
+def test_search_enriches_title_and_marks_cover_aid():
+    """搜索结果用 meta 补完整书名，同时给卡片留下 App 封面 aid。"""
+    search_xml = '<root><item aid="2580">恶魔高校DxD</item></root>'
+    meta_xml = (
+        '<data name="Title"><![CDATA[恶魔高校DxD(High School DxD)]]></data>'
+        '<data name="Author" value="石踏一荣"/>'
+        '<data name="BookLength" value="123456"/>'
+    )
+    sess = _app_session({
+        api.build_search_param("恶魔高校"): search_xml,
+        api.build_meta_param("2580"): meta_xml,
+    })
+    hits = api.search_via_app_api("恶魔高校", session=sess)
+    assert len(hits) == 1
+    assert hits[0]["id"] == "2580"
+    assert hits[0]["title"] == "恶魔高校DxD(High School DxD)"
+    assert hits[0]["author"] == "石踏一荣"
+    assert hits[0]["words_num"] == "123456"
+    assert hits[0]["cover_aid"] == "2580"
+    assert hits[0]["cover"] == ""  # 封面由卡片后台走二进制接口加载
+
+
+def test_search_no_longer_filters_server_results():
+    """服务端返回的书名即使本地匹配不到也必须保留，修复「紫罗兰」漏搜。"""
+    search_xml = '<root><item aid="1034">Violet Evergarden</item></root>'
+    sess = _app_session({api.build_search_param("紫罗兰"): search_xml})
+    hits = api.search_via_app_api("紫罗兰", session=sess)
+    assert len(hits) == 1
+    assert hits[0]["id"] == "1034"
+    assert hits[0]["title"] == "Violet Evergarden"
+
+
+def test_fetch_detail_uses_app_meta_when_web_is_blocked(monkeypatch):
+    """网页被风控拦时，详情仍能从 App meta 拿到括号别名和字数。"""
+    from gui.wenku8_core import wenku8_reader as reader
+
+    class _BlockedSession:
+        def get(self, *args, **kwargs):
+            raise RuntimeError("blocked")
+
+    monkeypatch.setattr(api, "fetch_meta", lambda aid: {
+        "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
+        "author": "晓佳奈",
+        "booklength": "258000",
+        "intropreview": "自动人偶与人之间的故事",
+    })
+    detail = reader.fetch_detail("2353", session=_BlockedSession())
+    assert detail["title"] == "薇尔莉特·伊芙加登(紫罗兰永恒花园)"
+    assert detail["author"] == "晓佳奈"
+    assert detail["words_num"] == "258000"
+    assert detail["intro"] == "自动人偶与人之间的故事"
+
+
+def test_build_catalog_and_text_params():
+    assert api.build_catalog_param("2580") == "action=book&do=list&aid=2580&t=0"
+    assert api.build_text_param("2580", "41749") == \
+        "action=book&do=text&aid=2580&cid=41749&t=0"
+
+
+def test_parse_catalog_xml_keeps_volumes_and_filters_images():
+    xml = (
+        '<?xml version="1.0" encoding="utf-8"?><package>'
+        '<volume vid="41748"><![CDATA[第一卷 告白于苍刻之夜]]>'
+        '<chapter cid="41749"><![CDATA[序章]]></chapter>'
+        '<chapter cid="41750"><![CDATA[第一章]]></chapter>'
+        '<chapter cid="41759"><![CDATA[插图]]></chapter>'
+        '</volume>'
+        '<volume vid="45090"><![CDATA[第二卷 谎言、真相与赤红]]>'
+        '<chapter cid="45091"><![CDATA[序章]]></chapter>'
+        '</volume></package>'
+    )
+    catalog = api.parse_catalog_xml(xml, "2580")
+    assert len(catalog) == 3  # 插图章已过滤
+    assert [c["title"] for c in catalog] == ["序章", "第一章", "序章"]
+    assert catalog[0]["vol"] == "第一卷 告白于苍刻之夜"
+    assert catalog[2]["vol"] == "第二卷 谎言、真相与赤红"
+    assert catalog[0]["app_cid"] == "41749"
+    assert catalog[0]["url"] == ""  # 正文走 do=text，不依赖网页 URL
+
+
+def test_fetch_catalog_app_uses_list_endpoint():
+    xml = (
+        '<package><volume vid="1"><![CDATA[第一卷]]>'
+        '<chapter cid="41749"><![CDATA[序章]]></chapter>'
+        '</volume></package>'
+    )
+    sess = _app_session({api.build_catalog_param("2580"): xml})
+    catalog = api.fetch_catalog_app("2580", session=sess)
+    assert sess.calls == [api.build_catalog_param("2580")]
+    assert len(catalog) == 1
+    assert catalog[0]["app_cid"] == "41749"
+
+
+def test_fetch_text_app_cleans_image_markers_and_promo():
+    body = (
+        '第一卷 告白于苍刻之夜 序章\n'
+        '<!--image-->http://pic.wenku8.com/pictures/1.jpg<!--image-->\n'
+        '正文第一行\n'
+        '本文来自轻小说文库 http://www.wenku8.net\n'
+    )
+    sess = _app_session({api.build_text_param("2580", "41749"): body})
+    text = api.fetch_text_app("2580", "41749", session=sess)
+    assert sess.calls == [api.build_text_param("2580", "41749")]
+    assert "正文第一行" in text
+    assert "<!--image-->" not in text
+    assert "wenku8.net" not in text
+    assert text.startswith("    第一卷")  # 与网页通道同构的缩进纯文本
+
+
+def test_reader_catalog_prefers_app_api(monkeypatch):
+    from gui.wenku8_core import wenku8_reader as reader
+
+    monkeypatch.setattr(api, "fetch_catalog_app", lambda aid: [
+        {"id": "41749", "app_cid": "41749", "title": "序章",
+         "vol": "第一卷", "url": "", "index": 0},
+    ])
+    catalog = reader.fetch_catalog("2580")
+    assert len(catalog) == 1
+    assert catalog[0]["app_cid"] == "41749"
+
+
+def test_download_plugin_uses_app_catalog_and_text(monkeypatch):
+    import sys
+    sys.path.insert(0, "src")
+    from plugins.wenku8_downloader_plugin import Wenku8BookSource
+    from gui.wenku8_core import wenku8_reader as reader
+
+    monkeypatch.setattr(reader, "fetch_catalog", lambda bid, sess: [
+        {"id": "41749", "app_cid": "41749", "title": "序章",
+         "vol": "第一卷", "url": "", "index": 0},
+    ])
+    monkeypatch.setattr(reader, "fetch_chapter_text_app",
+                        lambda aid, cid, sess: "    App API 正文")
+
+    source = Wenku8BookSource()
+    catalog = source.fetch_catalog("2580", None)
+    assert source._app_mode is True
+    assert source._aid == "2580"
+    assert catalog[0]["app_cid"] == "41749"
+    assert source.chapter_text(None, catalog[0], None, None) == "    App API 正文"
+
+
+def test_fetch_detail_parses_tags_from_articleinfo(monkeypatch):
+    """标签来自参考项目同款 articleinfo 详情页，不是 App meta。"""
+    from gui.wenku8_core import wenku8_reader as reader
+
+    html = (
+        '<html><title>关于我在无意间被隔壁的天使变成废柴这件事'
+        '(关于邻家的天使大人不知不觉把我惯成了废人这档子事) - '
+        '佐伯さん - 校园 - 轻小说文库</title><body>'
+        '<span>标签：校园 欢乐向 青春 恋爱</span>'
+        '<span>小说作者：佐伯さん</span>'
+        '</body></html>'
+    )
+
+    class _Resp:
+        encoding = ""
+        text = html
+
+    class _Sess:
+        def get(self, url, timeout=None):
+            assert "/modules/article/articleinfo.php?id=2580" in url
+            return _Resp()
+
+    monkeypatch.setattr(api, "fetch_meta", lambda aid: {
+        "title": "关于我在无意间被隔壁的天使变成废柴这件事"
+                 "(关于邻家的天使大人不知不觉把我惯成了废人这档子事)",
+        "author": "佐伯さん",
+    })
+    detail = reader.fetch_detail("2580", session=_Sess())
+    assert detail["tags"] == "校园,欢乐向,青春,恋爱"
+    assert detail["author"] == "佐伯さん"
+    assert "关于邻家的天使大人" in detail["title"]

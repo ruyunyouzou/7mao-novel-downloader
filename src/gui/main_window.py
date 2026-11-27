@@ -2569,9 +2569,9 @@ class MainWindow(QMainWindow):
                 "title": d.get("title") or f"书 {wid}",
                 "author": d.get("author") or "",
                 "intro": d.get("intro") or "",
-                "words_num": "",
+                "words_num": d.get("words_num") or "",
                 "cover": d.get("cover") or "",
-                "tags": "",
+                "tags": d.get("tags") or "",
                 "score": "",
                 "source": "wenku8",
             }

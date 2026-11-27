@@ -27,6 +27,8 @@ class Wenku8BookSource(BookSource):
     def __init__(self) -> None:
         self._total = 0
         self._prefix = ""
+        self._aid = ""
+        self._app_mode = False
 
     def _session(self, session=None):
         """文库8必须带登录 Cookie；追更等调用方传入的是裸 Session，不可直接用。"""
@@ -49,11 +51,19 @@ class Wenku8BookSource(BookSource):
         }
 
     def fetch_catalog(self, book_id: str, session) -> list:
-        from gui.wenku8_core.wenku8_reader import fetch_catalog, fetch_book_meta
+        from gui.wenku8_core.wenku8_reader import (
+            resolve_book_id, fetch_catalog, fetch_book_meta,
+        )
         sess = self._session(session)
-        meta = fetch_book_meta(book_id, sess)
-        self._prefix = meta.get("novel_prefix", "")
+        self._aid = resolve_book_id(book_id) or str(book_id or "").strip()
         raw = fetch_catalog(book_id, sess)
+        # App API 目录自带 app_cid/vol，走 do=text 正文，无需网页 novel 前缀
+        self._app_mode = any(str(ch.get("app_cid") or "").isdigit() for ch in raw)
+        self._prefix = ""
+        if not self._app_mode:
+            # 仅网页目录通道可用时才需要前缀（兼容旧线路）
+            meta = fetch_book_meta(book_id, sess)
+            self._prefix = meta.get("novel_prefix", "")
         # 归一为「卷/集/章」层级：title 精简为纯章名，vol/sub 记录分组。
         from gui.hierarchy import normalize_catalog_safe
         raw = normalize_catalog_safe(raw)
@@ -61,13 +71,22 @@ class Wenku8BookSource(BookSource):
         return raw
 
     def chapter_text(self, ctx, chapter: dict, session, report) -> str:
-        from gui.wenku8_core.wenku8_reader import fetch_chapter_text
+        from gui.wenku8_core.wenku8_reader import (
+            fetch_chapter_text, fetch_chapter_text_app,
+        )
         sess = self._session(session)
-        url = chapter.get("url") or ""
-        prefix = self._prefix
-        text = fetch_chapter_text(url or chapter["id"], sess,
-                                  novel_prefix=prefix,
-                                  book_id=str(chapter.get("bid", "")))
+        text = ""
+        cid = str(chapter.get("app_cid") or "") if self._app_mode else ""
+        if cid:
+            text = fetch_chapter_text_app(self._aid, cid, sess)
+        if not text:
+            # App 正文失败时回退网页通道（若网页可用），不丢章
+            url = chapter.get("url") or ""
+            text = fetch_chapter_text(
+                url or chapter["id"], sess,
+                novel_prefix=self._prefix,
+                book_id=str(chapter.get("bid", "")),
+            )
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1
             report(2 + min(38, int(idx / self._total * 38)))

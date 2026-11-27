@@ -74,16 +74,39 @@ def _novel_prefix(html: str, book_id: str) -> str:
 
 
 def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
-    """取书籍详情：title / author / intro / cover。"""
+    """取书籍详情：title / author / intro / cover / words_num / tags。
+
+    网页详情可能被 Cloudflare 拦，也可能从 <title> 拆书名时丢掉括号别名；
+    因此网页只作为基础来源，权威字段优先取官方 App API 的 meta 接口
+    （MewX 原作者同款，Title 保留「书名(别名)」原文）。
+    """
     bid = resolve_book_id(book_id)
     sess = session or make_session()
-    resp = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
-    html = _decode(resp)
+    html = ""
+    # hikari_novel_flutter 等参考项目用 articleinfo.php 取详情并解析标签；
+    # 旧 /book/{id}.htm 保留兜底。任一页面可用即可，全部失败仍能走 App meta。
+    detail_urls = (
+        f"{_base()}/modules/article/articleinfo.php?id={bid}",
+        f"{_base()}/book/{bid}.htm",
+    )
+    for url in detail_urls:
+        try:
+            resp = sess.get(url, timeout=10)
+            candidate = _decode(resp)
+            low = (candidate or "").lower()
+            if ("<h1>welcome</h1>" in low or "attention required" in low
+                    or "just a moment" in low or "cf-error" in low):
+                continue
+            if candidate:
+                html = candidate
+                break
+        except Exception:  # noqa: BLE001
+            continue
     soup = BeautifulSoup(html, "html.parser")
 
     title, author, intro, cover = "", "", "", ""
 
-    # 书名/作者：优先 <title>（格式「书名 - 作者 - 分类 - 轻小说文库」）
+    # 书名/作者：网页 <title> 格式「书名 - 作者 - 分类 - 轻小说文库」
     if soup.title:
         parts = [p.strip() for p in soup.title.get_text().split(" - ")]
         if len(parts) >= 4:
@@ -91,9 +114,9 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
         elif len(parts) >= 2:
             title = parts[0]
 
-    # 详情页表格里的「小说作者：xxx」
+    # 详情页表格里的「小说作者：xxx」/「作者：xxx」
     if not author:
-        m = re.search(r"小说作者[：:]\s*([^<\s]+)", html)
+        m = re.search(r"(?:小说)?作者[：:]\s*([^<\s]+)", html)
         if m:
             author = m.group(1).strip()
 
@@ -115,11 +138,48 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
         if m:
             intro = BeautifulSoup(m.group(1), "html.parser").get_text(" ", strip=True)
 
+    # 标签：hikari_novel_flutter 从详情页第一个含「标签」的 span 解析，
+    # 形如「标签：校园 欢乐向 青春 恋爱」。这里兼容 span 文本与原始 HTML。
+    tags = ""
+    for node in soup.select("span"):
+        txt = node.get_text(" ", strip=True)
+        if "标签" in txt or re.search(r"(?i)\btag", txt):
+            raw = re.sub(r"^.*?(?:标签|tag)[：:]\s*", "", txt, flags=re.I)
+            parts = [p.strip() for p in re.split(r"[\s,，]+", raw) if p.strip()]
+            tags = ",".join(parts[:12])
+            if tags:
+                break
+    if not tags:
+        m = re.search(r"标签[：:]\s*([^<]+)", html)
+        if m:
+            parts = [p.strip() for p in re.split(r"[\s,，]+", m.group(1)) if p.strip()]
+            tags = ",".join(parts[:12])
+
+    words_num = ""
+    # App API meta：补完整书名（含括号别名）、作者、字数、简介；网页失败也仍可用
+    try:
+        from .wenku8_app_api import fetch_meta, meta_to_book
+        meta = fetch_meta(bid)
+        if meta:
+            merged = meta_to_book(meta, {
+                "title": title, "author": author, "intro": intro, "cover": cover,
+            })
+            title = merged.get("title") or title
+            author = author or merged.get("author", "")
+            intro = intro or merged.get("intro", "")
+            cover = cover or merged.get("cover", "")
+            words_num = merged.get("words_num", "")
+            tags = tags or merged.get("tags", "")
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "title": title,
         "author": author,
         "intro": intro,
         "cover": cover,
+        "words_num": words_num,
+        "tags": tags,
     }
 
 
@@ -144,6 +204,17 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     """
     bid = resolve_book_id(book_id)
     sess = session or make_session()
+
+    # App API 目录优先：网页详情页/目录页被 Cloudflare 拦时，旧实现会
+    # 得到空目录并导致下载失败（截图「目录为空，无法下载」）。
+    # App 接口与搜索/封面同一通道，返回带卷层级的 volume/chapter XML。
+    try:
+        from .wenku8_app_api import fetch_catalog_app
+        app_catalog = fetch_catalog_app(bid)
+        if app_catalog:
+            return app_catalog
+    except Exception:  # noqa: BLE001
+        pass
 
     # 先取详情页以确定 novel 前缀（分类号 n）
     d = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
@@ -252,3 +323,9 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
             continue
         lines.append("    " + line)
     return "\n".join(lines)
+
+
+def fetch_chapter_text_app(aid: str, cid: str, session=None) -> str:
+    """App API 正文通道（do=text），供下载插件按 app_cid 逐章取文。"""
+    from .wenku8_app_api import fetch_text_app
+    return fetch_text_app(aid, cid, session)

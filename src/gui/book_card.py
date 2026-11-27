@@ -36,10 +36,14 @@ class CoverLoader(QThread):
 
     loaded = Signal(str, QImage)  # url, image
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, app_aid: str = "") -> None:
         # 不设 parent：宿主卡片销毁时不要连带销毁可能仍在运行的线程
         super().__init__()
-        self.url = url
+        self.url = str(url or "")
+        # 文库8 App API 封面是 POST + base64 表单返回的二进制图片，
+        # 不是普通 HTTP URL。搜索结果只带 aid，封面由这里异步补齐，
+        # 避免为了封面拖慢搜索线程。
+        self.app_aid = str(app_aid or "").strip()
         # 从创建起就纳入全局追踪：结束时自动释放；程序退出时由主窗口统一停止。
         # 否则卡片被 deleteLater 后，运行中的线程随即被 GC 销毁，触发
         # "QThread: Destroyed while thread is still running" 警告。
@@ -48,6 +52,13 @@ class CoverLoader(QThread):
 
     def run(self) -> None:
         try:
+            if self.app_aid:
+                from .wenku8_core.wenku8_app_api import fetch_cover_bytes
+                raw = fetch_cover_bytes(self.app_aid)
+                img = QImage.fromData(raw) if raw else QImage()
+                if not img.isNull():
+                    self.loaded.emit(self.app_aid, img)
+                return
             resp = requests.get(self.url, timeout=8)
             img = QImage.fromData(resp.content)
             if not img.isNull():
@@ -180,10 +191,12 @@ class BookCard(QFrame):
 
         layout.addLayout(info, 1)
 
-        # 异步加载封面
+        # 异步加载封面：文库8 App API 结果用 cover_aid 走专用封面接口，
+        # 其他书源仍使用普通 HTTP 封面 URL。
         cover_url = self.book.get("cover", "")
-        if cover_url:
-            self._loader = CoverLoader(cover_url)
+        cover_aid = str(self.book.get("cover_aid", "") or "").strip()
+        if cover_aid or cover_url:
+            self._loader = CoverLoader(cover_url, app_aid=cover_aid)
             self._loader.loaded.connect(self._on_cover)
             self._loader.start()
 
