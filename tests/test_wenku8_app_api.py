@@ -395,3 +395,67 @@ def test_fetch_detail_parses_tags_from_articleinfo(monkeypatch):
     assert detail["tags"] == "校园,欢乐向,青春,恋爱"
     assert detail["author"] == "佐伯さん"
     assert "关于邻家的天使大人" in detail["title"]
+
+
+def test_build_novellist_param():
+    """榜单参数：novellist/sort/page/t，MewX getNovelListWithInfo 同款。"""
+    param = api.build_novellist_param("allvisit", 2)
+    assert param == "action=novellist&sort=allvisit&page=2&t=0"
+
+
+def test_parse_novellist_xml_keeps_bracket_alias():
+    """榜单 Title 带括号别名，必须保留原文（紫罗兰场景的数据基础）。"""
+    xml = (
+        '<?xml version="1.0" encoding="utf-8"?><result><page num="166"/>'
+        "<item aid='1034'><data name='Title'><![CDATA[恶魔高校DxD(High School DxD)]]></data>"
+        "<data name='TotalHitsCount' value='2316361'/></item>"
+        "<item aid='1306'><data name='Title'><![CDATA[向森之魔物献上花束(向森林的魔兽少女献花)]]></data></item>"
+        "</result>"
+    )
+    books = api.parse_novellist_xml(xml)
+    assert len(books) == 2
+    assert books[0]["id"] == "1034"
+    assert books[0]["title"] == "恶魔高校DxD(High School DxD)"
+    assert books[0]["cover_aid"] == "1034"
+    assert books[1]["title"] == "向森之魔物献上花束(向森林的魔兽少女献花)"
+
+
+def test_search_via_novellist_matches_bracket_alias():
+    """核心回归：服务端搜不到的别名书，榜单元数据本地匹配必须命中。"""
+    xml_page = (
+        "<result><item aid='1034'><data name='Title'>"
+        "<![CDATA[恶魔高校DxD(High School DxD)]]></data></item>"
+        "<item aid='9999'><data name='Title'>"
+        "<![CDATA[某书(紫罗兰永恒花园)]]></data></item></result>"
+    )
+
+    class _Sess:
+        def post(self, url, data=None, headers=None, timeout=None):
+            class _Resp:
+                content = xml_page.encode("utf-8")
+            return _Resp()
+
+    hits = api.search_via_novellist("紫罗兰", session=_Sess(), pages=1,
+                                    sorts=("allvisit",))
+    assert len(hits) == 1
+    assert hits[0]["id"] == "9999"
+    assert "紫罗兰永恒花园" in hits[0]["title"]
+    assert hits[0]["cover_aid"] == "9999"
+
+
+def test_search_wenku8_uses_novellist_when_app_search_empty(monkeypatch):
+    """App API search 空时，搜索主流程要降级到榜单别名匹配。"""
+    from gui.wenku8_core import wenku8_search as s
+
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_app_api",
+                        lambda kw, page=1: [])
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_novellist",
+                        lambda kw, session=None, pages=3: [{
+                            "id": "1034", "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
+                            "author": "晓佳奈", "cover_aid": "1034", "source": "wenku8",
+                        }])
+    monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.enrich_app_books",
+                        lambda books, session=None: books)
+    results = s.search_wenku8("紫罗兰")
+    assert len(results) == 1
+    assert "紫罗兰永恒花园" in results[0]["title"]

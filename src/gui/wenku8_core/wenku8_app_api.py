@@ -89,6 +89,8 @@ _TEXT_TIMEOUT = 10
 # 搜索结果中最多补几本元数据：保证「恶魔高校」这类少量结果完整，
 # 同时避免热门关键词返回几十本时串行放大搜索延迟。
 _META_LIMIT = 8
+# 榜单别名兜底的总时间预算（秒）：多榜单并发，全被拦也只是等这些秒。
+_NOVELLIST_BUDGET = 10
 
 
 def encode_request(param: str) -> str:
@@ -140,6 +142,26 @@ def build_text_param(aid: str, cid: str) -> str:
     """构造正文参数（MewX getNovelContent）。"""
     return (f"action=book&do=text&aid={str(aid or '').strip()}"
             f"&cid={str(cid or '').strip()}&t=0")
+
+
+# 榜单排序值（MewX getNOVELSORTBY / zsakvo getNovelList 通用）
+NOVELLIST_SORTS = (
+    "allvisit", "allvote", "monthvisit", "monthvote",
+    "postdate", "lastupdate", "goodnum", "size",
+)
+
+
+def build_novellist_param(sort: str, page: int = 1) -> str:
+    """构造榜单书目参数（MewX getNovelListWithInfo / zsakvo getNovelList）。
+
+    关键：``novellist`` 返回的 ``Title`` 是**带括号别名的完整书名**
+    （MewX 权威样例 ``恶魔高校DxD(High School DxD)``、
+    ``约会大作战(DATE A LIVE)``），而 ``search&searchtype=articlename``
+    只按主标题索引——这正是「紫罗兰」搜不到《薇尔莉特·伊芙加登
+    (紫罗兰永恒花园)》的根因。榜单元数据本地匹配可覆盖别名。
+    """
+    s = str(sort or "allvisit").strip() or "allvisit"
+    return f"action=novellist&sort={s}&page={max(1, int(page or 1))}&t=0"
 
 
 def build_form(param: str, timetoken_ms: int | None = None) -> dict:
@@ -213,6 +235,43 @@ def parse_search_xml(xml_text: str) -> List[dict]:
         out.append({
             "id": aid, "title": title, "author": "", "intro": "",
             "cover": "", "source": "wenku8", "_rel": 0,
+        })
+    return out
+
+
+def parse_novellist_xml(xml_text: str) -> List[dict]:
+    """解析榜单书目 XML：``<item aid='X'><data name='Title'>书名(别名)</data>``。
+
+    返回 [{id, title, author, cover_aid, source}]，title 保留括号别名原文。
+    与 parse_search_xml 类似谨慎去重，兼容 ``<item/>`` 与 ``<item>...</item>``。
+    """
+    out: List[dict] = []
+    seen = set()
+    if not xml_text:
+        return out
+    for m in re.finditer(r"<item\b([^>]*?)(?:/>|>(.*?)</item>)",
+                         xml_text, re.I | re.S):
+        attrs = m.group(1) or ""
+        am = re.search(r"\baid\s*=\s*[\"'](\d+)[\"']", attrs, re.I)
+        if not am:
+            continue
+        aid = am.group(1)
+        if aid in seen:
+            continue
+        inner = m.group(2) or ""
+        title = ""
+        tm = re.search(
+            r"<data\b[^>]*\bname\s*=\s*[\"']title[\"'][^>]*>(.*?)</data>",
+            inner, re.I | re.S)
+        if tm:
+            title = _clean_xml_text(tm.group(1))
+        if not title:
+            # 无 Title 的旧榜单项：跳过（无法做别名匹配）
+            continue
+        seen.add(aid)
+        out.append({
+            "id": aid, "title": title, "author": "", "intro": "",
+            "cover": "", "cover_aid": aid, "source": "wenku8", "_rel": 0,
         })
     return out
 
@@ -416,6 +475,78 @@ def fetch_text_app(aid: str, cid: str, session=None) -> str:
             continue
         lines.append("    " + line)
     return "\n".join(lines)
+
+
+def fetch_novellist_page(sort: str, page: int, session=None) -> List[dict]:
+    """取单页榜单书目（带括号别名的完整书名）；失败/风控返回空。"""
+    text = _decode_response(_post(build_novellist_param(sort, page), session,
+                                  timeout=_TIMEOUT))
+    if _is_blocked_text(text):
+        return []
+    return parse_novellist_xml(text)
+
+
+def search_via_novellist(keyword: str, session=None, pages: int = 3,
+                         sorts: tuple = NOVELLIST_SORTS) -> List[dict]:
+    """按榜单书目元数据做本地别名匹配（覆盖服务端搜索命不中的别名书）。
+
+    服务端 ``searchtype=articlename`` 只按主标题索引：搜「紫罗兰」找不到
+    《薇尔莉特·伊芙加登(紫罗兰永恒花园)》。但榜单 ``novellist`` 的 Title
+    带完整括号别名，本地归一化匹配即可命中。参考 App 的 SEARCH.md 明确
+    写了「从可分页的书目元数据中继续筛选」，此函数即该机制的实现。
+
+    并发拉多个榜单的前若干页，全部按同一套 wenku8_match 匹配；命中即
+    保留完整 Title（含别名），并打 cover_aid 供卡片异步加载封面。
+    """
+    from .wenku8_match import matches as _matches, relevance as _relevance
+
+    kw = str(keyword or "").strip()
+    if not kw:
+        return []
+    pages = max(1, min(5, int(pages or 1)))
+    tasks = [(s, p) for s in sorts for p in range(1, pages + 1)]
+
+    raw: List[dict] = []
+    if session is not None:
+        # 单测/外部传入 session：串行，规避 requests.Session 跨线程竞态
+        for s, p in tasks:
+            raw.extend(fetch_novellist_page(s, p, session))
+    else:
+        # 并发但设总预算：全部请求被风控拦时也只等 _NOVELLIST_BUDGET 秒，
+        # 不让别名兜底把搜索拖回「半分钟」（延续第 90 条提速要求）。
+        from concurrent.futures import as_completed, TimeoutError as FTimeout
+        deadline = time.monotonic() + _NOVELLIST_BUDGET
+        pool = ThreadPoolExecutor(max_workers=min(8, len(tasks)))
+        try:
+            fmap = {pool.submit(fetch_novellist_page, s, p): (s, p)
+                    for s, p in tasks}
+            try:
+                for fut in as_completed(fmap, timeout=_NOVELLIST_BUDGET):
+                    try:
+                        raw.extend(fut.result() or [])
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if time.monotonic() > deadline:
+                        break
+            except FTimeout:
+                pass
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    hits: List[dict] = []
+    seen = set()
+    for b in raw:
+        bid = b["id"]
+        if bid in seen:
+            continue
+        seen.add(bid)
+        if _matches(kw, b["title"]):
+            b["_rel"] = _relevance(kw, b["title"])
+            hits.append(b)
+    hits.sort(key=lambda b: -b["_rel"])
+    for b in hits:
+        b.pop("_rel", None)
+    return hits
 
 
 def _enrich_one(book: dict, session=None) -> dict:

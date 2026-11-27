@@ -352,13 +352,71 @@ def step5_catalog(base: str, cookie: str) -> None:
     out()
 
 
+def step6_appapi() -> None:
+    """官方 App API 全通道诊断：直接定位搜索/别名/详情/封面/目录真实返回。"""
+    import base64 as _b64
+    import datetime as _dt
+
+    app_url = "http://app.wenku8.com/android.php"
+    app_ua = "Dalvik/2.1.0 (Linux; U; Android 11; IN2010 Build/RP1A.201005.001)"
+
+    def _pct(s, enc):
+        return "".join("%%%02X" % b for b in s.encode(enc))
+
+    def _app_post(param):
+        form = urllib.parse.urlencode({
+            "appver": "1.13",
+            "request": _b64.b64encode(param.encode("utf-8")).decode("ascii"),
+            "timetoken": str(int(time.time() * 1000)),
+        }).encode("ascii")
+        req = urllib.request.Request(app_url, data=form, headers={
+            "User-Agent": app_ua,
+            "Content-Type": "application/x-www-form-urlencoded",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=12) as r:
+                return r.status, r.read()
+        except Exception as e:  # noqa: BLE001
+            return 0, ("EXC %s: %s" % (type(e).__name__, e)).encode("utf-8", "replace")
+
+    def _show(label, param, limit=600):
+        st, raw = _app_post(param)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", "replace")
+        preview = text[:limit].replace("\n", " ")
+        blocked = "Welcome" in text or "Attention Required" in text
+        out(f"    [{label}] HTTP {st} 字节 {len(raw)} "
+            f"{'<风控占位页>' if blocked else ''}")
+        out(f"        param: {param}")
+        out(f"        body : {preview}")
+
+    out("[6] 官方 App API 全通道诊断（定位搜索/别名/封面/详情/目录）")
+    for kw in ("恶魔高校", "紫罗兰"):
+        out(f"    ---- 关键词：{kw} ----")
+        _show("search utf8", "action=search&searchtype=articlename&searchkey=%s&t=0"
+              % _pct(kw, "utf-8"))
+        _show("search gbk ", "action=search&searchtype=articlename&searchkey=%s&t=0"
+              % _pct(kw, "gbk"))
+    out("    ---- 榜单元数据（别名匹配的数据源） ----")
+    _show("novellist  ", "action=novellist&sort=allvisit&page=1&t=0")
+    out("    ---- 详情/封面/目录 ----")
+    _show("meta 1034  ", "action=book&do=meta&aid=1034&t=0")
+    _show("cover 1034 ", "action=book&do=cover&aid=1034")
+    _show("list 1034  ", "action=book&do=list&aid=1034&t=0")
+    out()
+
+
 def main() -> None:
     out("=" * 68)
-    out("文库8 本机诊断 v1.0  （结果请整段复制给开发者）")
+    out("文库8 本机诊断 v1.1  （结果请整段复制给开发者）")
     out(f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}   Python：{sys.version.split()[0]}")
     out("=" * 68)
     out()
     step0_ip()
+    # App API 诊断最重要且不依赖登录/交互，放最前面
+    step6_appapi()
     usable = step1_lines()
     if not usable:
         out("!! 三条线路都不可用。后面步骤仍会尝试，但大概率拿不到正常结果。")

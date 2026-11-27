@@ -335,6 +335,25 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
     if app_hits:
         return [_normalize_result(b) for b in app_hits]
 
+    # 0.5) 榜单书目别名匹配：服务端 articlename 只按主标题索引，命中不了
+    #    括号别名（搜「紫罗兰」找不到《薇尔莉特·伊芙加登(紫罗兰永恒花园)》）。
+    #     参考 App 的 SEARCH.md 明确写「从可分页的书目元数据中继续筛选」——
+    #     拉榜单 novellist（Title 带完整别名）本地匹配，覆盖这类漏搜。
+    #     仅在 App API search 无结果时才走，恶魔高校等主标题命中不受影响。
+    try:
+        from .wenku8_app_api import search_via_novellist
+        alias_hits = search_via_novellist(kw, session=session, pages=3)
+    except Exception:  # noqa: BLE001
+        alias_hits = []
+    if alias_hits:
+        # 榜单结果同样补全 meta（拿作者/字数/简介），保持字段与搜索一致
+        try:
+            from .wenku8_app_api import enrich_app_books
+            alias_hits = enrich_app_books(alias_hits, session=session)
+        except Exception:  # noqa: BLE001
+            pass
+        return [_normalize_result(b) for b in alias_hits]
+
     sess = session or make_session()
     base = get_base_url()
 
