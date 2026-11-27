@@ -149,9 +149,18 @@ def build_index(
                 f"{base}/modules/article/articlelist.php?class={cls}&page={page}",
                 timeout=6,
             )
-            return extract_books(_decode(resp), base)
+            html = _decode(resp)
         except Exception:  # noqa: BLE001
             return {}
+        # 拦截页/关站页/登录跳转：绝不能当「空列表」处理，否则会被误判为
+        # 分类到底，进而把空索引落盘并盖新时间戳，7 天内都不再重建。
+        low = (html or "").lower()
+        if ("<h1>welcome</h1>" in low or "attention required" in low
+                or "just a moment" in low or "cf-error" in low
+                or "本站正式关闭" in html or "正式关闭" in html
+                or "login.php" in getattr(resp, "url", "").lower()):
+            return {}
+        return extract_books(html, base)
 
     def _build_class(cls: int) -> Dict[str, str]:
         result: Dict[str, str] = {}
@@ -177,6 +186,10 @@ def build_index(
                 pass
     finally:
         pool.shutdown(wait=True)
+    # 全站被拦/关站：不落盘空索引，也不盖新时间戳。保留可能存在的旧索引，
+    # 并让它保持「过期」状态，待线路恢复后后台能立即重建。
+    if not books:
+        return {}
     save_index(books)
     return books
 

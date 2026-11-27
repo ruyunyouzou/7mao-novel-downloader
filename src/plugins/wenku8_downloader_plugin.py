@@ -222,7 +222,8 @@ class Wenku8Downloader(DownloaderBase):
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             if "login" in msg.lower() or "cookie" in msg.lower() or not str(Wenku8CookieProbe.ok()):
-                msg = "文库8下载失败：登录态无效，请在设置里更新文库8 Cookie。原因：" + msg
+                msg = ("文库8下载失败：登录态无效，请在「文库8登录」中"
+                       "用账号密码或官网登录重新登录（无需手动填写 Cookie）。原因：" + msg)
             return DownloadResult(
                 book_id=str(book_id),
                 title=title or f"book_{book_id}",

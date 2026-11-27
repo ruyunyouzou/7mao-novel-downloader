@@ -177,10 +177,11 @@ class Wenku8LoginDialog(QDialog):
             self.browser_result.setText(tr("wenku8.browser.failed"))
             self.browser_result.setStyleSheet("color: #c62828;")
             return
-        self._save_cookie(cookie)
         from .wenku8_core.wenku8_auth import get_active_base
+        base = str(hit_base or "").strip().rstrip("/") or get_active_base()
+        self._save_cookie(cookie, base=base)
         self.browser_result.setText(
-            tr("wenku8.browser.done", base=hit_base or get_active_base()))
+            tr("wenku8.browser.done", base=base))
         self.browser_result.setStyleSheet("color: #2e7d32;")
         self.status_label.setText(tr("wenku8.login.status_custom"))
 
@@ -203,7 +204,8 @@ class Wenku8LoginDialog(QDialog):
     def _on_login_done(self, ok: bool, cookie: str, msg: str) -> None:
         self.login_btn.setEnabled(True)
         if ok and cookie:
-            self._save_cookie(cookie)
+            from .wenku8_core.wenku8_auth import get_active_base
+            self._save_cookie(cookie, base=get_active_base())
             self.pwd_result.setText(tr("wenku8.login.login_ok"))
             self.pwd_result.setStyleSheet("color: #2e7d32;")
         else:
@@ -218,9 +220,18 @@ class Wenku8LoginDialog(QDialog):
         else:
             self.status_label.setText(tr("wenku8.login.status_none"))
 
-    def _save_cookie(self, cookie: str) -> None:
-        """保存账号密码/官网登录成功后站点返回的会话（内部机制，非用户侧功能）。"""
+    def _save_cookie(self, cookie: str, base: str = "") -> None:
+        """保存账号密码/官网登录成功后站点返回的会话（内部机制，非用户侧功能）。
+
+        必须同时写入「当前线路的独立 Cookie」：切线路时
+        set_active_base(sync_cookie=True) 会用线路 Cookie 覆盖全局值，
+        若登录只写全局不写线路，切一次线路就把登录态冲掉了。
+        """
+        from .wenku8_core.wenku8_auth import save_line_cookie, get_active_base
         DataStore().settings_set("wenku8_cookie", cookie)
+        target = str(base or get_active_base() or "").strip().rstrip("/")
+        if target:
+            save_line_cookie(target, cookie)
         self._refresh_status()
 
     def retranslate(self, *args) -> None:

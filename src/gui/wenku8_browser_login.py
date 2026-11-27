@@ -154,6 +154,9 @@ class Wenku8BrowserLoginDialog(QDialog):
         self.view = QWebEngineView(self)
         self.page = QWebEnginePage(self.profile, self.view)
         self.view.setPage(self.page)
+        # 共享 profile 持久化后若已登录，cookie 已存在，cookieAdded 不再触发，
+        # 会永久卡在「等待登录」。页面加载完成后主动读同源 document.cookie 兜底。
+        self.page.loadFinished.connect(self._on_page_loaded)
         self.view.setUrl(QUrl(self.base + "/login.php"))
         root.addWidget(self.view, 1)
 
@@ -167,6 +170,36 @@ class Wenku8BrowserLoginDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(self.cancel_btn)
         root.addLayout(btn_row)
+
+    def _on_page_loaded(self, ok: bool = False) -> None:
+        """页面加载后主动读同源 cookie：覆盖「profile 已有登录态无信号」场景。"""
+        if self._captured:
+            return
+        try:
+            self.page.runJavaScript(
+                "document.cookie || ''", self._on_document_cookie)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_document_cookie(self, raw: str) -> None:
+        """从 document.cookie 识别已存在的登录态并直接完成回写。"""
+        if self._captured or not isinstance(raw, str) or not raw:
+            return
+        parts = {}
+        for seg in raw.split(";"):
+            key, sep, val = seg.strip().partition("=")
+            if sep and key:
+                parts[key] = val
+        if not str(parts.get(LOGIN_COOKIE_NAME, "")).strip():
+            return
+        # 已登录：把同源 cookie 灌进 jar 再统一回写（domain 用 host 便于匹配）
+        host = host_of(self.base)
+        for key, val in parts.items():
+            self.jar._cookies[(host, key)] = val
+        self.jar.login_found = True
+        self._captured = True
+        self.status.setText(tr("wenku8.browser.success_wait"))
+        QTimer.singleShot(300, self._finish_capture)
 
     def _on_cookie_added(self, cookie) -> None:
         """监听到新 Cookie：累积并在检测到登录态时延迟回写（等 Cookie 齐全）。"""
@@ -188,6 +221,10 @@ class Wenku8BrowserLoginDialog(QDialog):
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
             self.cookie_store.cookieAdded.disconnect(self._on_cookie_added)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.page.loadFinished.disconnect(self._on_page_loaded)
         except Exception:  # noqa: BLE001
             pass
         super().closeEvent(event)

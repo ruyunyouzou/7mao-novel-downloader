@@ -137,5 +137,78 @@ def test_login_dialog_close_with_no_workers_is_safe():
     app.processEvents()
 
 
+def test_login_saves_cookie_to_active_line(tmp_path, monkeypatch):
+    """账号密码/官网登录成功后，Cookie 必须同时写入使用中线路（切线路不丢登录态）。"""
+    from gui.wenku8_login_dialog import Wenku8LoginDialog
+    from gui.datastore import DataStore
+
+    store = DataStore(base_dir=str(tmp_path))
+    monkeypatch.setattr("gui.wenku8_login_dialog.DataStore", lambda: store)
+    # save_line_cookie 内部走的是 gui.datastore.DataStore，patch 到同一 store
+    monkeypatch.setattr("gui.datastore.DataStore", lambda *a, **k: store)
+    store.settings_set("wenku8_cookie", "")
+    store.settings_set("wenku8_lines", "")
+
+    dlg = Wenku8LoginDialog()
+    dlg._save_cookie("PHPSESSID=abc; jieqiUserInfo=xyz", base="https://www.wenku8.cc")
+
+    assert store.settings_get("wenku8_cookie") == "PHPSESSID=abc; jieqiUserInfo=xyz"
+    import json
+    state = json.loads(store.settings_get("wenku8_lines"))
+    cc = [ln for ln in state["lines"] if ln["base"] == "https://www.wenku8.cc"][0]
+    assert "jieqiUserInfo=xyz" in cc["cookie"], "登录态必须写入线路 Cookie"
+    dlg.close()
+
+
+def test_build_index_does_not_persist_empty_on_block(monkeypatch, tmp_path):
+    """全站被拦（Welcome/关站）时不得落盘空索引，也不得盖新时间戳。"""
+    from gui.wenku8_core import wenku8_index as idx
+
+    fake = tmp_path / "i.json"
+    monkeypatch.setattr(idx, "_INDEX_FILE", str(fake))
+
+    class _Resp:
+        url = "https://www.wenku8.cc/modules/article/articlelist.php?class=1&page=1"
+
+    class _Sess:
+        def get(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(idx, "_decode", lambda r: "<h1>Welcome</h1>")
+    got = idx.build_index(session=_Sess(), base="https://www.wenku8.cc",
+                          pages_per_class=1, workers=1)
+    assert got == {}
+    assert not fake.exists(), "空索引不得落盘，否则固化 7 天"
+
+
+def test_web_catalog_filters_numbered_images_and_query_links(monkeypatch):
+    """网页目录：带序号插图过滤，带 query 的章节链接不丢章。"""
+    from gui.wenku8_core import wenku8_reader as reader
+
+    html = (
+        '<html><body><table>'
+        '<tr><td class="vcss">第一卷</td></tr>'
+        '<tr><td class="ccss"><a href="177990.htm">序章</a></td></tr>'
+        '<tr><td class="ccss"><a href="插图1.htm">插图1</a></td></tr>'
+        '<tr><td class="ccss"><a href="177991.htm?a=1">第一章</a></td></tr>'
+        '<tr><td class="ccss"><a href="/novel/1/1034/177992.htm">第二章</a></td></tr>'
+        '</table></body></html>'
+    )
+
+    class _Resp:
+        url = "https://www.wenku8.cc/book/1034.htm"
+
+    class _Sess:
+        def get(self, url, timeout=None):
+            return _Resp()
+
+    monkeypatch.setattr(reader, "_decode", lambda r: html)
+    cat = reader.fetch_catalog("1034", session=_Sess())
+    titles = [c["title"] for c in cat]
+    assert titles == ["序章", "第一章", "第二章"], (
+        f"插图应被过滤、带 query/绝对链接的章节应保留，实际={titles}")
+    assert all(c["id"].isdigit() for c in cat)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

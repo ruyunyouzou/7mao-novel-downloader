@@ -232,8 +232,17 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     catalog: List[Dict] = []
     seen = set()
     # 文库8把插图作为独立章节（正文容器为空，只有图片），下载后是空章。
-    # 这类章节标题为纯图片标记，过滤掉以免产出空章节。
-    _image_only = {"插图", "插画", "图片", "图", "封面", "彩页"}
+    # 标题可能是纯"插图"也可能带序号（"插图1"/"彩页02"/"插图 3"），用前缀
+    # 匹配一律过滤，避免产出空章节。
+    _image_re = re.compile(r"^(插图|插画|图片|图|封面|彩页)\s*\d*\s*$")
+    # 章节链接：绝大多数是相对数字 "177990.htm"，但部分线路给绝对地址
+    # 或带 query（"?a=1"）。用 search 从路径末段提取数字文件名，兼容之。
+    _chap_re = re.compile(r"(?:^|/)(\d+)\.htm(?:\?|$)", re.I)
+
+    def _chapter_id(href: str) -> str:
+        m = _chap_re.search(str(href or ""))
+        return m.group(1) if m else ""
+
     # 文库8目录结构：<td class="vcss" vid="...">第一卷</td> 是卷标题行，
     # 后续 <td class="ccss"><a href="数字.htm">章名</a></td> 是该卷下的章节。
     # 按文档顺序遍历，遇到 vcss 更新当前卷，遇到章节链接继承它 → 保留层级。
@@ -246,12 +255,10 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
         for a in tr.select("a[href]"):
             href = a.get("href", "").strip()
             title = a.get_text(" ", strip=True)
-            if not re.fullmatch(r"\d+\.htm", href):
+            cid = _chapter_id(href)
+            if not cid or _image_re.match(title):
                 continue
-            if title in _image_only:
-                continue
-            cid = href[:-4]
-            if not cid.isdigit() or cid in seen:
+            if cid in seen:
                 continue
             seen.add(cid)
             catalog.append({
@@ -267,10 +274,10 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
         for a in soup.select("a[href]"):
             href = a.get("href", "").strip()
             title = a.get_text(" ", strip=True)
-            if not re.fullmatch(r"\d+\.htm", href) or title in _image_only:
+            cid = _chapter_id(href)
+            if not cid or _image_re.match(title):
                 continue
-            cid = href[:-4]
-            if not cid.isdigit() or cid in seen:
+            if cid in seen:
                 continue
             seen.add(cid)
             catalog.append({
