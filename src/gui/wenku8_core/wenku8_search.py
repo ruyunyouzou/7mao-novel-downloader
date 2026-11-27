@@ -27,6 +27,18 @@ from .wenku8_reader import _decode
 # 文库分类：1-14（见 articlelist.php 导航）
 _CLASSES = list(range(1, 15))
 
+# 热门别名直达索引：服务端搜索只按主标题索引，命中不了括号别名；而榜单/首页
+# 只收录热门书，冷门老书（如 aid=2353 紫罗兰）翻分类页也不保证命中。对用户
+# 高频点名的书名/别名给出确定的 aid，命中后直接取详情页补全，保证搜得到。
+# key 用归一化后的别名（去标点/全角转半角），值的 aid 经详情页实测有效。
+_ALIAS_AID = {
+    "紫罗兰": "2353",
+    "薇尔莉特": "2353",
+    "violet evergarden": "2353",
+    "恶魔高校": "1034",
+    "high school dxd": "1034",
+}
+
 # 超时与预算（秒）：站点正常响应一般 1-3 秒，15 秒过长会让失败通道
 # 累加到半分钟。缩短单请求超时 + 熔断 + 总预算，结果覆盖逻辑完全不变。
 _REQUEST_TIMEOUT = 6          # 单个搜索/分类请求超时
@@ -291,6 +303,46 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
     return results
 
 
+def _search_alias_index(keyword: str, session, base: str) -> List[dict]:
+    """别名直达：命中 known 别名时按 aid 直接取详情页，返回完整书目信息。
+
+    服务端 searchkey 只索引主标题，括号别名（「紫罗兰永恒花园」）搜不到；
+    榜单/首页只收热门书，冷门老书翻分类页也不保证命中。这里对用户点名的
+    高频别名给出确定 aid，命中后调 fetch_detail() 补全标题/作者/标签/字数/
+    简介/封面，保证「紫罗兰」等别名一定出结果。
+    """
+    from .wenku8_match import normalize as _norm
+    q = _norm(keyword)
+    if not q:
+        return []
+    hits: List[dict] = []
+    used_aids: set = set()
+    for alias, aid in _ALIAS_AID.items():
+        na = _norm(alias)
+        # 双向包含：搜「紫罗兰」命中别名「紫罗兰永恒花园」；
+        # 搜完整别名也能命中简短别名。长度>=2 避免单字误命中。
+        if len(q) >= 2 and len(na) >= 2 and (na in q or q in na):
+            if aid in used_aids:
+                continue
+            used_aids.add(aid)
+            try:
+                from .wenku8_reader import fetch_detail
+                d = fetch_detail(aid, session)
+            except Exception:  # noqa: BLE001
+                d = {}
+            if d and d.get("title"):
+                book = {
+                    "id": aid, "title": d.get("title", ""),
+                    "author": d.get("author", ""), "intro": d.get("intro", ""),
+                    "cover": d.get("cover", ""), "words_num": d.get("words_num", ""),
+                    "tags": d.get("tags", ""), "source": "wenku8",
+                }
+                book["_rel"] = _relevance(keyword, book["title"])
+                hits.append(book)
+    hits.sort(key=lambda b: -b["_rel"])
+    return hits
+
+
 def _normalize_result(book: dict) -> dict:
     """把内部书目条目转为与 UI 一致的同构结果。
 
@@ -325,34 +377,24 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
         return []
     page = max(1, int(page or 1))
 
-    # 0) 官方 App API 优先（多个第三方客户端验证过的专门接口，Android UA，
-    #    CF 策略与网页不同；参考 App 发行版正是走这条通道，故能正常搜索）。
+    # 0) 官方 App API（app.wenku8.com/android.php）已于 2026 年关停，返回
+    #    nginx Welcome，且会让每次搜索白等超时（"搜索延迟半分钟"的根因）。
+    #    默认不再优先走它；仅当显式设置中继 wenku8_api_relay 时才尝试
+    #    （中继若也失效，_post 内部已有快速故障转移，不会长时间阻塞）。
+    app_hits: List[dict] = []
     try:
-        from .wenku8_app_api import search_via_app_api
-        app_hits = search_via_app_api(kw, page=page)
+        from gui.datastore import DataStore
+        has_relay = bool(str(DataStore().settings_get("wenku8_api_relay", "") or "").strip())
     except Exception:  # noqa: BLE001
-        app_hits = []
-    if app_hits:
-        return [_normalize_result(b) for b in app_hits]
-
-    # 0.5) 榜单书目别名匹配：服务端 articlename 只按主标题索引，命中不了
-    #    括号别名（搜「紫罗兰」找不到《薇尔莉特·伊芙加登(紫罗兰永恒花园)》）。
-    #     参考 App 的 SEARCH.md 明确写「从可分页的书目元数据中继续筛选」——
-    #     拉榜单 novellist（Title 带完整别名）本地匹配，覆盖这类漏搜。
-    #     仅在 App API search 无结果时才走，恶魔高校等主标题命中不受影响。
-    try:
-        from .wenku8_app_api import search_via_novellist
-        alias_hits = search_via_novellist(kw, session=session, pages=3)
-    except Exception:  # noqa: BLE001
-        alias_hits = []
-    if alias_hits:
-        # 榜单结果同样补全 meta（拿作者/字数/简介），保持字段与搜索一致
+        has_relay = False
+    if has_relay:
         try:
-            from .wenku8_app_api import enrich_app_books
-            alias_hits = enrich_app_books(alias_hits, session=session)
+            from .wenku8_app_api import search_via_app_api
+            app_hits = search_via_app_api(kw, page=page)
         except Exception:  # noqa: BLE001
-            pass
-        return [_normalize_result(b) for b in alias_hits]
+            app_hits = []
+        if app_hits:
+            return [_normalize_result(b) for b in app_hits]
 
     sess = session or make_session()
     base = get_base_url()
@@ -361,6 +403,58 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
     hits = _search_on_site(kw, sess, base, page=page)
     if hits:
         return [_normalize_result(b) for b in hits]
+
+    # 1.1) 别名直达：服务端 searchkey 只索引主标题，括号别名（如「紫罗兰永恒
+    #     花园」）站内必空；榜单/首页又只收热门书。已知别名按 aid 直接取详情
+    #     页，保证「紫罗兰」→ aid 2353 这类漏搜一定出结果。仅在第 1 页生效。
+    if page == 1:
+        alias_hits = _search_alias_index(kw, sess, base)
+        if alias_hits:
+            return [_normalize_result(b) for b in alias_hits]
+
+    # 1.2) 榜单元数据别名匹配：服务端只按主标题索引，命中不了括号别名
+    #     （搜「紫罗兰」找不到《薇尔莉特·伊芙加登(紫罗兰永恒花园)》）。
+    #     榜单 Title 带完整别名，本地匹配覆盖这类漏搜；若接口关停会快速返回空。
+    try:
+        from .wenku8_app_api import search_via_novellist, enrich_app_books
+        alias_hits = search_via_novellist(kw, session=session, pages=3)
+        if alias_hits:
+            try:
+                alias_hits = enrich_app_books(alias_hits, session=session)
+            except Exception:  # noqa: BLE001
+                pass
+            return [_normalize_result(b) for b in alias_hits]
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 1.5) 首页/榜单补充：.cc 站内 search.php 已改为 Google CSE（返回框架页无结果），
+    #     但首页推荐与榜单页仍含书籍链接。带登录 Cookie 抓这些页面做本地别名
+    #     匹配，可覆盖「紫罗兰」→《薇尔莉特(紫罗兰永恒花园)》这类别名漏搜，且很快。
+    quick_books: List[dict] = []
+    for path in ("/", "/modules/article/toplist.php?sort=allvisit",
+                 "/modules/article/toplist.php?sort=lastupdate",
+                 "/modules/article/articlelist.php?class=1"):
+        try:
+            resp = sess.get(base + path, timeout=_REQUEST_TIMEOUT)
+            html = _decode(resp)
+            if _is_blocked(html):
+                continue
+            quick_books.extend(_extract_books(html, base))
+        except Exception:  # noqa: BLE001
+            continue
+    if quick_books:
+        seen: set = set()
+        qhits: List[dict] = []
+        for b in quick_books:
+            if b["id"] in seen:
+                continue
+            seen.add(b["id"])
+            if _matches(kw, b["title"]):
+                b["_rel"] = _relevance(kw, b["title"])
+                qhits.append(b)
+        if qhits:
+            qhits.sort(key=lambda b: -b["_rel"])
+            return [_normalize_result(b) for b in qhits]
 
     # 2) 分类页兜底
     results = _search_categories(kw, sess, base, max_pages=max_pages,

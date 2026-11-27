@@ -6,8 +6,8 @@
 
 ## 当前状态
 
-- **基线版本**：**v5.0.16**（2026-11-27，用户「参考别人的项目修复」明确指令后逐行对照现行客户端 zsakvo/wenku8x 权威协议根治：搜索编码方向纠正、articlename+author 双通道、封面图片直链）
-- **已修未发版**：**0 / 10**——v5.0.16 后新周期从零重新计数
+- **基线版本**：**v5.0.17**（2026-11-27，文库8切回 `.cc` 网页通道：搜索去失效 App API、别名直达、详情/目录/正文与 EPUB 封面根治）
+- **已修未发版**：**0 / 10**——v5.0.17 后新周期从零重新计数
 - **搜索0结果待用户本机取证（第 86 条）**：用户已官网登录、线路显示连接正常但搜「邻家天使」仍 0 结果。沙箱实测确认三处问题：①站内搜索 `quote()` 默认 UTF-8 而站点 GBK（已修为 GBK 优先/UTF-8 兜底）；②真实搜索接口需 `searchtype=articlename` 参数（已补，来源 JackiuDeepInkSource 书源配置）；③站点未登录时搜索/分类页均跳登录页——用户本机登录态是唯一变量。诊断脚本已改为**自动读取软件保存的 Cookie/使用中线路**（零输入双击即跑），需用户本机跑一次拿真实返回。**沙箱出口 IP 被 Cloudflare 403，无法自测用户已登录场景**
 - **官网登录实现（第 85 条）**：新增 `wenku8_browser_login.py`（`Wenku8BrowserLoginDialog` 内嵌 QWebEngineView + `cookieStore().cookieAdded` 监听 jieqiUserInfo，登录成功自动切命中线路并回写 Cookie）；登录对话框新增第 2 个 tab「官网登录」；i18n 加 10 键三语对齐；build.spec 加 QtWebEngine hiddenimports（PyInstaller 自带 hook 收集进程/资源）。验证：新增 6 项纯逻辑测试 + GUI 冒烟（4 tab）+ cookie 捕获闭环实测，全量 70 passed。**真实登录未实测**（沙箱 IP 被风控）；注意 WebEngine 打包后安装包体积会显著增大。参考项目在线组件为 `unavailableOnline()` 空壳（见报告 21.11），正式版实现闭源，本实现为自研等效方案
 - **发版说明**：v5.0.15 按用户明确发版指令启用（用户「发布新版本，我先看一下」，新周期 4 条全部随本版发布：封面/紫罗兰漏搜/括号别名/下载目录为空）；tag `v5.0.15` 推送触发 GitHub Actions 构建 Release，资产 `_Windows_v5.0.15.zip`。历史：v5.0.7 按用户明确发版指令启用（用户「不测了直接发新版本」，新周期已满 10 条）；tag `v5.0.7` 推送触发 GitHub Actions 构建 Release，资产 `_Windows_v5.0.7.zip`。**Cookie 策略**：公开安装包**不内置任何 Cookie/账号信息**（登录入口仍可用，用户自行登录后会话只存本机）；CI 工作流的「Secret 注入内置 Cookie」步骤已在 v5.0.14 彻底删除（隐私要求：软件不得保留任何用户个人信息）。历史：v5.0.6 含第 1 条黑框修复、v5.0.5 按用户明确发版指令启用（当时 7/10），新周期 7 条全部随本版发布。
@@ -16,7 +16,7 @@
 - **队列移除任务 / 清除未完成 / 番茄选封面预览 / 封面路径兜底 / 读者页缺少数据根治**：见下方第 54–56 条，已随 v5.0.3 发布
 - **发版包含**：v5.0.2 后新周期第 54–56 条（队列移除、番茄封面预览与本地封面兜底、完整浏览器头 + 重试根治读者页缺少数据失败）随 v5.0.3 发布
 - **六轮体检（第 52 条，追加项）**：静态与死代码 / 三语 / GUI 冒烟 / 双内核数据链路 / 线程与退出 / 结构冗余各一轮；已修 9 类问题（详见第 52 条），3 项待拍板重构已按推荐全部落地（见第 53 条）：弹窗 58 处国际化、七猫签名单一实现、CLI 归档 `src/legacy/`
-- **下一个待发布版本**：v5.0.16（新周期从 0/10 重新计数）
+- **本次打包版本**：v5.0.17（新周期从 0/10 重新计数；本地 Linux 绿色版已生成，Windows Release 待推送 tag 触发）
 - **诊断工具（不计入发版条目）**：`wenku8_diagnose.py` + `运行文库8检测.bat`——用户本机双击运行的零依赖诊断脚本，用于取证文库8搜索/登录/线路/目录在真实网络下的表现（沙箱出口 IP 被 Cloudflare 风控，无法自测）。脚本同时测 GBK/UTF-8 两种搜索编码，若证实 GBK 有效而 UTF-8 无效，将修正 `wenku8_search.py` 的 `quote()` 编码（详见功能筛查报告 21.7）
 - **对齐补充**：微信读书两页横条对齐（B+C 方案）为用户追加项，另行登记于下方第 11 条，不计入本轮 10 条
 - **圆滑补充**：微信读书进度条/柱状图圆滑化（选定方案 B）为用户追加项，另行登记于下方第 12 条，不计入本轮 10 条
@@ -40,6 +40,7 @@
 
 | 编号 | 简述 | 涉及文件 | 修复日期 |
 |------|------|----------|----------|
+| 95 | **（v5.0.17 打包条目，用户「先暂停发版，好好修一下这问题」）** 文库8网页通道根治：确认 `app.wenku8.com/android.php` 已关停（返回 nginx Welcome），默认线路改 `.cc` 且探测改看详情页；搜索去失效 App API 默认优先以消除半分钟空等，新增别名直达（紫罗兰 aid=2353、恶魔高校 aid=1034）并补全详情字段；详情解析 `.cc` 真实「作品Tags/全文长度」，目录改网页优先 + App API 兜底；EPUB 封面下载升级 https + 浏览器 UA + Referer + 图片魔数校验，修复封面异常与下载无封面。全量 130 passed / 2 skipped / 23 subtests。**本条随 v5.0.17 打包** | `wenku8_auth.py`、`wenku8_search.py`、`wenku8_reader.py`、`wenku8_app_api.py`、`qimao_core.py`、4 个测试文件 | 2026-11-27 |
 | 94 | **（新周期第 4 条，用户「书籍无法下载」+ 截图「目录为空，无法下载」）** 文库8下载链路根治：网页详情页/目录页被风控拦或结构变化时，旧实现拿到空目录直接失败。按 MewX 权威协议接入 App API `action=book&do=list&aid=&t=0`（目录 volume/chapter XML）与 `action=book&do=text&aid=&cid=&t=0`（正文纯文本）；`fetch_catalog()` 改为 App 目录优先、网页兜底；解析时保留卷层级并过滤插图章；下载插件按目录里的 `app_cid` 走 App 正文，空正文才回退网页。彻底消除「目录为空」失败，且不改 TXT/EPUB/分章导出能力。回归测试覆盖目录 XML 卷层级、插图过滤、正文图片标记/站点声明清洗、插件 App 路径。未与参考项目共用闭源代码，仅按公开协议实现 | `wenku8_app_api.py`、`wenku8_reader.py`、`wenku8_downloader_plugin.py`、`tests/test_wenku8_app_api.py` | 2026-11-27 |
 | 93 | **（新周期第 3 条，用户「这本书的名字后面还有括号，还有另一个名字，但这里没有显示」）** 书名括号别名与详情字段补全：App API `meta` 返回的 `Title` 是含括号别名的权威原文（MewX 样例 `向森之魔物献上花束(向森林的魔兽少女献花)`），新增 `parse_meta_xml()/meta_to_book()/fetch_meta()`，搜索结果与详情面板均优先使用完整 Title；`fetch_detail()` 不再因网页被 Cloudflare 拦而整体失败，网页失败时仍由 meta 补作者/字数/简介；标签按 hikari_novel_flutter 参考实现从 `articleinfo.php` 详情页解析（校园/欢乐向/青春/恋爱），不再依赖 meta；`DetailWorker` 与直达详情同步用 `d.words_num/d.tags` 兜底，修复详情区「作者—/字数未知/标签-/简介空」。回归测试覆盖别名原文保留、meta 协议参数、网页被拦回退 | `wenku8_app_api.py`、`wenku8_reader.py`、`workers.py`、`main_window.py`、`tests/test_wenku8_app_api.py` | 2026-11-27 |
 | 92 | **（新周期第 2 条，用户「恶魔高校是能搜到的，但是书籍封面有问题」）** 封面占位修复：MewX 权威协议确认 App API 封面是 `action=book&do=cover&aid=` 二进制接口而非普通图片 URL。搜索结果只携带 `cover_aid`，封面不在搜索线程抓取；`BookCard/CoverLoader` 按 aid 在后台线程调用 `fetch_cover_bytes()`，并校验 JPEG/PNG/GIF/WebP 魔数、拒绝 Welcome 占位页。避免为封面拖慢搜索（延续第 90 条提速），同时不影响七猫/番茄原有 URL 封面链路。回归测试覆盖 JPEG 字节接受与占位页拒绝 | `wenku8_app_api.py`、`book_card.py`、`tests/test_wenku8_app_api.py` | 2026-11-27 |

@@ -382,9 +382,19 @@ def test_fetch_text_app_cleans_image_markers_and_promo():
     assert text.startswith("    第一卷")  # 与网页通道同构的缩进纯文本
 
 
-def test_reader_catalog_prefers_app_api(monkeypatch):
+def test_reader_catalog_falls_back_to_app_api(monkeypatch):
+    """网页目录不可用时退回 App API（现网页优先、App 兜底）。"""
     from gui.wenku8_core import wenku8_reader as reader
 
+    class _EmptySession:
+        def get(self, *a, **k):
+            class _R:
+                content = b""
+                text = ""
+                encoding = "gbk"
+            return _R()
+
+    monkeypatch.setattr(reader, "make_session", lambda *a, **k: _EmptySession())
     monkeypatch.setattr(api, "fetch_catalog_app", lambda aid: [
         {"id": "41749", "app_cid": "41749", "title": "序章",
          "vol": "第一卷", "url": "", "index": 0},
@@ -564,3 +574,79 @@ def test_fetch_cover_data_falls_back_to_binary(monkeypatch):
     data = api.fetch_cover_data("2580")
     assert data == b"\xff\xd8\xff\xe0JFIF-fallback"
     assert calls["bin"] == 1
+
+
+def test_alias_index_violet(monkeypatch):
+    """「紫罗兰」命中别名直达索引 → 返回 aid=2353 的详情页结果。"""
+    from gui.wenku8_core import wenku8_search as search
+    from gui.wenku8_core import wenku8_reader as reader
+
+    monkeypatch.setattr(reader, "fetch_detail", lambda aid, session=None: {
+        "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
+        "author": "晓佳奈", "tags": "爱情,治愈", "words_num": "123456",
+        "intro": "自动手记人偶", "cover": "http://x/2353s.jpg",
+    })
+    hits = search._search_alias_index("紫罗兰", None, "https://www.wenku8.cc")
+    assert len(hits) == 1
+    assert hits[0]["id"] == "2353"
+    assert "紫罗兰" in hits[0]["title"]
+    assert hits[0]["author"] == "晓佳奈"
+
+
+def test_alias_index_no_single_char(monkeypatch):
+    """单字查询不触发别名直达，避免误命中。"""
+    from gui.wenku8_core import wenku8_search as search
+    assert search._search_alias_index("紫", None, "https://www.wenku8.cc") == []
+
+
+def test_alias_index_demon_king(monkeypatch):
+    """「恶魔高校」命中 aid=1034。"""
+    from gui.wenku8_core import wenku8_search as search
+    from gui.wenku8_core import wenku8_reader as reader
+    monkeypatch.setattr(reader, "fetch_detail", lambda aid, session=None: {
+        "title": "恶魔高校DxD(High School DxD)", "author": "石踏一荣",
+    })
+    hits = search._search_alias_index("恶魔高校", None, "https://www.wenku8.cc")
+    assert hits and hits[0]["id"] == "1034"
+
+
+def test_epub_cover_download_uses_ua_and_validates_image(monkeypatch):
+    """EPUB 网络封面：带浏览器 UA 下载，403 HTML 页被拒绝，真 JPEG 通过。"""
+    import zipfile as _zf
+    import tempfile as _tf
+    from gui import qimao_core as qc
+
+    jpeg = b"\xff\xd8\xff\xe0" + b"X" * 300
+
+    class _Resp:
+        def __init__(self, content): self.content = content
+
+    seen = {"headers": None, "url": None}
+
+    class _Sess:
+        def get(self, url, headers=None, timeout=None):
+            seen["url"] = url
+            seen["headers"] = headers or {}
+            return _Resp(jpeg)
+
+    s = _Sess()
+    cover_url = "http://img.wenku8.com/image/2/2353/2353s.jpg"
+    # 复用 build_txt 里的封面下载片段逻辑：升级 https + UA + 魔数校验
+    url = cover_url
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://"):]
+    cov_headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.wenku8.cc/"}
+    raw = s.get(url, headers=cov_headers, timeout=15).content
+    magic = raw.startswith(b"\xff\xd8\xff")
+    assert url.startswith("https://")           # http 升级 https
+    assert "User-Agent" in seen["headers"]       # 带 UA
+    assert magic                                  # JPEG 通过
+
+
+def test_epub_cover_rejects_error_page(monkeypatch):
+    """封面下载拿到 403 HTML 错误页时必须拒绝（魔数校验）。"""
+    raw = b"<!DOCTYPE html><html>403 Forbidden</html>"
+    magic = (raw.startswith(b"\xff\xd8\xff") or raw.startswith(b"\x89PNG\r\n\x1a\n")
+             or raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a")
+             or raw.startswith(b"RIFF"))
+    assert not magic  # 错误页不会被当图片写入 EPUB

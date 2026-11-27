@@ -12,17 +12,20 @@ from typing import Optional
 
 import requests
 
-# 站点域名候选：搜索引擎收录的活站为 .net；.cc 为历史域名（部分网络返回关站旧页）。
-# get_base_url() 按顺序探测，用户可在设置页用 wenku8_base_url 手动固定。
+# 站点域名候选。2026 年起官方 App API（app.wenku8.com）与老网页接口
+# （/modules/article/search.php）已关停；实测 .cc 的网页详情页/目录/正文
+# （/book/{id}.htm、/novel/1/{id}/index.htm、/novel/1/{id}/{cid}.htm）仍可用，
+# 而 .net/.com 在多地返回 Cloudflare 403 或空响应。故把 .cc 提到首位。
+# 用户仍可在设置页用 wenku8_base_url 手动固定任意域名。
 _BASE_CANDIDATES = (
-    "https://www.wenku8.net",
     "https://www.wenku8.cc",
+    "https://www.wenku8.net",
     "https://www.wenku8.com",
 )
 # 线路名（用于「官网线路」管理页展示），未列出的自定义线路用域名本身。
 _LINE_LABELS = {
-    "https://www.wenku8.net": "wenku8.net（优先）",
-    "https://www.wenku8.cc": "wenku8.cc",
+    "https://www.wenku8.cc": "wenku8.cc（优先）",
+    "https://www.wenku8.net": "wenku8.net",
     "https://www.wenku8.com": "wenku8.com",
 }
 _BASE_URL = _BASE_CANDIDATES[0]  # 兼容旧引用；实际取域名请用 get_base_url()
@@ -70,7 +73,8 @@ def get_base_url() -> str:
     """返回当前文库8站点根地址。
 
     优先级：用户在设置页固定值 `wenku8_base_url` > 缓存的探测结果 >
-    候选列表首个（.net）。探测由 `probe_base_url()` 完成并缓存，避免每次请求都探测。
+    候选列表首个（现为 .cc，实测唯一稳定可用的域名）。探测由
+    `probe_base_url()` 完成并缓存，避免每次请求都探测。
     """
     try:
         from gui.datastore import DataStore
@@ -92,26 +96,32 @@ def probe_base_url(session=None, timeout: int = 8) -> str:
     """
     sess = session or requests.Session()
     for base in _BASE_CANDIDATES:
-        try:
-            resp = sess.get(base + "/", timeout=timeout, allow_redirects=True,
-                            headers={"User-Agent": _UA})
-            # 与 check_line 同理：必须先按 GBK 解码，否则下面的中文关键字
-            # （轻小说文库/本站正式关闭）在乱码页面上永远匹配不到，探测必失败。
-            resp.encoding = "gbk"
-            text = resp.text or ""
-            # 关站旧页：含「本站正式关闭」且无书籍链接
-            if "本站正式关闭" in text or "正式关闭" in text:
+        # 用详情页 /book/1034.htm 判定可用性，比首页更可靠：
+        # 首页可能是关站占位或 Cloudflare 403，而详情静态页仍可读。
+        for probe_path in ("/book/1034.htm", "/"):
+            try:
+                resp = sess.get(base + probe_path, timeout=timeout,
+                                allow_redirects=True, headers={"User-Agent": _UA})
+                resp.encoding = "gbk"
+                text = resp.text or ""
+                low = text.lower()
+                # 拦截/占位/关站：换下一个探测路径或域名
+                if ("Attention Required" in text or "just a moment" in low
+                        or "cf-error" in low or "<h1>welcome</h1>" in low
+                        or "本站正式关闭" in text or "正式关闭" in text):
+                    continue
+                # 正常站点：详情页含书名/作者/文库标识之一即视为可用
+                if ("轻小说文库" in text or "/book/" in text
+                        or "会员中心" in text or "恶魔高校" in text
+                        or "书名" in text or "作者" in text):
+                    try:
+                        from gui.datastore import DataStore
+                        DataStore().settings_set("wenku8_base_cached", base)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return base
+            except Exception:  # noqa: BLE001
                 continue
-            # 正常站点：能到首页、含文库标识或书籍链接
-            if "轻小说文库" in text or "/book/" in text or "会员中心" in text:
-                try:
-                    from gui.datastore import DataStore
-                    DataStore().settings_set("wenku8_base_cached", base)
-                except Exception:  # noqa: BLE001
-                    pass
-                return base
-        except Exception:  # noqa: BLE001
-            continue
     return _BASE_CANDIDATES[0]
 
 

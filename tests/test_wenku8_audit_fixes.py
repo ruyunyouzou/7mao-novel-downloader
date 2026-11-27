@@ -69,7 +69,7 @@ def test_probe_sets_gbk_before_keyword_check():
             base = auth.probe_base_url(session=fake_sess)
 
     assert resp.encoding == "gbk"
-    assert base == "https://www.wenku8.net"  # mock 所有线路都返回文库页 → 命中候选首项
+    assert base == "https://www.wenku8.cc"  # mock 所有线路都返回文库页 → 命中候选首项 .cc
 
 
 # ---------------------------------------------------------------- 域名同步

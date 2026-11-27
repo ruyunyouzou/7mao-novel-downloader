@@ -154,8 +154,18 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
         if m:
             parts = [p.strip() for p in re.split(r"[\s,，]+", m.group(1)) if p.strip()]
             tags = ",".join(parts[:12])
+    if not tags:
+        # .cc 详情页实际格式：<b>作品Tags：校园 奇幻 战斗 …</b>
+        m = re.search(r"作品\s*Tags[：:]\s*([^<]+)", html, re.I)
+        if m:
+            parts = [p.strip() for p in re.split(r"[\s,，]+", m.group(1)) if p.strip()]
+            tags = ",".join(parts[:12])
 
     words_num = ""
+    # .cc 详情页实际格式：<td …>全文长度：4055626字</td>
+    m = re.search(r"全文长度[：:]\s*([\d,]+)\s*字", html)
+    if m:
+        words_num = m.group(1).replace(",", "")
     # App API meta：补完整书名（含括号别名）、作者、字数、简介；网页失败也仍可用
     try:
         from .wenku8_app_api import fetch_meta, meta_to_book
@@ -205,24 +215,18 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     bid = resolve_book_id(book_id)
     sess = session or make_session()
 
-    # App API 目录优先：网页详情页/目录页被 Cloudflare 拦时，旧实现会
-    # 得到空目录并导致下载失败（截图「目录为空，无法下载」）。
-    # App 接口与搜索/封面同一通道，返回带卷层级的 volume/chapter XML。
-    try:
-        from .wenku8_app_api import fetch_catalog_app
-        app_catalog = fetch_catalog_app(bid)
-        if app_catalog:
-            return app_catalog
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 先取详情页以确定 novel 前缀（分类号 n）
+    # 网页目录优先：官方 App API（app.wenku8.com）已关停，返回 nginx Welcome，
+    # 不再是可靠通道。实测 .cc 网页目录（/novel/1/{id}/index.htm）可用且含完整
+    # 卷/章结构，故网页优先、App API 仅作兜底。
     d = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
     prefix = _novel_prefix(_decode(d), bid)
     catalog_url = f"{_base()}{prefix}index.htm"
 
-    resp = sess.get(catalog_url, timeout=20)
-    html = _decode(resp)
+    try:
+        resp = sess.get(catalog_url, timeout=20)
+        html = _decode(resp)
+    except Exception:  # noqa: BLE001
+        html = ""
     soup = BeautifulSoup(html, "html.parser")
 
     catalog: List[Dict] = []
@@ -273,6 +277,15 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
                 "id": cid, "title": title or f"第{len(catalog) + 1}章",
                 "index": len(catalog), "url": urljoin(catalog_url, href),
             })
+    # 网页目录整体失败时（如全部被拦），退回 App API 兜底。
+    if not catalog:
+        try:
+            from .wenku8_app_api import fetch_catalog_app
+            app_catalog = fetch_catalog_app(bid)
+            if app_catalog:
+                return app_catalog
+        except Exception:  # noqa: BLE001
+            pass
     return catalog
 
 

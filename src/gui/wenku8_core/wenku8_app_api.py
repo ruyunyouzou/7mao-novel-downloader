@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -81,8 +82,17 @@ from urllib.parse import quote
 
 import requests
 
-# App API 固定端点（Android 客户端接口，不走 www 网页域名）
+# App API 端点（Android 客户端接口，不走 www 网页域名）
 APP_API_URL = "http://app.wenku8.com/android.php"
+# 官方端点已对第三方直连做 Cloudflare 拦截（返回 42 字节 <h1>Welcome</h1>）。
+# MewX 官方 App 因此改用自建 Cloudflare Worker 中继。这里支持：
+#   1) 用户在设置项 wenku8_api_relay 填入自己的中继地址（优先，最高权限）；
+#   2) 内置若干公开候选，逐个故障转移；
+#   3) 全部失败仍回退官方端点，保持零配置可用。
+_RELAY_SETTING_KEY = "wenku8_api_relay"
+# 内置候选：留空表示只用官方端点。用户可在 settings.json 里配置
+# wenku8_api_relays（JSON 数组）追加自己的多个中继，按顺序尝试。
+_BUILTIN_RELAYS: tuple[str, ...] = ()
 APP_VER = "1.13"
 # 与客户端发行版一致的 Android 指纹
 ANDROID_UA = (
@@ -244,19 +254,73 @@ def build_form(param: str, timetoken_ms: int | None = None) -> dict:
     }
 
 
-def _post(param: str, session=None, timeout: int = _TIMEOUT):
-    """POST 参数串；返回 response 对象，网络异常返回 None（不抛给 UI）。"""
-    sess = session or requests.Session()
+def get_api_endpoints() -> List[str]:
+    """返回按顺序尝试的 App API 端点列表。
+
+    优先级：
+      1) 设置项 wenku8_api_relay（单个自定义中继，最高优先）；
+      2) 设置项 wenku8_api_relays（JSON 数组，多个中继按顺序）；
+      3) 内置候选 _BUILTIN_RELAYS；
+      4) 官方端点 APP_API_URL 兜底（保证零配置可用）。
+    去重且去掉空值/非 http(s) 的非法值。
+    """
+    custom: List[str] = []
     try:
-        return sess.post(
-            APP_API_URL,
-            data=build_form(param),
-            headers={"User-Agent": ANDROID_UA,
-                     "Content-Type": "application/x-www-form-urlencoded"},
-            timeout=timeout,
-        )
+        from gui.datastore import DataStore
+        store = DataStore()
+        single = str(store.settings_get(_RELAY_SETTING_KEY, "") or "").strip()
+        if single:
+            custom.append(single)
+        raw = str(store.settings_get("wenku8_api_relays", "") or "").strip()
+        if raw:
+            try:
+                arr = json.loads(raw)
+                if isinstance(arr, list):
+                    custom.extend(str(x or "").strip() for x in arr)
+            except Exception:  # noqa: BLE001
+                custom.append(raw)
     except Exception:  # noqa: BLE001
-        return None
+        pass
+
+    endpoints: List[str] = []
+    for url in custom + list(_BUILTIN_RELAYS) + [APP_API_URL]:
+        u = str(url or "").strip().rstrip("/")
+        if (u and u.startswith(("http://", "https://")) and u not in endpoints):
+            endpoints.append(u)
+    return endpoints
+
+
+def _looks_blocked(content: bytes) -> bool:
+    """原始响应字节是否是被拦截的占位页（而非有效 XML/正文）。"""
+    head = (content or b"")[:512].lower()
+    return (b"<h1>welcome</h1>" in head or b"attention required" in head
+            or b"just a moment" in head or b"cf-error" in head
+            or b"cf-ray" in head)
+
+
+def _post(param: str, session=None, timeout: int = _TIMEOUT):
+    """POST 参数串；按端点列表故障转移，返回首个有效 response。
+
+    官方端点被 Cloudflare 拦时自动换中继；全部失败返回最后一个 response
+    （让上层走既有回退逻辑）或 None（网络异常）。
+    """
+    sess = session or requests.Session()
+    form = build_form(param)
+    headers = {"User-Agent": ANDROID_UA,
+               "Content-Type": "application/x-www-form-urlencoded"}
+    endpoints = get_api_endpoints()
+    last_resp = None
+    for idx, url in enumerate(endpoints):
+        try:
+            resp = sess.post(url, data=form, headers=headers, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            continue
+        content = getattr(resp, "content", None) or b""
+        # 有效响应：非拦截页且非空。立即返回。
+        if content and not _looks_blocked(content):
+            return resp
+        last_resp = resp
+    return last_resp
 
 
 def _decode_response(resp) -> str:

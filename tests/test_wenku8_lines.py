@@ -39,7 +39,7 @@ def test_default_lines_have_three_candidates():
         bases = [ln["base"] for ln in state["lines"]]
         assert "https://www.wenku8.net" in bases
         assert "https://www.wenku8.cc" in bases
-        assert state["active"] == "https://www.wenku8.net"
+        assert state["active"] == "https://www.wenku8.cc"  # 默认优先活站 .cc
         assert state["keep_login"] is True
     _with_store(run)
 

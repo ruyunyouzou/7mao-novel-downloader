@@ -791,15 +791,38 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             if detail.get("intro"):
                 book.add_metadata("DC", "description", detail["intro"])
             # 封面：本地文件（番茄 App 保存的原图）直接读；网络 URL 才下载。
+            # 文库8图片服务器 img.wenku8.com 会拒绝无 UA 的裸请求（返回 403
+            # HTML 页），此前用裸 session.get 下载得到错误页被 set_cover 抛异常
+            # 吞掉 → EPUB 无封面。这里带浏览器 UA + 站点 Referer 下载，并校验
+            # 图片魔数，拒绝错误页；http 明文一律升级为 https（两站均支持）。
             cover_src = detail.get("cover")
             if cover_src:
                 try:
-                    if os.path.isfile(cover_src):
+                    if os.path.isfile(str(cover_src)):
                         with open(cover_src, "rb") as _f:
                             img = _f.read()
                     else:
-                        img = session.get(cover_src, timeout=15).content
-                    book.set_cover("cover.jpg", img)
+                        url = str(cover_src)
+                        if url.startswith("http://"):
+                            url = "https://" + url[len("http://"):]
+                        cov_headers = {
+                            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                           "Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"),
+                            "Referer": "https://www.wenku8.cc/",
+                        }
+                        resp = session.get(url, headers=cov_headers, timeout=15)
+                        raw = resp.content or b""
+                        # 只接受真实图片；403/404 的 HTML 页直接丢弃
+                        magic = (
+                            raw.startswith(b"\xff\xd8\xff") or   # JPEG
+                            raw.startswith(b"\x89PNG\r\n\x1a\n") or  # PNG
+                            raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a") or
+                            raw.startswith(b"RIFF")  # WebP
+                        )
+                        img = raw if magic else b""
+                    if img:
+                        book.set_cover("cover.jpg", img)
                 except Exception:  # noqa: BLE001
                     pass
             # 对话着色：在下载时把人物对话固化为带颜色的 span，写进 EPUB 文件本身。
