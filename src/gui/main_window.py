@@ -822,18 +822,6 @@ class MainWindow(QMainWindow):
             lambda: self._choose_save_dir("wenku8"))
         row_wenku8.addWidget(self.settings_wenku8_choose_btn)
         l1.addLayout(row_wenku8)
-        # 文库8 Cookie 配置：登录后 F12 → Console → document.cookie
-        self.set_wenku8_cookie_label = hint_label(tr("set.wenku8_cookie"))
-        l1.addWidget(self.set_wenku8_cookie_label)
-        row_cookie = QHBoxLayout()
-        self.settings_wenku8_cookie = QLineEdit(
-            str(self.store.settings_get("wenku8_cookie", "") or "")
-        )
-        self.settings_wenku8_cookie.setEchoMode(QLineEdit.Password)
-        self.settings_wenku8_cookie.setPlaceholderText("PHPSESSID=...; jieqiUserInfo=...")
-        self.settings_wenku8_cookie.editingFinished.connect(self._on_wenku8_cookie_changed)
-        row_cookie.addWidget(self.settings_wenku8_cookie, 1)
-        l1.addLayout(row_cookie)
         # 文库8 站点域名：站点曾迁移 .cc → .net，允许固定或自动探测
         self.set_wenku8_base_label = hint_label(tr("set.wenku8_base"))
         l1.addWidget(self.set_wenku8_base_label)
@@ -1342,18 +1330,11 @@ class MainWindow(QMainWindow):
         self.title_bar.set_wenku8_label(label)
 
     def _open_wenku8_login(self) -> None:
-        """打开文库8登录对话框（Cookie 登录 + 验证 + 保存）。"""
+        """打开文库8登录对话框（账号密码 / 官网浏览器官方路径）。"""
         from .wenku8_login_dialog import Wenku8LoginDialog
         dlg = Wenku8LoginDialog(self)
         dlg.exec()
         self._refresh_wenku8_button()
-        # 同步设置页 Cookie 输入框
-        try:
-            from .wenku8_core.wenku8_auth import get_cookie
-            if hasattr(self, "settings_wenku8_cookie"):
-                self.settings_wenku8_cookie.setText(get_cookie().strip())
-        except Exception:  # noqa: BLE001
-            pass
 
     def _open_account_dialog(self) -> None:
         """打开账号本地配置对话框（非真实登录）。"""
@@ -3148,34 +3129,6 @@ class MainWindow(QMainWindow):
             if label is not None:
                 label.setText(directory)
             self.log(f"{label_text}保存目录已设为：{directory}")
-
-    def _on_wenku8_cookie_changed(self) -> None:
-        """保存文库8 Cookie，并异步校验登录态（不阻塞界面）。"""
-        cookie = self.settings_wenku8_cookie.text().strip()
-        self.store.settings_set("wenku8_cookie", cookie)
-        # 与登录弹窗 _save_cookie 保持一致：同步到使用中线路的独立 Cookie，
-        # 否则线路页检测拿到空 Cookie，明明登录了却显示「可访问（未登录）」。
-        try:
-            from .wenku8_core.wenku8_auth import get_active_base, save_line_cookie
-            save_line_cookie(get_active_base(), cookie)
-        except Exception:  # noqa: BLE001
-            pass
-        if not cookie:
-            self.log("文库8 Cookie 已清空")
-            return
-        self.log("文库8 Cookie 已保存，正在校验登录态…")
-
-        def _verify(c=cookie):
-            try:
-                from gui.wenku8_core.wenku8_auth import verify_cookie_on_lines
-                ok, base, detail = verify_cookie_on_lines(c)
-                msg = f"文库8登录态有效 ✅（{detail}）" if ok else f"文库8登录态无效：{detail}"
-            except Exception as exc:  # noqa: BLE001
-                msg = f"文库8 Cookie 校验失败：{exc}"
-            self.log(msg)
-
-        import threading
-        threading.Thread(target=_verify, daemon=True).start()
 
     def _on_wenku8_base_changed(self) -> None:
         """保存用户固定的文库8站点域名（留空则自动探测/用默认）。

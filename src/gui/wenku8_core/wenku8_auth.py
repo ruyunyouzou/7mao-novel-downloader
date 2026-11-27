@@ -551,5 +551,21 @@ def check_line(base: str, cookie: str = "", timeout: int = 8) -> tuple[str, str]
         state, detail = classify_line_response(resp.status_code, resp.url, text)
     except Exception as exc:  # noqa: BLE001
         state, detail = "error", f"连接失败：{exc}"
+
+    # 风控误报修正：requests 用脚本指纹请求，Cloudflare 对其返回 403 是常态，
+    # 但这不代表线路在浏览器里不可用。若该线路已保存有效登录 Cookie（用户
+    # 走官网浏览器登录成功才拿得到 jieqiUserInfo），说明浏览器上下文可正常
+    # 访问，此时不应把线路标记为「风控拦截」误导用户。
+    if state == "blocked":
+        try:
+            from .wenku8_web_context import has_login_marker
+            has_login = has_login_marker(cookie)
+        except Exception:  # noqa: BLE001
+            has_login = False
+        if has_login:
+            state = "ok"
+            detail = ("已登录（官网浏览器通道可用）；脚本探测被风控拦截，"
+                      "不影响官网登录与浏览器搜索")
+
     set_line_checked(base, state, detail)
     return state, detail

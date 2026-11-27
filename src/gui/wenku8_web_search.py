@@ -17,11 +17,13 @@ from typing import List
 from urllib.parse import quote
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QNetworkCookie
 
-from .wenku8_core.wenku8_auth import get_base_url, get_cookie, parse_cookie
+from .wenku8_core.wenku8_auth import get_base_url, get_cookie
 from .wenku8_core.wenku8_match import matches as _matches, relevance as _relevance
 from .wenku8_core.wenku8_search import _extract_books
+from .wenku8_core.wenku8_web_context import (
+    get_shared_profile, inject_cookies as _inject_cookies_into_profile,
+)
 
 # 与参考 App 发行包一致的桌面浏览器指纹（Cloudflare 放行 WebView 时使用）
 _WEB_UA = (
@@ -74,7 +76,7 @@ class Wenku8WebSearch(QObject):
 
     def __init__(self, keyword: str, page: int = 1, base: str = "", parent=None) -> None:
         super().__init__(parent)
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+        from PySide6.QtWebEngineCore import QWebEnginePage
         from PySide6.QtWebEngineWidgets import QWebEngineView
 
         self.keyword = str(keyword or "").strip()
@@ -87,8 +89,9 @@ class Wenku8WebSearch(QObject):
         self.view.setWindowFlags(self.view.windowFlags())
         self.view.resize(1, 1)
         self.view.setVisible(False)
-        self.profile = QWebEngineProfile(self)
-        self.profile.setHttpUserAgent(_WEB_UA)
+        # 复用共享持久化 profile：官网登录与搜索在同一浏览器上下文，
+        # Cloudflare clearance 不再跨独立 profile 注入而失效。
+        self.profile = get_shared_profile()
         self.store = self.profile.cookieStore()
         self.webpage = QWebEnginePage(self.profile, self.view)
         self.view.setPage(self.webpage)
@@ -103,18 +106,14 @@ class Wenku8WebSearch(QObject):
         self._timer.start(30000)
 
     def _inject_cookies(self) -> None:
-        """把软件保存的登录 Cookie 注入浏览器 Profile。"""
+        """把软件保存的登录 Cookie 注入共享 Profile。
+
+        官网浏览器登录的 Cookie 本就留在共享会话里（无需注入）；这里主要
+        兼容「粘贴 Cookie / 账号密码」方式登录、会话里尚无登录态的场景。
+        共享 profile 注入是幂等的，不会破坏已有的 Cloudflare clearance。
+        """
         try:
-            host = self.base.split("//", 1)[-1].split("/", 1)[0]
-            domain = "." + (host[4:] if host.startswith("www.") else host)
-            cookies = []
-            for key, val in parse_cookie(get_cookie()).items():
-                c = QNetworkCookie(key.encode(), val.encode("utf-8", "ignore"))
-                c.setDomain(domain)
-                c.setPath("/")
-                cookies.append(c)
-            if cookies:
-                self.store.setCookies(cookies, QUrl(self.base + "/"))
+            _inject_cookies_into_profile(self.base, get_cookie())
         except Exception:  # noqa: BLE001
             pass
 
@@ -150,16 +149,27 @@ class Wenku8WebSearch(QObject):
             "(async function(){"
             f"const u={json.dumps(url)};"
             f"const body={json.dumps(body)};"
+            "const sleep=ms=>new Promise(r=>setTimeout(r,ms));"
             "async function grab(u,opt){"
             "const r=await fetch(u,opt);const b=await r.arrayBuffer();"
             "return new TextDecoder('gbk').decode(b);}"
+            "function blocked(s){"
+            "if(!s)return true;"
+            "const low=s.toLowerCase();"
+            "return s.indexOf('<h1>Welcome</h1>')>=0"
+            "||low.indexOf('attention required')>=0"
+            "||low.indexOf('just a moment')>=0"
+            "||low.indexOf('cf-error')>=0;}"
+            "const postOpt={method:'POST',body:body,credentials:'include',"
+            "headers:{'Content-Type':'application/x-www-form-urlencoded'}};"
             "let t='';"
-            "try{t=await grab('/so.php',{method:'POST',body:body,"
-            "credentials:'include',headers:{'Content-Type':"
-            "'application/x-www-form-urlencoded'}});}catch(e){}"
-            "if(!t||t.indexOf('<h1>Welcome</h1>')>=0){"
+            "try{t=await grab('/so.php',postOpt);}catch(e){}"
+            # 命中风控/占位页：等待 Cloudflare 质询 JS 完成后再重试一次
+            "if(blocked(t)){await sleep(1500);"
+            "try{t=await grab('/so.php',postOpt);}catch(e){}}"
+            "if(blocked(t)){"
             "try{t=await grab(u,{credentials:'include'});}catch(e){}}"
-            "window.__wk8result=t||'ERR:empty';})();"
+            "window.__wk8result=(t&&!blocked(t))?t:'ERR:empty';})();"
         )
         try:
             self.webpage.runJavaScript(js)

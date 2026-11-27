@@ -9,8 +9,11 @@
 JS 执行 + 人机验证可完成），Cloudflare 视为真人放行；登录 Cookie 由
 官网在正确域名下自然写入，不存在「.cc Cookie 拿到 .net 验证」的错配。
 
-Cookie 捕获走 QWebEngineProfile.cookieStore().cookieAdded 信号；判定登录
-成功的权威标志是 jieqiUserInfo（Jieqi CMS 登录态，未登录时不存在）。
+登录使用进程级共享持久化 profile（wenku8_web_context.get_shared_profile），
+与搜索通道复用同一浏览器会话：官网质询拿到的 cf_clearance 不会随窗口关闭
+而丢失，后续搜索同源 fetch 直接复用。判定登录成功的权威标志是
+jieqiUserInfo（Jieqi CMS 登录态，未登录时不存在）。
+Cookie 捕获走 QWebEngineProfile.cookieStore().cookieAdded 信号；
 Cookie 序列化/域名匹配抽成纯函数，便于离线单测（不依赖 QApplication）。
 """
 
@@ -121,7 +124,7 @@ class Wenku8BrowserLoginDialog(QDialog):
     login_captured = Signal(str, str)  # cookie字符串, 命中域名(base)
 
     def __init__(self, base: str, parent=None) -> None:
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
+        from PySide6.QtWebEngineCore import QWebEnginePage
         from PySide6.QtWebEngineWidgets import QWebEngineView
 
         super().__init__(parent)
@@ -139,8 +142,12 @@ class Wenku8BrowserLoginDialog(QDialog):
         hint.setWordWrap(True)
         root.addWidget(hint)
 
-        # 独立（off-the-record）profile，避免污染默认浏览器数据；cookie 监听隔离
-        self.profile = QWebEngineProfile(self)
+        # 共享持久化 profile：与搜索通道复用同一浏览器会话，Cloudflare
+        # clearance 在登录后继续有效（参考 App 全程单 WebView 的做法）。
+        # 注意 profile 由模块单例持有，不能以 self 为 parent，否则登录窗口
+        # 关闭时 profile 被销毁，clearance 丢失正是旧版的根因。
+        from .wenku8_core.wenku8_web_context import get_shared_profile
+        self.profile = get_shared_profile()
         self.cookie_store = self.profile.cookieStore()
         self.cookie_store.cookieAdded.connect(self._on_cookie_added)
 

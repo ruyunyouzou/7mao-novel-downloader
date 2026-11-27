@@ -113,13 +113,13 @@ def test_set_active_base_syncs_cookie_by_default():
 
 # ---------------------------------------------------------------- UI 修复
 def test_login_dialog_tab_order_and_retranslate():
-    """登录对话框有 4 个 tab，retranslate 后标题按正确顺序更新。"""
+    """登录对话框只保留账号密码 + 官网登录 2 个 tab，retranslate 后顺序不变。"""
     from PySide6.QtWidgets import QApplication
     from gui.wenku8_login_dialog import Wenku8LoginDialog
     app = QApplication.instance() or QApplication([])
     dlg = Wenku8LoginDialog()
     labels = [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
-    assert len(labels) == 4
+    assert len(labels) == 2
     dlg.retranslate()
     after = [dlg.tabs.tabText(i) for i in range(dlg.tabs.count())]
     assert after == labels, "retranslate 不应打乱 tab 顺序"

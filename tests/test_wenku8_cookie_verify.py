@@ -220,18 +220,3 @@ def test_verify_exported_from_package():
     assert callable(wenku8_core.verify_cookie_on_lines)
 
 
-def test_verify_worker_wires_cross_line_verify(qapp):
-    """登录弹窗的后台校验线程调用跨线路验证，并把命中域名提示带给用户。"""
-    from gui import wenku8_login_dialog as dlg_mod
-    worker = dlg_mod._VerifyWorker(COOKIE)
-    emitted = {}
-    worker.finished_ok.connect(lambda ok, msg: emitted.update(ok=ok, msg=msg))
-
-    with patch.object(auth, "verify_cookie_on_lines",
-                      return_value=(True, "https://www.wenku8.cc",
-                                    "登录态有效（线路：https://www.wenku8.cc）")) as mocked:
-        worker.run()
-
-    mocked.assert_called_once_with(COOKIE)
-    assert emitted.get("ok") is True
-    assert "wenku8.cc" in emitted.get("msg", "")
