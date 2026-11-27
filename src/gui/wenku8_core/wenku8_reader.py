@@ -244,7 +244,11 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
         line = line.strip()
         if not line:
             continue
-        if "本文来自" in line or "wenku8" in line.lower() and "轻小说文库" in line:
+        # 过滤站点版权声明行：只删明显的来源推广句，避免误删正文里恰好提到
+        # 「轻小说文库」的正常内容（原文此处 and/or 优先级也易踩坑，改用括号明确）。
+        low = line.lower()
+        if ("本文来自" in line or "wenku8.com" in low or "wenku8.net" in low
+                or ("轻小说文库" in line and ("http" in low or "www." in low))):
             continue
         lines.append("    " + line)
     return "\n".join(lines)

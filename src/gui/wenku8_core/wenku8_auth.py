@@ -101,6 +101,9 @@ def probe_base_url(session=None, timeout: int = 8) -> str:
         try:
             resp = sess.get(base + "/", timeout=timeout, allow_redirects=True,
                             headers={"User-Agent": _UA})
+            # 与 check_line 同理：必须先按 GBK 解码，否则下面的中文关键字
+            # （轻小说文库/本站正式关闭）在乱码页面上永远匹配不到，探测必失败。
+            resp.encoding = "gbk"
             text = resp.text or ""
             # 关站旧页：含「本站正式关闭」且无书籍链接
             if "本站正式关闭" in text or "正式关闭" in text:
@@ -336,10 +339,14 @@ def get_active_base() -> str:
     return get_base_url()
 
 
-def set_active_base(base: str) -> str:
-    """切换使用中线路：更新 active + 旧快捷设置，并把该线路 Cookie 同步为当前生效值。
+def set_active_base(base: str, sync_cookie: bool = True) -> str:
+    """切换使用中线路：更新 active + 旧快捷设置。
 
     返回实际切换到的 base。目标不存在时自动追加为自定义线路。
+
+    :param sync_cookie: 是否把该线路的独立 Cookie 同步为全局生效值。
+        线路页切换（正常场景）传 True；设置页仅改域名时应传 False，
+        避免把用户手填的 Cookie 误清空或误切换。
     """
     base = str(base or "").strip().rstrip("/")
     state = get_lines_state()
@@ -359,7 +366,8 @@ def set_active_base(base: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     # 把该线路 Cookie 同步为当前生效 Cookie（无则清空，回退内置）
-    set_cookie(bases[base].get("cookie") or "")
+    if sync_cookie:
+        set_cookie(bases[base].get("cookie") or "")
     return base
 
 
@@ -460,7 +468,10 @@ def verify_cookie_on_lines(cookie: str, timeout: int = 8) -> tuple[bool, str, st
         if b not in bases:
             bases.append(b)
 
-    # 第一层：逐线路严格探测，推断来源域名
+    # 第一层：逐线路严格探测，推断来源域名。
+    # 注意：某线路跳 login.php 只说明「这份 Cookie 不属于该域名」（如拿 .cc
+    # 的 Cookie 去 .net 验证），并不代表 Cookie 本身无效——正确域名还没试完，
+    # 因此这里不因个别线路的未登录响应而提前否定。
     for base in bases:
         try:
             sess = make_session(cookie, timeout=timeout, base=base)
@@ -472,11 +483,20 @@ def verify_cookie_on_lines(cookie: str, timeout: int = 8) -> tuple[bool, str, st
             try:
                 set_active_base(base)
                 save_line_cookie(base, cookie)
+                # 命中即清除之前保存的「未登录」误标记，避免卡片矛盾
+                state = get_lines_state()
+                for ln in state["lines"]:
+                    if ln["base"] == base:
+                        ln["state"] = "ok"
+                        ln["detail"] = "登录态有效（Cookie 验证命中）"
+                save_lines_state(state)
             except Exception:  # noqa: BLE001
                 pass
             return True, base, f"登录态有效（线路：{base}）"
 
-    # 第二层：网络探测全失败时，登录标志明确仍判有效（如 Cloudflare 风控）
+    # 第二层：所有线路的严格探测都没命中（Cloudflare 风控 / 域名错配 / 站点
+    # 改版）。此时 Cookie 里的 jieqiUserInfo 是浏览器登录后写入的权威标志，
+    # 用户从 F12 复制的完整 Cookie 带此标志即视为有效，不因网络探测失败误判。
     if has_marker:
         active = get_active_base()
         try:
@@ -521,10 +541,11 @@ def check_line(base: str, cookie: str = "", timeout: int = 8) -> tuple[str, str]
             sess.cookies.set(k, v, domain="." + domain)
     try:
         resp = sess.get(base + "/", timeout=timeout, allow_redirects=True)
+        # 必须先按 GBK 解码再取 text：requests 默认按 apparent_encoding 猜测，
+        # GBK 页面常被误判为 ISO-8859-1 导致中文乱码 → classify 的中文关键字
+        # （会员中心/本站正式关闭）全部匹配失败 → 线路状态误判为 guest。
+        resp.encoding = "gbk"
         text = resp.text or ""
-        if not text:
-            resp.encoding = "gbk"
-            text = resp.text or ""
         state, detail = classify_line_response(resp.status_code, resp.url, text)
     except Exception as exc:  # noqa: BLE001
         state, detail = "error", f"连接失败：{exc}"

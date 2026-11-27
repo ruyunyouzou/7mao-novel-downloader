@@ -119,7 +119,7 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
 
 
 def _fetch_class_page(cls: int, page: int, session, base: str) -> List[dict]:
-    """抓单个分类页的书籍列表。"""
+    """抓单个分类页的书籍列表。session 应为该工作线程独占的实例。"""
     url = f"{base}/modules/article/articlelist.php?class={cls}&page={page}"
     try:
         resp = session.get(url, timeout=15)
@@ -135,15 +135,37 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
 
     page_offset 用于翻页：第 N 页对应分类页的 (N-1)*max_pages+1 起，
     让 UI 翻页对文库8真正生效（原实现页码被丢弃）。
+
+    requests.Session 非线程安全（连接池/CookieJar 共享会有竞争），并发抓取时
+    为每个工作线程克隆一份带相同 Cookie 的 session，避免竞态导致偶发失败。
     """
     start = page_offset * max_pages + 1
     tasks = [(cls, p) for cls in _CLASSES
              for p in range(start, start + max_pages)]
     all_books: List[dict] = []
+
+    # 提取调用方 session 的 Cookie，供各工作线程克隆
+    cookie_str = ""
+    try:
+        cookie_str = "; ".join(f"{k}={v}" for k, v in
+                               session.cookies.get_dict().items())
+    except Exception:  # noqa: BLE001
+        pass
+    import threading
+    tls = threading.local()
+
+    def _grab(cls: int, p: int) -> List[dict]:
+        """在工作线程内创建/复用线程专属 session（沿用调用方 Cookie）。"""
+        s = getattr(tls, "session", None)
+        if s is None:
+            s = make_session(cookie_str, base=base)
+            tls.session = s
+        return _fetch_class_page(cls, p, s, base)
+
     pool = ThreadPoolExecutor(max_workers=max(1, min(16, workers)))
     try:
         fmap = {
-            pool.submit(_fetch_class_page, cls, p, session, base): (cls, p)
+            pool.submit(_grab, cls, p): (cls, p)
             for cls, p in tasks
         }
         for fut in as_completed(fmap):

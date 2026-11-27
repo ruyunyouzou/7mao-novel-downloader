@@ -3110,6 +3110,13 @@ class MainWindow(QMainWindow):
         """保存文库8 Cookie，并异步校验登录态（不阻塞界面）。"""
         cookie = self.settings_wenku8_cookie.text().strip()
         self.store.settings_set("wenku8_cookie", cookie)
+        # 与登录弹窗 _save_cookie 保持一致：同步到使用中线路的独立 Cookie，
+        # 否则线路页检测拿到空 Cookie，明明登录了却显示「可访问（未登录）」。
+        try:
+            from .wenku8_core.wenku8_auth import get_active_base, save_line_cookie
+            save_line_cookie(get_active_base(), cookie)
+        except Exception:  # noqa: BLE001
+            pass
         if not cookie:
             self.log("文库8 Cookie 已清空")
             return
@@ -3128,9 +3135,19 @@ class MainWindow(QMainWindow):
         threading.Thread(target=_verify, daemon=True).start()
 
     def _on_wenku8_base_changed(self) -> None:
-        """保存用户固定的文库8站点域名（留空则自动探测/用默认）。"""
+        """保存用户固定的文库8站点域名（留空则自动探测/用默认）。
+
+        同步线路管理里的使用中线路（不动 Cookie），避免搜索用域名与
+        「官网线路」页显示的 active 分裂、Cookie 带错域名导致搜不到。
+        """
         base = self.settings_wenku8_base.text().strip().rstrip("/")
         self.store.settings_set("wenku8_base_url", base)
+        if base:
+            try:
+                from .wenku8_core.wenku8_auth import set_active_base
+                set_active_base(base, sync_cookie=False)
+            except Exception:  # noqa: BLE001
+                pass
         self.log(f"文库8站点域名已设为：{base or '自动'}")
 
     def _on_wenku8_probe(self) -> None:

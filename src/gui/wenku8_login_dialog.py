@@ -91,6 +91,7 @@ class Wenku8LoginDialog(QDialog):
         self._verify_worker = None
         self._login_worker = None
         self._line_workers = []
+        self._closing = False
         self._build()
         self._refresh_status()
         try:
@@ -476,6 +477,11 @@ class Wenku8LoginDialog(QDialog):
         self._line_workers.append(worker)
 
         def _done(b, state, detail):
+            # 完成后从存活列表移除，避免长期累积；对话框已关闭则不再触碰 UI
+            if worker in self._line_workers:
+                self._line_workers.remove(worker)
+            if self._closing:
+                return
             self.lines_result.setText(
                 tr("wenku8.login.line_checked", base=b, state=self._state_text(state)))
             if callable(on_done):
@@ -636,12 +642,16 @@ class Wenku8LoginDialog(QDialog):
 
     def retranslate(self, *args) -> None:
         self.setWindowTitle(tr("wenku8.login.title"))
+        # tab 顺序须与 _build() 一致：0密码 / 1官网登录 / 2Cookie / 3官网线路
         self.tabs.setTabText(0, tr("wenku8.login.tab_password"))
-        self.tabs.setTabText(1, tr("wenku8.login.tab_cookie"))
-        self.tabs.setTabText(2, tr("wenku8.login.tab_lines"))
+        self.tabs.setTabText(1, tr("wenku8.login.tab_browser"))
+        self.tabs.setTabText(2, tr("wenku8.login.tab_cookie"))
+        self.tabs.setTabText(3, tr("wenku8.login.tab_lines"))
         self.username_edit.setPlaceholderText(tr("wenku8.login.username"))
         self.password_edit.setPlaceholderText(tr("wenku8.login.password"))
         self.login_btn.setText(tr("wenku8.login.login_btn"))
+        if hasattr(self, "browser_open_btn"):
+            self.browser_open_btn.setText(tr("wenku8.browser.open"))
         self.verify_btn.setText(tr("wenku8.login.verify"))
         self.save_btn.setText(tr("wenku8.login.save"))
         self.reset_btn.setText(tr("wenku8.login.reset"))
@@ -653,3 +663,22 @@ class Wenku8LoginDialog(QDialog):
             self.keep_login_check.setText(tr("wenku8.login.keep_login"))
             self._render_lines()
         self._refresh_status()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        """关闭对话框时标记关闭中，等待后台线程结束后再销毁，避免竞态崩溃。"""
+        self._closing = True
+        workers = [w for w in (self._verify_worker, self._login_worker)
+                   if w is not None] + list(self._line_workers)
+        for w in workers:
+            try:
+                w.finished_ok.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                if w.isRunning():
+                    w.requestInterruption()
+                    w.wait(2000)  # 最多等 2 秒，避免阻塞关闭
+            except Exception:  # noqa: BLE001
+                pass
+        self._line_workers.clear()
+        super().closeEvent(event)
