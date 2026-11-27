@@ -1,0 +1,15 @@
+name: WK8 API 协议诊断
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 打印运行环境出口信息
+        run: |
+          echo "RUNNER_IP=$(curl -s https://api.ipify.org)"
+          date -u
+      - name: 请求 App API 并打印真实响应
+        run: python3 tools/wk8_probe.py
