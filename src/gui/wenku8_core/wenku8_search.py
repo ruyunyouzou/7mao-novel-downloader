@@ -26,8 +26,12 @@ from .wenku8_reader import _decode
 # 文库分类：1-14（见 articlelist.php 导航）
 _CLASSES = list(range(1, 15))
 
-# 站内搜索候选：不同站点版本参数名不同，逐个尝试直到拿到结果
+# 站内搜索候选：不同站点版本参数名不同，逐个尝试直到拿到结果。
+# 真实书源配置（JackiuDeepInkSource / 开源阅读器）用的是
+#   /modules/article/search.php?searchtype=articlename&searchkey={kw}  (charset=gbk)
+# 参数 searchtype=articlename 是老接口必需，缺失时部分站点返回 Welcome 空页。
 _SEARCH_ENDPOINTS = (
+    "/modules/article/search.php?searchtype=articlename&searchkey={kw}",
     "/modules/article/search.php?searchkey={kw}",
     "/search.php?keyword={kw}",
     "/so.php?keyword={kw}",
@@ -61,33 +65,56 @@ def _extract_books(html: str, base: str) -> List[dict]:
     return books
 
 
+def _encode_keyword_variants(keyword: str) -> List[str]:
+    """生成关键词的 URL 编码候选项（GBK 优先，UTF-8 兜底，去重）。
+
+    文库8全站 GBK，浏览器表单提交中文时用 GBK 编码（searchkey=%C1%DA...）。
+    旧代码 quote() 默认 UTF-8（%E9%82%BB...），站点按 GBK 解码成乱码 → 搜不到。
+    两种都试可兼容不同站点版本/声明，任一命中即可。
+    """
+    raw = str(keyword or "").strip()
+    if not raw:
+        return []
+    out: List[str] = []
+    for enc in ("gbk", "utf-8"):
+        try:
+            k = quote(raw.encode(enc))
+        except Exception:  # noqa: BLE001
+            k = quote(raw)
+        if k not in out:
+            out.append(k)
+    return out
+
+
 def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dict]:
     """尝试站内搜索接口，返回命中的书籍（已按相关性排序）。
 
-    任一接口返回含书籍链接的页面即视为成功；全部失败返回空列表由调用方兜底。
+    对每种关键词编码（GBK 优先 / UTF-8 兜底）× 每个候选接口逐个尝试；
+    任一接口返回含匹配书籍的页面即视为成功；全部失败返回空列表由调用方兜底。
     """
-    kw = quote(str(keyword or "").strip())
-    if not kw:
+    kw_variants = _encode_keyword_variants(keyword)
+    if not kw_variants:
         return []
-    for tpl in _SEARCH_ENDPOINTS:
-        url = base + tpl.format(kw=kw)
-        # 分页参数：仅当 >1 时附加（不同站点分页参数不一，优先 page）
-        if page > 1:
-            url += f"&page={page}"
-        try:
-            resp = session.get(url, timeout=15)
-            html = _decode(resp)
-        except Exception:  # noqa: BLE001
-            continue
-        books = _extract_books(html, base)
-        if not books:
-            continue
-        hits = [b for b in books if _matches(keyword, b["title"])]
-        if hits:
-            for b in hits:
-                b["_rel"] = _relevance(keyword, b["title"])
-            hits.sort(key=lambda b: -b["_rel"])
-            return hits
+    for kw in kw_variants:
+        for tpl in _SEARCH_ENDPOINTS:
+            url = base + tpl.format(kw=kw)
+            # 分页参数：仅当 >1 时附加（不同站点分页参数不一，优先 page）
+            if page > 1:
+                url += f"&page={page}"
+            try:
+                resp = session.get(url, timeout=15)
+                html = _decode(resp)
+            except Exception:  # noqa: BLE001
+                continue
+            books = _extract_books(html, base)
+            if not books:
+                continue
+            hits = [b for b in books if _matches(keyword, b["title"])]
+            if hits:
+                for b in hits:
+                    b["_rel"] = _relevance(keyword, b["title"])
+                hits.sort(key=lambda b: -b["_rel"])
+                return hits
     return []
 
 

@@ -38,6 +38,7 @@ LINES = ("https://www.wenku8.net", "https://www.wenku8.cc",
 KEYWORD = "邻家天使"
 TARGET_TITLE = "邻家的天使"
 ENDPOINTS = (
+    "/modules/article/search.php?searchtype=articlename&searchkey={kw}",
     "/modules/article/search.php?searchkey={kw}",
     "/search.php?keyword={kw}",
     "/so.php?keyword={kw}",
@@ -236,8 +237,43 @@ def step3_categories(base: str, cookie: str) -> None:
     out()
 
 
-def ask_cookie() -> str:
-    """先收集 Cookie，让后续搜索/目录请求也带上登录态；结果留到 [4] 再报。"""
+def load_saved_settings() -> tuple[str, str]:
+    """自动读取软件已保存的 Cookie 与使用中线路（零依赖，只读 settings.json）。
+
+    返回 (cookie, active_base)。读不到返回空串，不抛异常。
+    """
+    import json
+    import os
+    cookie, active = "", ""
+    path = os.path.join(os.path.expanduser("~"), ".qimao_gui", "settings.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cookie = str(data.get("wenku8_cookie", "") or "").strip()
+        active = str(data.get("wenku8_base_url", "") or "").strip().rstrip("/")
+        # 线路状态里使用中域名优先（官网登录会写这里）
+        raw_lines = str(data.get("wenku8_lines", "") or "").strip()
+        if raw_lines:
+            lines = json.loads(raw_lines)
+            if isinstance(lines, dict) and lines.get("active"):
+                active = str(lines["active"]).strip().rstrip("/") or active
+            # 使用中线路若自带 Cookie，优先用它
+            if isinstance(lines, dict):
+                for ln in lines.get("lines", []):
+                    if (isinstance(ln, dict) and ln.get("base") == active
+                            and ln.get("cookie")):
+                        cookie = str(ln["cookie"]).strip() or cookie
+    except Exception as exc:  # noqa: BLE001
+        out(f"    [读取本机设置失败] {exc}")
+    return cookie, active
+
+
+def ask_cookie(saved: str = "") -> str:
+    """优先用软件已保存的 Cookie；否则让用户粘贴。后续搜索/目录会带上。"""
+    if saved:
+        out(f"    已自动读取软件保存的 Cookie（长度 {len(saved)}，"
+            f"含登录标志 {'是' if 'jieqiUserInfo' in saved else '否'}），直接用它检测。")
+        return saved
     raw = input("    粘贴已登录的 Cookie（直接回车跳过）：").strip()
     return raw
 
@@ -332,10 +368,16 @@ def main() -> None:
         base = usable[0]
     out(f"后续步骤使用线路：{base}")
     out()
+    saved_cookie, saved_active = load_saved_settings()
+    if saved_active:
+        out(f"软件保存的使用中线路：{saved_active}（已用它替换探测线路）")
+        base = saved_active
+    out()
+
     skip = "--skip-login" in sys.argv
     if not skip:
-        out("登录凭据（可选，先输入；后面的搜索/目录会带上，检测详情见 [4]）")
-    cookie = "" if skip else ask_cookie()
+        out("登录凭据（优先用软件已保存的 Cookie，无需手动粘贴）")
+    cookie = "" if skip else ask_cookie(saved_cookie)
     step2_search(base, cookie)
     step3_categories(base, cookie)
     if not skip:
