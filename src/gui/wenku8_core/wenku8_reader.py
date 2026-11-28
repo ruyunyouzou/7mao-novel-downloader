@@ -389,13 +389,84 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     return []
 
 
+# ---- 卷首信息 / 转载信息清洗（全书通用） ----
+# 文库8绝大多数书源自轻之国度 / 天使动漫，每卷第一话开头会带一段录入组
+# 声明：分隔线 + 作者/插画/图源/扫图/录入/修图/校对 + 免责声明。它不属于
+# 正文（lnovel.org、wk.kdays.net 等站把它单独列为「转载信息」章节）。
+# 按固定字段标签 + 录入组标记识别，不绑定任何书名 / 人名，全书通用。
+# 分隔符兼容冒号与全角斜杠（轻之国度用「：」，百度贴吧系用「／」）。
+_CREDIT_LABEL_RE = re.compile(
+    r"^\s*(作者|插图|插画|译者|翻译|图源|扫图|扫瞄|录入|修图|校对|台版|原作|责编|首发)"
+    r"\s*[：:／/]")
+_CREDIT_MARK_RE = re.compile(
+    r"轻之国度|天使动漫|录入组|仅供个人学习|禁作商业用途|"
+    r"24\s*小时内删除|请(尊重|体谅|理解).{0,24}(扫图|录入|校对|翻译|图源)|"
+    r"转载请.{0,4}保留信息|严禁转载|转载信息|卷首信息|"
+    r"所录入的每一本书里|扫图者有很大一部分功劳|转自")
+_CREDIT_RULE_RE = re.compile(r"^\s*[─—－\-_＝=]{6,}\s*$")
+
+
+def _is_credit_line(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    return bool(_CREDIT_LABEL_RE.match(s) or _CREDIT_MARK_RE.search(s)
+                or _CREDIT_RULE_RE.match(s))
+
+
+def strip_credit_block(lines: List[str]) -> List[str]:
+    """删除章首录入组「卷首信息」块，保留其后正文。
+
+    只在章首前 12 行内识别；要求连续块内至少 2 个不同字段标签，且带
+    录入组标记（或有 3 个以上字段），避免误删正文里偶然的单行「作者：xxx」。
+    块内允许空行、长度上限 24 行；块外内容原样保留。
+    """
+    limit = min(12, len(lines))
+    i = 0
+    while i < limit:
+        if not lines[i].strip():
+            i += 1
+            continue
+        if not _is_credit_line(lines[i]):
+            break  # 章首第一行就是正文，后面不用再找
+        j = i
+        labels: set = set()
+        marks = 0
+        while j < len(lines) and (j - i) < 24:
+            s = lines[j].strip()
+            if not s:
+                k = j + 1
+                while k < len(lines) and not lines[k].strip():
+                    k += 1
+                if k < len(lines) and _is_credit_line(lines[k]):
+                    j = k
+                    continue
+                break
+            if not _is_credit_line(s):
+                break
+            m = _CREDIT_LABEL_RE.match(s)
+            if m:
+                labels.add(m.group(1))
+            if _CREDIT_MARK_RE.search(s):
+                marks += 1
+            j += 1
+        # 判定：多个字段 + 录入组标记；或以「转自/录入组」标记开头的精简块
+        # （如「网译版 转自 巴哈姆特 / 翻译：只成一事」，只有 1 个字段也要删）。
+        if ((len(labels) >= 2 and (marks >= 1 or len(labels) >= 3))
+                or (marks >= 1 and len(labels) >= 1
+                    and _CREDIT_MARK_RE.search(lines[i]))):
+            return lines[:i] + lines[j:]
+        i = j if j > i else i + 1
+    return lines
+
+
 def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
                        book_id: str = "") -> str:
     """取单章正文纯文本。
 
     接受绝对 URL、章节 id（需给 novel_prefix）或相对文件名。
-    正文容器为 #content；去掉站点声明行与空行，每行保留 4 空格缩进
-    （与番茄/七猫 chapter_text 输出格式对齐，build_txt 直接复用）。
+    正文容器为 #content；去掉站点声明行、章首录入组「卷首信息」块与空行，
+    每行保留 4 空格缩进（与番茄/七猫 chapter_text 输出格式对齐，build_txt 直接复用）。
     """
     sess = session or make_session()
     raw = str(url_or_id or "").strip()
@@ -464,6 +535,9 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
                 or ("轻小说文库" in line and ("http" in low or "www." in low))):
             continue
         lines.append("    " + line)
+
+    # 删除章首录入组「卷首信息」块——它不是正文，全书通用。
+    lines = strip_credit_block(lines)
 
     # 图片标记放在文字之后（插图章通常只有图，没有文字）。
     for src in image_urls:
