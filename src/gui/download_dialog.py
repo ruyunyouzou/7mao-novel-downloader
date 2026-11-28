@@ -10,11 +10,12 @@ import os
 from typing import Any, Dict
 
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QSpinBox, QCheckBox, QLineEdit, QColorDialog, QGroupBox,
-    QScrollArea, QFrame, QFileDialog, QMessageBox,
+    QScrollArea, QFrame, QFileDialog, QMessageBox, QRadioButton,
+    QButtonGroup, QTreeWidget, QTreeWidgetItem,
 )
 
 from .qimao_core import (render_filename, font_combo_items,
@@ -22,6 +23,39 @@ from .qimao_core import (render_filename, font_combo_items,
                          TITLE_COLOR_PRESETS)
 from .nation_theme import color_swatch_icon
 from .i18n import tr
+
+
+class _Wenku8CatalogWorker(QThread):
+    """文库8目录后台加载（仅分卷面板用）。
+
+    严格遵循项目约定：用 requestInterruption 协作取消，不 terminate；
+    结束发 finished_run 供 UI 回收，避免 "QThread: Destroyed while running"。
+    """
+
+    loaded = Signal(list)   # List[{"name":..., "count":..., "chapters":[...]}]
+    failed = Signal(str)
+    finished_run = Signal()
+
+    def __init__(self, book_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.book_id = str(book_id)
+
+    def run(self) -> None:
+        try:
+            from plugins.wenku8_downloader_plugin import Wenku8BookSource
+            from gui.wenku8_core.wenku8_volumes import group_volumes
+            source = Wenku8BookSource()
+            import requests
+            catalog = source.fetch_catalog(self.book_id, requests.Session())
+            if self.isInterruptionRequested():
+                return
+            volumes = group_volumes(catalog)
+            self.loaded.emit(volumes)
+        except Exception as exc:  # noqa: BLE001
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(exc))
+        finally:
+            self.finished_run.emit()
 
 
 class DownloadDialog(QDialog):
@@ -275,6 +309,11 @@ class DownloadDialog(QDialog):
         self._sync_tail_ui()
         lay.addWidget(epub_group)
 
+        # ===== 分卷导出（仅文库8；番茄/七猫完全不显示本面板）=====
+        # 效果图对应：整本导出 / 按卷分文件 / 仅导出所选卷 + 卷目录勾选 + 格式。
+        self._volume_worker = None
+        self._build_volume_panel(lay)
+
         # 预览
         self.preview = QLabel()
         self.preview.setStyleSheet("color: #888;")
@@ -297,6 +336,124 @@ class DownloadDialog(QDialog):
         btns.addWidget(cancel)
         btns.addWidget(ok)
         outer.addLayout(btns)
+
+    # ---------- 分卷导出（仅文库8） ----------
+    def _build_volume_panel(self, parent_layout: QVBoxLayout) -> None:
+        """文库8专属分卷面板；其他书源直接返回，界面零变化。"""
+        self._volume_group = None
+        self._vol_tree = None
+        self._vol_mode_group = None
+        self._vol_radio_whole = None
+        if str(self.book.get("source", "") or "") != "wenku8":
+            return
+
+        grp = QGroupBox("分卷导出（文库8）")
+        g_lay = QVBoxLayout(grp)
+
+        # 三种模式：单选，默认整本（与旧行为一致）
+        self._vol_radio_whole = QRadioButton("整本导出（一个文件）")
+        self._vol_radio_per = QRadioButton("按卷分文件（每卷一个文件）")
+        self._vol_radio_selected = QRadioButton("仅导出所选卷")
+        self._vol_radio_whole.setChecked(True)
+        self._vol_mode_group = QButtonGroup(self)
+        for i, r in enumerate((self._vol_radio_whole, self._vol_radio_per,
+                               self._vol_radio_selected)):
+            self._vol_mode_group.addButton(r, i)
+            g_lay.addWidget(r)
+
+        hint = QLabel("勾选要导出的卷（仅「仅导出所选卷」模式生效）；正文只抓取一次。")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #888;")
+        g_lay.addWidget(hint)
+
+        # 卷目录树：顶层=卷（带勾选），子层=章节名（不可勾选，仅展示）
+        self._vol_tree = QTreeWidget()
+        self._vol_tree.setHeaderLabels(["卷 / 章节", "章节数"])
+        self._vol_tree.setColumnWidth(0, 320)
+        self._vol_tree.setMinimumHeight(160)
+        self._vol_tree.setMaximumHeight(240)
+        g_lay.addWidget(self._vol_tree)
+
+        self._vol_status = QLabel("正在加载卷目录…")
+        self._vol_status.setStyleSheet("color: #888;")
+        g_lay.addWidget(self._vol_status)
+
+        parent_layout.addWidget(grp)
+        self._volume_group = grp
+
+        # 后台取目录：失败只提示、不阻塞下载（仍可整本导出）
+        # 不设 QObject parent：由本对话框手动管理其生命周期（closeEvent 中
+        # requestInterruption + wait + deleteLater），避免 Qt 对象树提前析构
+        # 造成 "shared QObject was deleted directly"。
+        worker = _Wenku8CatalogWorker(self.book.get("id", ""))
+        worker.loaded.connect(self._on_volume_catalog)
+        worker.failed.connect(self._on_volume_catalog_failed)
+        worker.finished_run.connect(self._on_volume_worker_done)
+        self._volume_worker = worker
+        worker.start()
+
+    def _on_volume_catalog(self, volumes: list) -> None:
+        if self._vol_tree is None:
+            return
+        self._vol_tree.clear()
+        for v in volumes:
+            top = QTreeWidgetItem(self._vol_tree, [
+                str(v.get("name") or "卷"), f"{int(v.get('count', 0))} 章"])
+            top.setFlags(top.flags() | Qt.ItemIsUserCheckable)
+            top.setCheckState(0, Qt.Checked)
+            top.setData(0, Qt.UserRole, str(v.get("name") or ""))
+            for ch in (v.get("chapters") or [])[:500]:
+                child = QTreeWidgetItem(top, [str(ch.get("title") or ""), ""])
+                child.setFlags(child.flags() & ~Qt.ItemIsUserCheckable)
+            top.setExpanded(False)
+        self._vol_status.setText(
+            f"已加载 {len(volumes)} 卷；正文只抓取一次，按卷导出不重复下载。" if volumes
+            else "未解析到卷目录，将按整本导出。")
+
+    def _on_volume_catalog_failed(self, msg: str) -> None:
+        if self._vol_status is not None:
+            self._vol_status.setText("卷目录加载失败（不影响整本导出）：" + str(msg)[:80])
+        if self._vol_radio_selected is not None:
+            self._vol_radio_selected.setEnabled(False)
+
+    def _on_volume_worker_done(self) -> None:
+        # 线程体已结束，安全回收对象；下次打开对话框可重新加载。
+        worker = self._volume_worker
+        self._volume_worker = None
+        if worker is not None:
+            try:
+                worker.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _selected_volume_names(self) -> list:
+        if self._vol_tree is None:
+            return []
+        names = []
+        for i in range(self._vol_tree.topLevelItemCount()):
+            item = self._vol_tree.topLevelItem(i)
+            if item.checkState(0) == Qt.Checked:
+                name = str(item.data(0, Qt.UserRole) or item.text(0) or "")
+                if name:
+                    names.append(name)
+        return names
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 约定
+        # 对话框关闭时协作取消后台取目录线程，并等待其自然结束，避免
+        # "QThread: Destroyed while thread is still running"。
+        worker = getattr(self, "_volume_worker", None)
+        if worker is not None:
+            try:
+                worker.loaded.disconnect()
+                worker.failed.disconnect()
+                worker.finished_run.disconnect()
+                worker.requestInterruption()
+                worker.wait(3000)
+                worker.deleteLater()
+            except Exception:  # noqa: BLE001
+                pass
+            self._volume_worker = None
+        super().closeEvent(event)
 
     # ---------- 标题颜色下拉 ----------
     @staticmethod
@@ -462,6 +619,21 @@ class DownloadDialog(QDialog):
             "tail_mode": str(self.tail_mode_combo.currentData() or "rotate"),
             "tail_fixed": str(self.tail_fixed_combo.currentData() or ""),
         }
+        # 文库8分卷导出（仅文库8面板存在时才写入；其他书源 options 完全不变）
+        if getattr(self, "_volume_group", None) is not None:
+            from gui.wenku8_core.wenku8_volumes import (
+                MODE_WHOLE, MODE_PER_VOLUME, MODE_SELECTED,
+            )
+            if self._vol_radio_selected.isChecked():
+                opts["volume_mode"] = MODE_SELECTED
+                opts["selected_volumes"] = self._selected_volume_names()
+            elif self._vol_radio_per.isChecked():
+                opts["volume_mode"] = MODE_PER_VOLUME
+                opts["selected_volumes"] = []
+            else:
+                opts["volume_mode"] = MODE_WHOLE
+                opts["selected_volumes"] = []
+
         # 番茄官方信息修正（透传给内核写入覆盖表）
         if self._official_group is not None:
             opts["official_title"] = (self.official_title_edit.text().strip()

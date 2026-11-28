@@ -120,6 +120,7 @@ class QimaoRealDownloader(DownloaderBase):
                 "real": True,
                 "start_chapter": start,
                 "end_chapter": end,
+                "author": str(result.get("author") or ""),
             },
         )
 

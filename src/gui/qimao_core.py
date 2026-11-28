@@ -22,7 +22,6 @@ import io
 import os
 import re
 import shutil
-import time
 import zipfile
 from base64 import b64decode
 from typing import Callable, Dict, List, Optional
@@ -612,6 +611,80 @@ def book_source_for(source_key: str = "") -> BookSource:
     return QimaoBookSource()
 
 
+def _w8_image_item(book, epub, data: bytes, counter: int):
+    """把文库8插图字节做成 ebooklib 图片条目并加入 book；失败返回 None。"""
+    if not data:
+        return None
+    ext = "png" if data.startswith(b"\x89PNG") else (
+        "gif" if data[:6] in (b"GIF87a", b"GIF89a") else (
+            "webp" if data[8:12] == b"WEBP" else "jpg"))
+    fname = f"Images/w8img_{counter:04d}.{ext}"
+    try:
+        item = epub.EpubItem(
+            uid=f"w8img_{counter:04d}", file_name=fname,
+            media_type=f"image/{'jpeg' if ext == 'jpg' else ext}",
+            content=data,
+        )
+        book.add_item(item)
+        return item
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _render_body(raw: str, source, book, epub, colorize: bool,
+                 counter: list, image_fail: list) -> str:
+    """渲染一章正文为 EPUB HTML。
+
+    - 文库8书源（有 get_image）：把 [[WENKU8IMG:url]] 标记替换为内嵌图片；
+    - 其他书源：正文无此标记，走原来的 highlight_text / html.escape，零回归。
+    """
+    get_image = getattr(source, "get_image", None)
+    if get_image is None or "[[WENKU8IMG:" not in raw:
+        if colorize:
+            from .dialogue_highlight import highlight_text as _hl
+            return _hl(raw, dark=False)
+        return html.escape(raw).replace("\n", "<br/>")
+
+    from .wenku8_core.wenku8_volumes import IMG_MARK_RE
+    parts: List[str] = []
+    pos = 0
+    for m in IMG_MARK_RE.finditer(raw):
+        seg = raw[pos:m.start()]
+        if seg:
+            parts.append(_hl_or_escape(seg, colorize))
+        url = str(m.group(1) or "").strip()
+        img_bytes = get_image(url) or b""
+        counter[0] += 1
+        item = _w8_image_item(book, epub, img_bytes, counter[0])
+        if item is not None:
+            parts.append(
+                f'<img src="{item.file_name}" alt="插图" '
+                'style="display:block;margin:1em auto;max-width:100%;"/>'
+            )
+        else:
+            image_fail.append(url)
+        pos = m.end()
+    tail = raw[pos:]
+    if tail:
+        parts.append(_hl_or_escape(tail, colorize))
+    return "".join(parts)
+
+
+def _hl_or_escape(text: str, colorize: bool) -> str:
+    if colorize:
+        from .dialogue_highlight import highlight_text as _hl
+        return _hl(text, dark=False)
+    return html.escape(text).replace("\n", "<br/>")
+
+
+def _txt_images(text: str) -> str:
+    """TXT 无法内嵌图片：把插图标记转成可读的链接文字。"""
+    if not text or "[[WENKU8IMG:" not in text:
+        return text
+    from .wenku8_core.wenku8_volumes import IMG_MARK_RE
+    return IMG_MARK_RE.sub(lambda m: f"[插图: {m.group(1)}]", text)
+
+
 def build_txt(book_id: str, save_path: str, fmt: str,
               progress_cb: Optional[Callable[[int], None]] = None,
               title_hint: str = "", max_chapters: int = 0,
@@ -691,6 +764,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     report(2)
     session = requests.Session()
     source = source or QimaoBookSource()
+    _image_failures: list = []  # 插图下载失败 URL（函数级，供结果与提示用）
     # 详情（失败不致命，用提示书名兜底）
     try:
         detail = source.fetch_detail(book_id, session) or {}
@@ -751,26 +825,16 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             on_progress=lambda done, total: report(2 + int(done / total * 38)),
         )
 
-        # 文库8要求「全本下载全」：预取和多轮补抓之后仍为空的章节，在渲染阶段
-        # 再兜底重试，绝不能把空章写进成品。其他书源保持原单次行为。
-        _rescue_attempts = 4 if getattr(source, "source_key", "") == "wenku8" else 1
-
         def _chapter_text(i, ch):
-            """优先用预取结果；仍为空则多轮补抓，直到拿到正文。
+            """只读预取结果；渲染阶段绝不再发网络请求。
 
-            回退时不传 report：渲染阶段进度由外层 40→100 统一推进，若这里再
-            调 chapter_text 内部的 report(2+...)，进度条会从 40+ 倒退到 2+，
-            造成"进度乱跳/倒退"的观感。
+            文库8/番茄的正文全部在 prefetch_texts 并发阶段取完并多轮补齐。
+            渲染循环里逐章重试会让一章最坏等待 4×6×20=480 秒，进度卡在
+            40% 不动——这正是用户看到的卡顿。七猫未预取时仍走本地解密。
             """
-            if prefetched is not None and i < len(prefetched) and prefetched[i]:
-                return prefetched[i]
-            for attempt in range(_rescue_attempts):
-                text = source.chapter_text(ctx, ch, session, None)
-                if text:
-                    return text
-                if attempt < _rescue_attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-            return ""
+            if prefetched is not None:
+                return prefetched[i] if i < len(prefetched) else ""
+            return source.chapter_text(ctx, ch, session, None)
 
         if fmt == "chapter":
             # 分章 txt：每章一个文件
@@ -796,7 +860,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             str(ch.get("vol") or ""), str(ch.get("sub") or "")) if p.strip()]
                         if bits:
                             hdr = " › ".join(bits) + "\n\n"
-                    f.write(f"{hdr}{ch['title']}\n\n{text}\n")
+                    f.write(f"{hdr}{ch['title']}\n\n{_txt_images(text)}\n")
                 chapters_written += 1
                 report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             result_path = book_dir
@@ -984,6 +1048,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             book.add_item(css_item)
             epub_chapters = []
             toc_pairs = []  # (章节dict, EPUB条目)：供嵌套目录按卷/集分组
+            _img_counter = [0]        # 插图内嵌文件序号
             # 层级信息仅在目录整体带卷/集时启用；纯章目录维持原扁平渲染（零回归）
             try:
                 from .hierarchy import build_nested_toc
@@ -999,11 +1064,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                     # 否则最后一章仍会先把 UI 推到 100%，再抛"下载不完整"。
                     report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
                     continue
-                if colorize_dialogue:
-                    # highlight_text 内部已做 HTML 转义并生成 <br/>，直接可用
-                    body_html = highlight_text(raw, dark=False)
-                else:
-                    body_html = html.escape(raw).replace("\n", "<br/>")
+                body_html = _render_body(
+                    raw, source, book, epub, colorize_dialogue,
+                    _img_counter, _image_failures,
+                )
                 safe_title = ch["title"]
                 vol_name = str(ch.get("vol") or "").strip() if _hierarchy else ""
                 sub_name = str(ch.get("sub") or "").strip() if _hierarchy else ""
@@ -1136,7 +1200,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         heads = ""
                         if _hierarchy and txt_heading_lines is not None:
                             heads = txt_heading_lines(catalog, i, prev_ch)
-                        f.write(f"{heads}\n\n{ch['title']}\n\n{text}\n")
+                        f.write(f"{heads}\n\n{ch['title']}\n\n{_txt_images(text)}\n")
                         prev_ch = ch
                         chapters_written += 1
                         # 渲染阶段封顶 99：最终校验通过后才允许 report(100)
@@ -1180,11 +1244,15 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     return {
         "file_path": result_path,
         "title": title,
+        # 作者回填链路：EPUB 元数据早就用 detail.author，这里一并返回给插件，
+        # 让队列卡片也能显示真实作者，而不是只显示入队时可能为空的 book.author。
+        "author": str(detail.get("author") or author_hint or ""),
         "chapters": chapters_written,
         "total": len(catalog),
         "format": fmt,
         "total_chapters": total_chapters,
         "start_chapter": effective_start,
         "end_chapter": effective_end,
+        "images_failed": len(_image_failures),
     }
 

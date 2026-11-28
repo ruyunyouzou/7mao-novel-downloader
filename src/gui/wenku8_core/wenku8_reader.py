@@ -265,6 +265,77 @@ def fetch_book_meta(book_id: str, session=None) -> Dict[str, str]:
     return detail
 
 
+def _catalog_prefix_candidates(detail_html: str, book_id: str) -> List[str]:
+    """生成目录页候选前缀：先信详情页，再按常见分类号逐个探测。
+
+    详情页被拦时 `_novel_prefix` 只能猜 /novel/1/，但《紫罗兰》等书真实
+    分类号是 2；只猜一次会 404 → 「目录为空」。这里保留解析结果，再从
+    详情页里出现过的所有 /novel/n/{bid}/ 提取候选，最后补常见 1..8/0。
+    """
+    candidates: List[str] = []
+    parsed = _novel_prefix(detail_html, book_id)
+    if parsed:
+        candidates.append(parsed)
+    for m in re.finditer(rf"/novel/(\d+)/{book_id}/", detail_html or ""):
+        prefix = f"/novel/{m.group(1)}/{book_id}/"
+        if prefix not in candidates:
+            candidates.append(prefix)
+    for n in ("1", "2", "3", "4", "5", "6", "7", "8", "0"):
+        prefix = f"/novel/{n}/{book_id}/"
+        if prefix not in candidates:
+            candidates.append(prefix)
+    return candidates[:10]
+
+
+def _parse_catalog_html(html: str, catalog_url: str) -> List[Dict]:
+    """从目录页 HTML 解析章节列表；解析不到返回空列表。"""
+    soup = BeautifulSoup(html or "", "html.parser")
+    catalog: List[Dict] = []
+    seen = set()
+    # 文库8把插图作为独立章节。以前一律过滤，导致下载的 EPUB 没有插图。
+    # 现在保留插图章并打 is_illustration 标记：正文抓取阶段提取 <img>，渲染阶段
+    # 内嵌到 EPUB，TXT 退化为「[插图:链接]」。标记同时防止空章被误判为失败。
+    _image_re = re.compile(
+        r"^(插图|插画|图片|彩页|封面)\s*[\d一二三四五六七八九十]*\s*[（(\-—·:：]?.*$"
+    )
+    _chap_re = re.compile(r"(?:^|/)(\d+)\.htm(?:\?|$)", re.I)
+
+    def _chapter_id(href: str) -> str:
+        m = _chap_re.search(str(href or ""))
+        return m.group(1) if m else ""
+
+    def _add(cid: str, title: str, href: str, vol: str) -> None:
+        if not cid or cid in seen:
+            return
+        seen.add(cid)
+        catalog.append({
+            "id": cid,
+            "title": title or f"第{len(catalog) + 1}章",
+            "index": len(catalog),
+            "url": urljoin(catalog_url, href),
+            "vol": vol,
+            "is_illustration": bool(_image_re.match(title or "")),
+        })
+
+    current_vol = ""
+    for tr in soup.select("tr"):
+        vol_td = tr.select_one("td.vcss")
+        if vol_td is not None:
+            current_vol = vol_td.get_text(" ", strip=True)
+            continue
+        for a in tr.select("a[href]"):
+            href = a.get("href", "").strip()
+            title = a.get_text(" ", strip=True)
+            _add(_chapter_id(href), title, href, current_vol)
+    # vcss 卷结构没识别出来时，退回扁平遍历，避免任何情况下丢章。
+    if not catalog:
+        for a in soup.select("a[href]"):
+            href = a.get("href", "").strip()
+            title = a.get_text(" ", strip=True)
+            _add(_chapter_id(href), title, href, "")
+    return catalog
+
+
 def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     """取目录：返回 [{id, title, index, url}]。
 
@@ -275,88 +346,32 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     sess = session or make_session()
 
     # 网页目录优先：官方 App API（app.wenku8.com）已关停，返回 nginx Welcome，
-    # 不再是可靠通道。实测 .cc 网页目录（/novel/1/{id}/index.htm）可用且含完整
-    # 卷/章结构，故网页优先、App API 仅作兜底。
-    d = _get_with_retry(sess, f"{_base()}/book/{bid}.htm", timeout=20)
-    prefix = _novel_prefix(_decode(d), bid)
-    catalog_url = f"{_base()}{prefix}index.htm"
-
-    try:
-        resp = _get_with_retry(sess, catalog_url, timeout=20)
-        html = _decode(resp)
-    except Exception:  # noqa: BLE001
-        html = ""
-    soup = BeautifulSoup(html, "html.parser")
-
-    catalog: List[Dict] = []
-    seen = set()
-    # 文库8把插图作为独立章节（正文容器为空，只有图片），下载后是空章。
-    # 标题可能是纯"插图"也可能带序号（"插图1"/"彩页02"/"插图 3"），用前缀
-    # 匹配一律过滤，避免产出空章节。
-    # 挑刺 #34：兼容带序号/括号说明的插图标题（插图1(上)/彩页 · 封二等），
-    # 但仍要求以插图类词开头，避免误杀以「图」开头的正文标题。
-    _image_re = re.compile(
-        r"^(插图|插画|图片|彩页|封面)\s*[\d一二三四五六七八九十]*\s*[（(\-—·:：]?.*$"
-    )
-    # 章节链接：绝大多数是相对数字 "177990.htm"，但部分线路给绝对地址
-    # 或带 query（"?a=1"）。用 search 从路径末段提取数字文件名，兼容之。
-    _chap_re = re.compile(r"(?:^|/)(\d+)\.htm(?:\?|$)", re.I)
-
-    def _chapter_id(href: str) -> str:
-        m = _chap_re.search(str(href or ""))
-        return m.group(1) if m else ""
-
-    # 文库8目录结构：<td class="vcss" vid="...">第一卷</td> 是卷标题行，
-    # 后续 <td class="ccss"><a href="数字.htm">章名</a></td> 是该卷下的章节。
-    # 按文档顺序遍历，遇到 vcss 更新当前卷，遇到章节链接继承它 → 保留层级。
-    current_vol = ""
-    for tr in soup.select("tr"):
-        vol_td = tr.select_one("td.vcss")
-        if vol_td is not None:
-            current_vol = vol_td.get_text(" ", strip=True)
-            continue
-        for a in tr.select("a[href]"):
-            href = a.get("href", "").strip()
-            title = a.get_text(" ", strip=True)
-            cid = _chapter_id(href)
-            if not cid or _image_re.match(title):
-                continue
-            if cid in seen:
-                continue
-            seen.add(cid)
-            catalog.append({
-                "id": cid,
-                "title": title or f"第{len(catalog) + 1}章",
-                "index": len(catalog),
-                "url": urljoin(catalog_url, href),
-                "vol": current_vol,
-            })
-    # 兜底：若页面结构异常（vcss 未识别）导致全部卷为空，退回扁平遍历，
-    # 保证任何情况下章节都不丢失（零回归）。
-    if not catalog:
-        for a in soup.select("a[href]"):
-            href = a.get("href", "").strip()
-            title = a.get_text(" ", strip=True)
-            cid = _chapter_id(href)
-            if not cid or _image_re.match(title):
-                continue
-            if cid in seen:
-                continue
-            seen.add(cid)
-            catalog.append({
-                "id": cid, "title": title or f"第{len(catalog) + 1}章",
-                "index": len(catalog), "url": urljoin(catalog_url, href),
-            })
-    # 网页目录整体失败时（如全部被拦），退回 App API 兜底。
-    if not catalog:
+    # 不再是可靠通道。详情页可能给不出分类号（被拦/改版），此时不能只猜
+    # /novel/1/：《紫罗兰》真实目录在 /novel/2/2353/，猜 1 会 404 → 空目录。
+    detail_html = _decode(_get_with_retry(
+        sess, f"{_base()}/book/{bid}.htm", timeout=20,
+    ))
+    for prefix in _catalog_prefix_candidates(detail_html, bid):
+        catalog_url = f"{_base()}{prefix}index.htm"
         try:
-            from .wenku8_app_api import fetch_catalog_app
-            app_catalog = fetch_catalog_app(bid)
-            if app_catalog:
-                return app_catalog
+            html = _decode(_get_with_retry(
+                sess, catalog_url, timeout=20, attempts=2,
+            ))
         except Exception:  # noqa: BLE001
-            pass
-    return catalog
+            continue
+        catalog = _parse_catalog_html(html, catalog_url)
+        if catalog:
+            return catalog
+
+    # 所有网页候选都失败时退回 App API（已关停，保留兼容兜底）。
+    try:
+        from .wenku8_app_api import fetch_catalog_app
+        app_catalog = fetch_catalog_app(bid)
+        if app_catalog:
+            return app_catalog
+    except Exception:  # noqa: BLE001
+        pass
+    return []
 
 
 def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
@@ -382,7 +397,9 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
 
     # 逐章请求是下载丢章的直接位置：一次网络抖动（httpcloak unexpected EOF /
     # 连接重置）就会让这章静默变空，最终「9/29 章却显示 100%」。带退避重试。
-    resp = _get_with_retry(sess, url, timeout=20, attempts=6)
+    # 单次请求 3 次即可：每线程会话复用后 EOF 已极少，更多补抓放在并发预取层，
+    # 不在渲染阶段串行堆积等待（否则进度会卡在 40%）。
+    resp = _get_with_retry(sess, url, timeout=20, attempts=3)
     html = _decode(resp)
     soup = BeautifulSoup(html, "html.parser")
     node = soup.select_one("#content")
@@ -394,6 +411,29 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
     # 去掉脚本/样式与站点版权声明行
     for bad in node.select("script,style"):
         bad.decompose()
+
+    # 提取正文里的插图：文库8把插图做成独立章节或夹在正文中，正文容器里是
+    # <img>。以前只取 get_text() 会丢掉全部插图。这里把图片 URL 用专用标记
+    # 占位，保留在文中位置；下载插件预取阶段下载图片，渲染阶段把标记替换为
+    # EPUB 内嵌 <img>（TXT 退化为「[插图:链接]」）。
+    image_urls: List[str] = []
+    for img in node.select("img"):
+        src = (img.get("src") or img.get("data-src") or img.get("data-original")
+               or "").strip()
+        if not src:
+            continue
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            src = urljoin(_base() + "/", src)
+        elif not src.startswith("http"):
+            src = urljoin(url, src)
+        # 文库8图片服务器常给 http，统一升级 https
+        if src.startswith("http://"):
+            src = "https://" + src[len("http://"):]
+        if src not in image_urls:
+            image_urls.append(src)
+
     text = node.get_text("\n", strip=True)
     lines: List[str] = []
     for line in text.splitlines():
@@ -409,6 +449,11 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
                 or ("轻小说文库" in line and ("http" in low or "www." in low))):
             continue
         lines.append("    " + line)
+
+    # 图片标记放在文字之后（插图章通常只有图，没有文字）。
+    for src in image_urls:
+        lines.append("[[WENKU8IMG:" + src + "]]")
+    # 纯插图章没有文字也没关系：图片标记本身就是有效正文，不会被判为空章。
     return "\n".join(lines)
 
 

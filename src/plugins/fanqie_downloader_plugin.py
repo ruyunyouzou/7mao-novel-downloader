@@ -392,6 +392,7 @@ class FanqieDownloader(DownloaderBase):
                 "start_chapter": start,
                 "end_chapter": end,
                 "source": "fanqie",
+                "author": str(result.get("author") or ""),
             },
         )
 

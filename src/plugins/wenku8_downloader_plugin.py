@@ -29,50 +29,81 @@ class Wenku8BookSource(BookSource):
         self._prefix = ""
         self._aid = ""
         self._app_mode = False
-        # 核心修复：全书共用一个 httpcloak 会话。
-        # 取证：每章/每线程新建会话会产生大量 TLS 指纹握手，其中约 16% 直接
-        # HTTPCloakError: unexpected EOF，失败随机散布在整本书（不是网站限流）。
-        # 实测同一会话供 8 线程复用：295/295 成功、失败 0，且比多会话更快。
+        # 分卷导出缓存：全书详情/目录/正文只抓一次，多卷复用（正文抓取是整链路瓶颈）。
+        # key 用 str(book_id) / chapter id；只缓存成功结果，失败章不缓存以便重试。
+        # 整本下载（默认路径）也会写入缓存，但行为与旧版完全一致，零回归。
+        self._detail_cache: dict = {}
+        self._catalog_cache: dict = {}
+        self._text_cache: dict = {}
+        # 插图缓存：key=图片 URL，value=图片字节。预取阶段并发下载，渲染阶段只读。
+        self._image_cache: dict = {}
+        # 正确模型：每个工作线程一个会话并长期复用。
+        # 取证：
+        #   - 每章新建会话：295 章 49 次 unexpected EOF（TLS 握手太频繁）；
+        #   - 每线程一个会话：295 章仅 1 次 EOF，重试即可补齐，8.7 秒完成；
+        #   - 全书单会话跨线程：httpcloak Session 非线程安全，Windows 原生库
+        #     会出现请求互锁/卡顿（用户实测卡在 49%），绝不能这么做。
         import threading
+        self._tls = threading.local()
         self._session_lock = threading.Lock()
-        self._shared_session = None
-        self._shared_cookie_key = None
 
     def _session(self, session=None):
-        """全书复用同一个指纹会话； Cookie 变化时才重建并加锁防竞争。
+        """每个线程复用自己的指纹会话；既不每章重建，也不跨线程共享。
 
-        调用方传入的 Session 只用于提取 Cookie，绝不直接复用：它通常是不带
-        httpcloak 指纹层的裸 requests.Session，会被 Cloudflare 拦。
+        调用方传入的 Session 只有在属于当前线程时才直接复用；跨线程传入时
+        只提取 Cookie，由本线程新建会话，避免把非线程安全对象交给多线程。
         """
+        import threading
         from gui.wenku8_core.wenku8_auth import make_session, get_cookie
         cookie = get_cookie()
         if session is not None and getattr(session, "cookies", None) is not None:
             try:
                 jar = session.cookies.get_dict()
                 if "PHPSESSID" in jar or "jieqiUserInfo" in jar:
+                    owner = getattr(session, "owner_thread", None)
+                    if owner is None or owner == threading.get_ident():
+                        return session
                     cookie = "; ".join(f"{k}={v}" for k, v in jar.items())
             except Exception:  # noqa: BLE001
                 pass
 
+        cached = getattr(self._tls, "session", None)
+        cached_key = getattr(self._tls, "cookie_key", None)
+        if cached is not None and cached_key == cookie:
+            return cached
         with self._session_lock:
-            if self._shared_session is not None and self._shared_cookie_key == cookie:
-                return self._shared_session
-            self._shared_session = make_session(cookie)
-            self._shared_cookie_key = cookie
-            return self._shared_session
+            cached = getattr(self._tls, "session", None)
+            cached_key = getattr(self._tls, "cookie_key", None)
+            if cached is not None and cached_key == cookie:
+                return cached
+            new_session = make_session(cookie)
+            self._tls.session = new_session
+            self._tls.cookie_key = cookie
+            return new_session
 
     def fetch_detail(self, book_id: str, session) -> dict:
+        key = str(book_id)
+        cached = self._detail_cache.get(key)
+        if cached is not None:
+            return cached
         from gui.wenku8_core.wenku8_reader import fetch_detail
         sess = self._session(session)
         d = fetch_detail(book_id, sess)
-        return {
+        result = {
             "title": str(d.get("title") or ""),
             "author": str(d.get("author") or ""),
             "intro": str(d.get("intro") or ""),
             "cover": str(d.get("cover") or ""),
         }
+        self._detail_cache[key] = result
+        return result
 
     def fetch_catalog(self, book_id: str, session) -> list:
+        key = str(book_id)
+        cached = self._catalog_cache.get(key)
+        if cached is not None:
+            self._total = len(cached)
+            return cached
         from gui.wenku8_core.wenku8_reader import (
             resolve_book_id, fetch_catalog, fetch_book_meta,
         )
@@ -90,9 +121,58 @@ class Wenku8BookSource(BookSource):
         from gui.hierarchy import normalize_catalog_safe
         raw = normalize_catalog_safe(raw)
         self._total = len(raw)
+        self._catalog_cache[key] = raw
         return raw
 
+    def prefetch_book(self, book_id: str, session, on_progress=None):
+        """全书预取一次，正文写入缓存，供多卷导出复用。
+
+        返回 (detail, catalog, texts)；texts 与 catalog 一一对应。
+        分卷导出时先调本方法，再对每卷 build_txt —— 后续抓取全部命中缓存，
+        全书正文只走一次网络（并发 + 多轮补齐），不会重复请求。
+        """
+        detail = self.fetch_detail(book_id, session)
+        catalog = self.fetch_catalog(book_id, session)
+        texts = self.prefetch_texts(None, catalog, session, on_progress)
+        return detail, catalog, texts
+
+    def _chapter_cache_key(self, chapter: dict) -> str:
+        """正文缓存 key：优先章节数字 id，其次 url，最后 index。"""
+        return (str(chapter.get("id") or "") or str(chapter.get("url") or "")
+                or str(chapter.get("index", "")))
+
+    def get_image(self, url: str) -> bytes:
+        """渲染阶段读取插图字节（只读缓存，绝不发网络请求）。"""
+        return self._image_cache.get(str(url or ""), b"")
+
+    def _cache_images(self, text: str) -> None:
+        """抓到正文后，把其中的插图 URL 并发下载进缓存（缺失的才下）。"""
+        from gui.wenku8_core.wenku8_volumes import (
+            extract_image_urls, download_image,
+        )
+        urls = [u for u in extract_image_urls(text) if u not in self._image_cache]
+        if not urls:
+            return
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(8, len(urls))) as pool:
+            fmap = {pool.submit(download_image, u): u for u in urls}
+            for fut, u in fmap.items():
+                try:
+                    data = fut.result()
+                except Exception:  # noqa: BLE001
+                    data = b""
+                if data:
+                    self._image_cache[u] = data
+
     def chapter_text(self, ctx, chapter: dict, session, report) -> str:
+        ckey = self._chapter_cache_key(chapter)
+        cached = self._text_cache.get(ckey)
+        if cached:
+            self._cache_images(cached)
+            if self._total and report is not None:
+                idx = int(chapter.get("index", 0)) + 1
+                report(2 + min(38, int(idx / self._total * 38)))
+            return cached
         from gui.wenku8_core.wenku8_reader import (
             fetch_chapter_text, fetch_chapter_text_app,
         )
@@ -109,6 +189,9 @@ class Wenku8BookSource(BookSource):
                 novel_prefix=self._prefix,
                 book_id=str(chapter.get("bid", "")),
             )
+        if text and ckey:
+            self._text_cache[ckey] = text
+            self._cache_images(text)
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1
             report(2 + min(38, int(idx / self._total * 38)))
@@ -157,13 +240,13 @@ class Wenku8BookSource(BookSource):
         else:
             pool.shutdown(wait=True)
 
-        # 全量补齐：首轮失败的章节不能只补一次就放弃。网络抖动是瞬态的，
-        # 这里最多再做 3 轮补抓，每轮间隔递增，直到所有章节都拿到正文。
+        # 全量补齐必须留在并发阶段：渲染循环里逐章串行重试会让单章最坏
+        # 等待数百秒，进度卡在 40%。这里最多再做 5 轮并发补抓，间隔短。
         failed = [i for i in range(total) if not results.get(i)]
-        for rescue_round in range(1, 4):
+        for rescue_round in range(1, 6):
             if not failed:
                 break
-            _time.sleep(0.5 * rescue_round)
+            _time.sleep(0.25 * rescue_round)
             pool2 = ThreadPoolExecutor(max_workers=max(2, workers // 2))
             try:
                 retried = _grab(failed, pool2)
@@ -189,7 +272,170 @@ class Wenku8Downloader(DownloaderBase):
     def supports(self, book_info):
         return str((book_info or {}).get("source", "") or "") == "wenku8"
 
+    def _download_volumes(self, book_id, save_path, fmt, progress_cb,
+                          kwargs, mode, selected_volumes):
+        """按卷导出（文库8专属）：全书正文只抓一次，按卷切片写出多个文件。
+
+        - 先 prefetch_book() 一次性并发抓全书详情/目录/正文并写入书源缓存；
+        - 再按目录 vol 分组，对每卷调用 build_txt(start/end) 渲染单卷文件；
+          此时详情/目录/正文全部命中缓存，不会重复发任何网络请求；
+        - 进度：预取 2→40，N 卷平分 40→99，全部成功后统一 100。
+        """
+        import requests
+        from gui.qimao_core import build_txt as _build_txt
+        from gui.datastore import DataStore
+        from gui.wenku8_core.wenku8_volumes import (
+            group_volumes, select_volumes, volume_filename_template,
+            volume_label,
+        )
+
+        title = kwargs.get("title", "") or ""
+        store = DataStore()
+
+        def opt(key, default=None):
+            return kwargs.get(key) or store.settings_get(f"epub_{key}", default)
+
+        chapter_font = opt("chapter_font", "builtin:mashan") or "builtin:mashan"
+        volume_font = opt("volume_font", "builtin:zhimang") or "builtin:zhimang"
+        chapter_color = opt("chapter_color", "") or ""
+        volume_color = opt("volume_color", "") or ""
+        colorize = kwargs.get("colorize_dialogue")
+        if colorize is None:
+            colorize = bool(store.settings_get("epub_colorize_dialogue", True))
+        chapter_hero = kwargs.get("chapter_hero")
+        if chapter_hero is None:
+            chapter_hero = bool(store.settings_get("epub_chapter_hero", False))
+        hero_mode = opt("hero_mode", "rotate") or "rotate"
+        hero_fixed = opt("hero_fixed", "") or ""
+        chapter_tail = kwargs.get("chapter_tail")
+        if chapter_tail is None:
+            chapter_tail = bool(store.settings_get("epub_chapter_tail", False))
+        tail_mode = opt("tail_mode", "rotate") or "rotate"
+        tail_fixed = opt("tail_fixed", "") or ""
+        smart_art = kwargs.get("smart_art")
+        if smart_art is None:
+            smart_art = bool(store.settings_get("epub_smart_art", True))
+
+        source = Wenku8BookSource()
+        session = requests.Session()
+        base_tpl = kwargs.get("filename_template", "") or ""
+
+        def _prefetch_progress(done, total):
+            if progress_cb is not None and total:
+                progress_cb(min(40, 2 + int(done / total * 38)))
+
+        try:
+            detail, catalog, _texts = source.prefetch_book(
+                book_id, session, on_progress=_prefetch_progress)
+        except DownloadCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False, message=f"文库8分卷导出失败（预取正文）: {exc}",
+            )
+
+        volumes = group_volumes(catalog)
+        chosen = select_volumes(volumes, mode, selected_volumes)
+        if not chosen:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message="文库8分卷导出失败：未选择任何卷（请至少勾选一卷）",
+            )
+
+        n = len(chosen)
+        span = 59.0 / n  # 40 → 99
+        written: list = []
+        failed: list = []
+        for i, vol in enumerate(chosen):
+
+            def _vol_progress(_p, _base=40 + i * span, _span=span):
+                if progress_cb is not None:
+                    progress_cb(min(99, int(_base + (max(0, min(100, _p)) / 100.0) * _span)))
+
+            try:
+                result = _build_txt(
+                    book_id=str(book_id),
+                    save_path=save_path,
+                    fmt=fmt,
+                    progress_cb=_vol_progress,
+                    title_hint=title,
+                    author_hint=kwargs.get("author", "") or "",
+                    start_chapter=int(vol["start"]),
+                    end_chapter=int(vol["end"]),
+                    filename_template=volume_filename_template(base_tpl, vol["name"]),
+                    colorize_dialogue=bool(colorize),
+                    chapter_font=str(chapter_font or ""),
+                    volume_font=str(volume_font or ""),
+                    chapter_color=str(chapter_color or ""),
+                    volume_color=str(volume_color or ""),
+                    chapter_hero=bool(chapter_hero),
+                    hero_mode=str(hero_mode),
+                    hero_fixed=str(hero_fixed),
+                    hero_library="genshin",
+                    chapter_tail=bool(chapter_tail),
+                    tail_mode=str(tail_mode),
+                    tail_fixed=str(tail_fixed),
+                    smart_art=bool(smart_art),
+                    source=source,
+                )
+                written.append({
+                    "name": vol["name"],
+                    "start": vol["start"],
+                    "end": vol["end"],
+                    "count": vol["count"],
+                    "file_path": result.get("file_path", ""),
+                    "chapters": result.get("chapters", 0),
+                    "label": volume_label(vol),
+                })
+            except DownloadCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                failed.append(f"{volume_label(vol)}: {exc}")
+
+        if not written:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message="文库8分卷导出失败：所有卷均未写出（" + "；".join(failed[:3]) + "）",
+            )
+        if progress_cb is not None:
+            progress_cb(100)
+
+        total_chapters = sum(int(v.get("count", 0)) for v in written)
+        fmt_label = {"txt": "TXT", "chapter": "分章TXT", "epub": "EPUB"}.get(fmt, fmt)
+        msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8）"
+        if failed:
+            msg += f"；{len(failed)} 卷失败（" + "；".join(failed[:2]) + "）"
+        return DownloadResult(
+            book_id=str(book_id),
+            title=title or str(detail.get("title") or f"book_{book_id}"),
+            success=True,
+            file_path=written[0].get("file_path", ""),
+            message=msg,
+            extra={
+                "chapters": total_chapters,
+                "total": len(catalog),
+                "format": fmt,
+                "real": True,
+                "source": "wenku8",
+                "volume_mode": mode,
+                "volumes": written,
+                "volume_failures": failed,
+                "author": str(detail.get("author") or kwargs.get("author", "") or ""),
+            },
+        )
+
     def download(self, book_id, save_path, fmt="txt", progress_cb=None, **kwargs):
+        # 分卷导出：仅文库8插件内部分支，番茄/七猫插件根本没有这个参数。
+        volume_mode = str(kwargs.get("volume_mode", "") or "whole")
+        selected_volumes = kwargs.get("selected_volumes") or []
+        if volume_mode in ("per_volume", "selected"):
+            return self._download_volumes(
+                book_id, save_path, fmt, progress_cb,
+                kwargs, volume_mode, selected_volumes,
+            )
         title = kwargs.get("title", "") or ""
         from gui.datastore import DataStore
         store = DataStore()
@@ -278,6 +524,9 @@ class Wenku8Downloader(DownloaderBase):
                 "start_chapter": start,
                 "end_chapter": end,
                 "source": "wenku8",
+                # 作者回填：队列卡片显示 book.author，可能为空；EPUB 内作者
+                # 来自详情。这里把详情作者带出去，由队列完成时回填任务。
+                "author": str(result.get("author") or ""),
             },
         )
 

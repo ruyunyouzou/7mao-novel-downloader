@@ -95,12 +95,26 @@ def test_high_failure_rate_never_reports_100_percent(tmp_path):
     assert all(arg is None for arg in source.report_args)
 
 
-def test_wenku8_transient_failures_are_rescued_to_complete(tmp_path, monkeypatch):
-    """用户真正要的结果：短暂失败必须被多轮补抓补齐，产出完整全本。"""
-    monkeypatch.setattr("gui.qimao_core.time.sleep", lambda _s: None)
+def test_wenku8_transient_failures_are_rescued_in_prefetch(tmp_path):
+    """短暂失败必须在并发预取阶段补齐，产出完整全本。"""
     progress = []
-    # 每章前 2 次抓取失败，第 3 次成功；文库8渲染兜底会重试 4 次。
+    # 每章前 2 次抓取失败，第 3 次成功；补抓在 prefetch 内完成。
     source = FakeSource(29, source_key="wenku8", transient_fails=2)
+
+    def prefetch(ctx, catalog, session, on_progress=None):
+        texts = []
+        for ch in catalog:
+            text = ""
+            for _ in range(3):
+                text = source.chapter_text(ctx, ch, session, None)
+                if text:
+                    break
+            texts.append(text)
+        if on_progress:
+            on_progress(len(catalog), len(catalog))
+        return texts
+
+    source.prefetch_texts = prefetch
 
     result = _build(source, tmp_path, progress=progress)
 
@@ -112,9 +126,24 @@ def test_wenku8_transient_failures_are_rescued_to_complete(tmp_path, monkeypatch
         assert f"第{i}章正文内容" in content, f"第{i}章正文缺失"
 
 
-def test_wenku8_any_missing_chapter_blocks_success(tmp_path, monkeypatch):
-    """文库8零容忍：多轮补抓后仍缺一章，也不能出残缺成品。"""
-    monkeypatch.setattr("gui.qimao_core.time.sleep", lambda _s: None)
+def test_render_stage_never_refetches_prefetched_chapters(tmp_path):
+    """回归 40% 卡死：渲染阶段只读预取结果，绝不能再发网络请求。"""
+    source = FakeSource(29, source_key="wenku8")
+    source.prefetch_texts = lambda ctx, catalog, session, on_progress=None: [
+        f"    第{i + 1}章正文内容" for i in range(len(catalog))
+    ]
+
+    def must_not_fetch(*args, **kwargs):
+        raise AssertionError("渲染阶段不应再次抓取正文")
+
+    source.chapter_text = must_not_fetch
+
+    result = _build(source, tmp_path)
+    assert result["chapters"] == 29
+
+
+def test_wenku8_any_missing_chapter_blocks_success(tmp_path):
+    """文库8零容忍：预取后仍缺一章，也不能出残缺成品。"""
     source = FakeSource(10, range(4), source_key="wenku8")
 
     with pytest.raises(QimaoError, match="经多轮重试仍未取到"):
@@ -131,6 +160,13 @@ def test_partial_chapter_directory_is_removed_on_failure(tmp_path):
         _build(source, tmp_path, fmt="chapter")
 
     assert not (tmp_path / "测试书").exists(), "残缺分章目录未被删除"
+
+
+def test_build_result_carries_author_for_queue_backfill(tmp_path):
+    """EPUB 内作者正确但队列卡片显示 — 的修复：结果必须带 author。"""
+    source = FakeSource(5)
+    result = _build(source, tmp_path)
+    assert result["author"] == "测试作者"
 
 
 def test_all_chapters_success_still_reports_complete(tmp_path):
@@ -194,21 +230,21 @@ def test_get_with_retry_retries_gateway_errors(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_chapter_fetch_uses_six_attempts():
-    """正文单次请求必须显式使用 6 次重试（比目录/详情更激进）。"""
+def test_chapter_fetch_uses_three_attempts():
+    """正文单次请求 3 次；更多补抓放在并发预取层，避免渲染串行卡死。"""
     with open(
         os.path.join(ROOT, "src", "gui", "wenku8_core", "wenku8_reader.py"),
         encoding="utf-8",
     ) as f:
         src = f.read()
-    assert "_get_with_retry(sess, url, timeout=20, attempts=6)" in src
+    assert "_get_with_retry(sess, url, timeout=20, attempts=3)" in src
 
 
-def test_wenku8_reuses_one_session_across_threads(monkeypatch):
-    """根因回归：全书必须共用一个 httpcloak 会话，不能每线程各建一个。
+def test_wenku8_thread_local_session_reuse(monkeypatch):
+    """根因回归：每线程一个会话并复用，既不能每章重建也不能跨线程共享。
 
-    每建一次会话就多一次 TLS 指纹握手；实测每章新建会话会让约 16% 章节
-    随机 unexpected EOF。单会话 8 线程实测 295/295 成功。
+    每章新建会话：295 章 49 次 EOF；每线程一个会话：295 章仅 1 次 EOF
+    （由重试补齐）；跨线程共享单会话：非线程安全，Windows 上会卡住。
     """
     from gui.wenku8_core import wenku8_auth
     from plugins.wenku8_downloader_plugin import Wenku8BookSource
@@ -227,11 +263,15 @@ def test_wenku8_reuses_one_session_across_threads(monkeypatch):
 
     source = Wenku8BookSource()
     seen = []
+    lock = threading.Lock()
     barrier = threading.Barrier(8)
 
     def worker():
+        first = source._session(None)
         barrier.wait()
-        seen.append(source._session(None))
+        second = source._session(None)
+        with lock:
+            seen.append((threading.get_ident(), first, second))
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
     for t in threads:
@@ -239,6 +279,41 @@ def test_wenku8_reuses_one_session_across_threads(monkeypatch):
     for t in threads:
         t.join()
 
-    assert len(created) == 1, "全书只能创建一次 httpcloak 会话"
     assert len(seen) == 8
-    assert all(s is seen[0] for s in seen), "所有线程必须拿到同一个会话对象"
+    assert all(first is second for _tid, first, second in seen), "同一线程必须复用会话"
+    assert len({id(first) for _tid, first, _second in seen}) == 8, "不同线程不能共享会话"
+    assert len(created) == 8, "每个线程只创建一次会话"
+
+
+def test_catalog_prefix_fallback_finds_novel_2(monkeypatch):
+    """详情页被拦时不能只猜 /novel/1/，必须探测到真实 /novel/2/。"""
+    from gui.wenku8_core import wenku8_reader as reader
+
+    good_html = (
+        '<html><body><table><tr><td class="ccss">'
+        '<a href="86807.htm">「小说家与自动书记人偶」</a>'
+        '</td></tr></table></body></html>'
+    )
+
+    class Resp:
+        def __init__(self, text, status=200):
+            self.text = text
+            self.status_code = status
+            self.encoding = ""
+
+    calls = []
+
+    class Sess:
+        def get(self, url, timeout=None):
+            calls.append(url)
+            if "/novel/2/2353/index.htm" in url:
+                return Resp(good_html)
+            return Resp("<html>404</html>", 404)
+
+    monkeypatch.setattr(reader, "_base", lambda: "https://www.wenku8.cc")
+    catalog = reader.fetch_catalog("2353", session=Sess())
+
+    assert len(catalog) == 1
+    assert catalog[0]["url"].startswith("https://www.wenku8.cc/novel/2/2353/")
+    assert any("/novel/1/2353/index.htm" in u for u in calls)
+    assert any("/novel/2/2353/index.htm" in u for u in calls)

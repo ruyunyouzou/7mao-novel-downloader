@@ -523,14 +523,23 @@ class QueueView(QWidget):
     def _on_finished(self, task_id: str, result: DownloadResult) -> None:
         task = self.store.queue_find(task_id) or {}
         elapsed = time.time() - task.get("start_ts", time.time())
-        self.store.queue_update(task_id, {
+        updates = {
             "status": "done" if result.success else "failed",
             "progress": 100 if result.success else task.get("progress", 0),
             "message": result.message,
             "file_path": result.file_path or "",
             "elapsed": round(elapsed, 1),
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
+        }
+        # 作者显示回填：队列卡片读 task.book.author，入队时可能为空；
+        # EPUB 内作者来自详情，下载后由 result.extra.author 回填给任务。
+        author = str((result.extra or {}).get("author") or "") if result.success else ""
+        if author:
+            book = dict(task.get("book") or {})
+            if not str(book.get("author") or "").strip():
+                book["author"] = author
+                updates["book"] = book
+        self.store.queue_update(task_id, updates)
         self._cleanup_runner(task_id)
         self.refresh()
         self.task_finished.emit(self.store.queue_find(task_id) or task)
