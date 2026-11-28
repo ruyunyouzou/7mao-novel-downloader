@@ -230,14 +230,16 @@ def test_get_with_retry_retries_gateway_errors(monkeypatch):
     assert calls["n"] == 2
 
 
-def test_chapter_fetch_uses_three_attempts():
-    """正文单次请求 3 次；更多补抓放在并发预取层，避免渲染串行卡死。"""
+def test_chapter_fetch_uses_bounded_retry_with_validate():
+    """正文请求有界重试(4次)且带 validate：拦截页/无#content页会被识别重试，
+    避免 HTTP 200 的挑战页被当成功、静默产出空章节（用户34/70章失败根因）。"""
     with open(
         os.path.join(ROOT, "src", "gui", "wenku8_core", "wenku8_reader.py"),
         encoding="utf-8",
     ) as f:
         src = f.read()
-    assert "_get_with_retry(sess, url, timeout=20, attempts=3)" in src
+    assert "attempts=4, validate=_has_content" in src
+    assert "def _looks_like_block_page" in src
 
 
 def test_wenku8_thread_local_session_reuse(monkeypatch):
@@ -315,5 +317,10 @@ def test_catalog_prefix_fallback_finds_novel_2(monkeypatch):
 
     assert len(catalog) == 1
     assert catalog[0]["url"].startswith("https://www.wenku8.cc/novel/2/2353/")
-    assert any("/novel/1/2353/index.htm" in u for u in calls)
+    # 修复「目录为空耗时100s」：首选本地索引 cover 分类号(/image/2/ → /novel/2/)，
+    # 详情页被拦也能一击命中，不再瞎猜 /novel/1/../8/。第一个请求即真实分类号。
     assert any("/novel/2/2353/index.htm" in u for u in calls)
+    index_calls = [u for u in calls if "/index.htm" in u]
+    # 第一个目录请求就是真实分类号（索引 cover 的 /image/2/），无 /novel/1/ 瞎猜
+    assert index_calls and index_calls[0].endswith("/novel/2/2353/index.htm"), calls[:4]
+    assert not any("/novel/1/2353/index.htm" in u for u in calls), calls[:4]

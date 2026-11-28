@@ -36,34 +36,88 @@ def _decode(resp) -> str:
     return resp.text
 
 
-def _get_with_retry(sess, url: str, timeout: int = 20, attempts: int = 3) -> Any:
+# 站点拦截 / 限流页特征：这些响应HTTP状态可能是200，旧代码当成成功解析，
+# 解析不到 #content 就静默返回空正文 → 大量章节"未取到"、反复补抓触发风暴。
+# 识别它们能从根本上把「拦截」与「真的空章」区分开。
+_BLOCK_MARKERS = (
+    "just a moment", "cf-browser-verification", "cf_chl_", "challenge-platform",
+    "checking your browser", "enable javascript and cookies", "attention required",
+    "cloudflare", "访问验证", "人机验证", "请求过于频繁", "too many requests",
+    "429", "502 bad gateway", "503 service unavailable", "504 gateway timeout",
+)
+
+
+def _looks_like_block_page(resp, html: str = "") -> bool:
+    """判断响应是否为拦截/限流/网关错误页（无论状态码是不是 200）。"""
+    status = int(getattr(resp, "status_code", 0) or 0)
+    if status in (400, 401, 403, 408, 409, 410, 425, 429, 500, 502, 503, 504, 507, 520, 521, 522, 524):
+        return True
+    sample = (html or "")[:4096].lower()
+    if not sample:
+        try:
+            sample = (getattr(resp, "text", "") or "")[:4096].lower()
+        except Exception:  # noqa: BLE001
+            sample = ""
+    #  Challenge 页通常很短且带这些标记；正文页很长，避免误伤正文里提到这些词。
+    if len(sample) < 4096 and any(m in sample for m in _BLOCK_MARKERS):
+        return True
+    return False
+
+
+def _retry_delay(i: int, resp=None) -> float:
+    """指数退避 + 抖动；尊重 Retry-After。避免固定短间隔引发重试风暴。"""
+    import random as _rnd
+    delay = min(4.0, 0.5 * (2 ** i)) + _rnd.uniform(0, 0.4)
+    if resp is not None:
+        try:
+            headers = getattr(resp, "headers", {}) or {}
+            key = next((k for k in headers if str(k).lower() == "retry-after"), None)
+            if key is not None:
+                retry_after = float(headers[key])
+                delay = min(10.0, max(delay, retry_after))
+        except (TypeError, ValueError):  # noqa: BLE001
+            pass
+    return delay
+
+
+def _get_with_retry(sess, url: str, timeout: int = 20, attempts: int = 3,
+                    validate=None) -> Any:
     """带退避重试的 GET（下载丢章根治）。
 
     httpcloak 在网络抖动时会抛 ``unexpected EOF`` / 连接重置，普通 requests
-    也会有偶发超时。正文抓取是逐章单请求，任何一次抖动都会让该章静默变空、
-    最终产出「9/29 章却显示 100%」的残缺文件。这里对每次请求做有限重试 +
-    短退避，让瞬态故障自愈；重试仍失败才返回最后一次结果/抛异常交给上层。
+    也会有偶发超时；站点还会用 HTTP 200 的 Cloudflare 挑战页 / 限流页来挡爬虫。
+    这些都必须当成"本次失败"重试，否则静默产出空章节。这里对每次请求做有限
+    重试 + 指数退避（尊重 Retry-After），让瞬态故障自愈；重试仍失败才返回最后
+    一次结果/抛异常交给上层。
 
+    :param validate: 可选回调 ``f(resp) -> bool``，False 表示响应不是目标页（如
+        正文页没有 #content），也触发重试。只在有响应体时调用。
     :return: 成功返回响应对象；全部失败时返回最后一次的响应（供调用方检查），
         若连一次都没成功（每次都抛异常）则抛出最后一次异常。
     """
     last_exc: Exception | None = None
     last_resp: Any = None
-    for i in range(max(1, int(attempts))):
+    tries = max(1, int(attempts))
+    for i in range(tries):
         try:
             resp = sess.get(url, timeout=timeout)
             last_resp = resp
-            # 有响应体但明显是网关错误页（502/503/504/429）时也重试
-            status = int(getattr(resp, "status_code", 0) or 0)
-            if status in (429, 502, 503, 504):
-                if i < attempts - 1:
-                    _time.sleep(0.4 * (i + 1))
+            bad = _looks_like_block_page(resp)
+            if not bad and validate is not None:
+                try:
+                    bad = not bool(validate(resp))
+                except Exception:  # noqa: BLE001 - validate 异常不当成功
+                    bad = True
+            if bad:
+                if i < tries - 1:
+                    _time.sleep(_retry_delay(i, resp))
                     continue
+                return resp  # 最后一次：返回给调用方判定，不无限重试
             return resp
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
-            if i < attempts - 1:
-                _time.sleep(0.4 * (i + 1))
+            if i < tries - 1:
+                _time.sleep(_retry_delay(i))
     if last_resp is not None:
         return last_resp
     if last_exc is not None:
@@ -264,20 +318,34 @@ def fetch_book_meta(book_id: str, session=None) -> Dict[str, str]:
 
 
 def _catalog_prefix_candidates(detail_html: str, book_id: str) -> List[str]:
-    """生成目录页候选前缀：先信详情页，再按常见分类号逐个探测。
+    """生成目录页候选前缀：本地索引分类号优先，其次详情页解析，最后兜底探测。
 
-    详情页被拦时 `_novel_prefix` 只能猜 /novel/1/，但《紫罗兰》等书真实
-    分类号是 2；只猜一次会 404 → 「目录为空」。这里保留解析结果，再从
-    详情页里出现过的所有 /novel/n/{bid}/ 提取候选，最后补常见 1..8/0。
+    「目录为空」根因：详情页被 Cloudflare 拦截时拿不到分类号，旧逻辑只能
+    瞎猜 /novel/1/../8/，9 个前缀 ×3 次重试 ×15s 超时 = 用户端 100 秒后仍空。
+    实测全站索引 4471 本书里有 4464 本的 cover 路径 ``/image/{n}/`` 携带真实
+    分类号（与详情页 100% 一致），零网络成本、全书通用。把它作为首选，
+    详情页被拦也能一击命中，彻底消除瞎猜带来的灾难性耗时。
     """
     candidates: List[str] = []
+    # 首选：本地全站索引 cover 里的分类号（零网络，99.8% 覆盖）
+    try:
+        from . import wenku8_index as _idx
+        meta = _idx.search_index_book(str(book_id).strip()) or {}
+        cover = str(meta.get("cover") or "")
+        m = re.search(r"/image/(\d+)/", cover)
+        if m:
+            candidates.append(f"/novel/{m.group(1)}/{book_id}/")
+    except Exception:  # noqa: BLE001
+        pass
+    # 其次：详情页解析出的前缀
     parsed = _novel_prefix(detail_html, book_id)
-    if parsed:
+    if parsed and parsed not in candidates:
         candidates.append(parsed)
     for m in re.finditer(rf"/novel/(\d+)/{book_id}/", detail_html or ""):
         prefix = f"/novel/{m.group(1)}/{book_id}/"
         if prefix not in candidates:
             candidates.append(prefix)
+    # 最后：常见分类号兜底（索引缺失/冷门书）
     for n in ("1", "2", "3", "4", "5", "6", "7", "8", "0"):
         prefix = f"/novel/{n}/{book_id}/"
         if prefix not in candidates:
@@ -365,9 +433,17 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
             pass
         for prefix in _catalog_prefix_candidates(detail_html, bid):
             catalog_url = f"{_base()}{prefix}index.htm"
+
+            def _has_chapters(r, _bid=bid, _url=catalog_url):
+                try:
+                    return bool(_parse_catalog_html(_decode(r), _url))
+                except Exception:  # noqa: BLE001
+                    return False
+
             try:
                 html = _decode(_get_with_retry(
                     sess, catalog_url, timeout=15, attempts=3,
+                    validate=_has_chapters,
                 ))
             except Exception:  # noqa: BLE001
                 continue
@@ -486,7 +562,13 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
     # 连接重置）就会让这章静默变空，最终「9/29 章却显示 100%」。带退避重试。
     # 单次请求 3 次即可：每线程会话复用后 EOF 已极少，更多补抓放在并发预取层，
     # 不在渲染阶段串行堆积等待（否则进度会卡在 40%）。
-    resp = _get_with_retry(sess, url, timeout=20, attempts=3)
+    def _has_content(r):
+        try:
+            return bool(BeautifulSoup(_decode(r), "html.parser").select_one("#content"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    resp = _get_with_retry(sess, url, timeout=20, attempts=4, validate=_has_content)
     html = _decode(resp)
     soup = BeautifulSoup(html, "html.parser")
     node = soup.select_one("#content")

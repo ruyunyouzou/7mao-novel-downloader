@@ -395,14 +395,19 @@ class Wenku8BookSource(BookSource):
         else:
             pool.shutdown(wait=True)
 
-        # 全量补齐必须留在并发阶段：渲染循环里逐章串行重试会让单章最坏
-        # 等待数百秒，进度卡在 40%。这里最多再做 5 轮并发补抓，间隔短。
+        # 全量补齐留在并发阶段：渲染循环里逐章串行重试会让单章最坏等待数百秒，
+        # 进度卡在 40%。但补抓过猛会触发站点限流（用户实测 34/70 章失败、
+        # 耗时 263s）。改为「少轮次 + 指数退避 + 递减并发」：
+        #   - 单章内部已有 4 次指数退避重试（_get_with_retry），外层不再叠 5 轮；
+        #   - 轮间 1s→2s→4s，给站点限流窗口恢复时间；
+        #   - 补抓并发逐轮减半，第一轮失败多说明被限流，主动降速而非加压。
         failed = [i for i in range(total) if not results.get(i)]
-        for rescue_round in range(1, 6):
+        for rescue_round in range(1, 4):
             if not failed:
                 break
-            _time.sleep(0.25 * rescue_round)
-            pool2 = ThreadPoolExecutor(max_workers=max(2, workers // 2))
+            _time.sleep(min(4.0, 2 ** (rescue_round - 1)))
+            rescue_workers = max(2, workers // (2 ** rescue_round))
+            pool2 = ThreadPoolExecutor(max_workers=rescue_workers)
             try:
                 retried = _grab(failed, pool2)
             except BaseException:

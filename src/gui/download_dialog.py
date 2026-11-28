@@ -25,11 +25,27 @@ from .nation_theme import color_swatch_icon
 from .i18n import tr
 
 
+# 目录加载线程可能仍在跑网络请求时对话框就被关闭。无 parent 的 QThread
+# 一旦失去引用被 GC/PySide6 销毁，会直接 abort 整个进程（"QThread: Destroyed
+# while thread is still running"），且第二次关闭对话框才触发——正是用户反馈的
+# 「第一次关不退出、第二次关就退出」根因。用全局集合持有引用直到线程自然结束。
+_orphan_catalog_workers = set()
+
+
+def _release_catalog_worker(worker: "_Wenku8CatalogWorker") -> None:
+    _orphan_catalog_workers.discard(worker)
+    try:
+        worker.deleteLater()
+    except RuntimeError:  # noqa: BLE001 - C++ 对象已销毁
+        pass
+
+
 class _Wenku8CatalogWorker(QThread):
     """文库8目录后台加载（仅分卷面板用）。
 
     严格遵循项目约定：用 requestInterruption 协作取消，不 terminate；
-    结束发 finished_run 供 UI 回收，避免 "QThread: Destroyed while running"。
+    结束发 finished_run 供 UI 更新状态。线程生命周期由全局集合 + finished
+    自释放钩子管理，对话框 closeEvent 绝不主动 deleteLater 运行中的线程。
     """
 
     loaded = Signal(list)   # List[{"name":..., "count":..., "chapters":[...]}]
@@ -37,8 +53,13 @@ class _Wenku8CatalogWorker(QThread):
     finished_run = Signal()
 
     def __init__(self, book_id: str, parent=None) -> None:
+        # 不设 parent：宿主对话框销毁时不要连带销毁可能仍在运行的线程。
         super().__init__(parent)
         self.book_id = str(book_id)
+        # 从创建起纳入全局追踪，结束时自动释放；否则对话框 closeEvent 后
+        # 失去引用被销毁，运行中的线程触发进程级 abort。
+        _orphan_catalog_workers.add(self)
+        self.finished.connect(lambda w=self: _release_catalog_worker(w))
 
     def run(self) -> None:
         try:
@@ -417,14 +438,10 @@ class DownloadDialog(QDialog):
             self._vol_radio_selected.setEnabled(False)
 
     def _on_volume_worker_done(self) -> None:
-        # 线程体已结束，安全回收对象；下次打开对话框可重新加载。
-        worker = self._volume_worker
+        # 线程体已结束，只清空 UI 侧引用。对象回收交给 worker 的 finished
+        # 自释放钩子（见 _release_catalog_worker），此处绝不 deleteLater，
+        # 避免与 closeEvent 的双重回收 / 误删运行中线程。
         self._volume_worker = None
-        if worker is not None:
-            try:
-                worker.deleteLater()
-            except Exception:  # noqa: BLE001
-                pass
 
     def _selected_volume_names(self) -> list:
         if self._vol_tree is None:
@@ -439,20 +456,30 @@ class DownloadDialog(QDialog):
         return names
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 约定
-        # 对话框关闭时协作取消后台取目录线程，并等待其自然结束，避免
-        # "QThread: Destroyed while thread is still running"。
+        # 对话框关闭时协作取消后台取目录线程。关键：绝不 deleteLater 一个
+        # 可能仍在运行的 QThread（会 abort 整个进程，且表现为第二次关闭才崩）。
+        # 只断开回连到本对话框的信号、请求中断，并给一点时间自然结束；
+        # 线程对象的回收统一交给 _orphan_catalog_workers + finished 自释放钩子。
         worker = getattr(self, "_volume_worker", None)
+        self._volume_worker = None
         if worker is not None:
+            for sig in (getattr(worker, "loaded", None),
+                        getattr(worker, "failed", None),
+                        getattr(worker, "finished_run", None)):
+                if sig is None:
+                    continue
+                try:
+                    sig.disconnect()
+                except (RuntimeError, TypeError):  # noqa: BLE001
+                    pass
             try:
-                worker.loaded.disconnect()
-                worker.failed.disconnect()
-                worker.finished_run.disconnect()
                 worker.requestInterruption()
-                worker.wait(3000)
-                worker.deleteLater()
-            except Exception:  # noqa: BLE001
+                if worker.isRunning():
+                    # 短等即可：网络线程可能不响应中断，超时也不手动删除。
+                    # 全局集合持有引用，线程跑完 finished 时自行释放。
+                    worker.wait(1500)
+            except RuntimeError:  # noqa: BLE001
                 pass
-            self._volume_worker = None
         super().closeEvent(event)
 
     # ---------- 标题颜色下拉 ----------
