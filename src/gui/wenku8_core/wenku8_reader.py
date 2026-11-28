@@ -399,7 +399,7 @@ _CREDIT_LABEL_RE = re.compile(
     r"^\s*(作者|插图|插画|译者|翻译|图源|扫图|扫瞄|录入|修图|校对|台版|原作|责编|首发)"
     r"\s*[：:／/]")
 _CREDIT_MARK_RE = re.compile(
-    r"轻之国度|天使动漫|录入组|仅供个人学习|禁作商业用途|"
+    r"轻之国度|天使动漫|录入组|汉化组|翻译组|字幕组|仅供个人学习|禁作商业用途|"
     r"24\s*小时内删除|请(尊重|体谅|理解).{0,24}(扫图|录入|校对|翻译|图源)|"
     r"转载请.{0,4}保留信息|严禁转载|转载信息|卷首信息|"
     r"所录入的每一本书里|扫图者有很大一部分功劳|转自")
@@ -450,11 +450,12 @@ def strip_credit_block(lines: List[str]) -> List[str]:
             if _CREDIT_MARK_RE.search(s):
                 marks += 1
             j += 1
-        # 判定：多个字段 + 录入组标记；或以「转自/录入组」标记开头的精简块
-        # （如「网译版 转自 巴哈姆特 / 翻译：只成一事」，只有 1 个字段也要删）。
-        if ((len(labels) >= 2 and (marks >= 1 or len(labels) >= 3))
-                or (marks >= 1 and len(labels) >= 1
-                    and _CREDIT_MARK_RE.search(lines[i]))):
+        # 判定必须同时有「录入组标记」和「字段标签」，绝不容忍纯字段块：
+        # 宁可漏删一条信息，也不误删正文里偶然出现的「作者：/图源：」行。
+        # 精简块（如「网译版 转自 巴哈姆特 / 翻译：只成一事」）只有 1 个字段，
+        # 靠首行转自标记触发；多字段块则要求块内出现任意录入组标记。
+        if (marks >= 1 and len(labels) >= 1
+                and (_CREDIT_MARK_RE.search(lines[i]) or len(labels) >= 2)):
             return lines[:i] + lines[j:]
         i = j if j > i else i + 1
     return lines

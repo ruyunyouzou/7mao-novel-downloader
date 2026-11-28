@@ -102,8 +102,14 @@ def test_single_author_line_not_removed():
 
 
 def test_fields_without_credit_mark_not_removed():
-    """只有字段、没有录入组标记的两行也不误删。"""
-    lines = ["    作者：我", "    图源：网络", "    正文开始。"]
+    """只有字段、没有录入组标记的块一律不删——宁可漏删，绝不误删正文。"""
+    lines = [
+        "    作者：我",
+        "    图源：网络",
+        "    扫图：某人",
+        "    修图：某人",
+        "    正文开始。",
+    ]
     assert R.strip_credit_block(lines) == lines
 
 
@@ -165,3 +171,13 @@ def test_strip_bahamut_minimal_credit_block():
         "    ·人物介绍",
     ]
     assert R.strip_credit_block(lines) == ["    ·人物介绍"]
+
+
+def test_strip_hanhuazu_credit_block():
+    """汉化组署名块：无「转自」，靠汉化组名当标记。"""
+    lines = [
+        "    翻译：大括号不换行汉化组",
+        "    校对：大括号不换行汉化组",
+        "    真昼的心情不太好。",
+    ]
+    assert R.strip_credit_block(lines) == ["    真昼的心情不太好。"]
