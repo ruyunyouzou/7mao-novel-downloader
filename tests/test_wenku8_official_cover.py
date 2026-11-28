@@ -157,13 +157,17 @@ def test_fetch_official_cover_end_to_end_mock(monkeypatch, tmp_path):
 
     title = "关于我在无意间被隔壁的天使变成废柴这件事(关于邻家的天使大人不知不觉把我惯成了废人这档子事)"
 
+    # Bangumi v0 搜索是 POST + JSON body；详情/图片才是 GET。
+    def fake_post(url, **kwargs):
+        assert "/v0/search/subjects" in url
+        assert kwargs.get("json", {}).get("type") == 1, "搜索必须带 type=1"
+        return _Resp(json_data={"data": [{
+            "id": 777, "name": "天使様",
+            "name_cn": "关于邻家的天使大人不知不觉把我惯成了废人这档子事",
+            "images": {"large": "https://lain.bgm.tv/pic/cover/l/x.jpg"},
+        }]})
+
     def fake_get(url, **kwargs):
-        if "/v0/search/subjects" in url:
-            return _Resp(json_data={"data": [{
-                "id": 777, "name": "天使様",
-                "name_cn": "关于邻家的天使大人不知不觉把我惯成了废人这档子事",
-                "images": {"large": "https://lain.bgm.tv/pic/cover/l/x.jpg"},
-            }]})
         if "/v0/subjects/777" in url:
             return _Resp(json_data={
                 "id": 777,
@@ -173,6 +177,7 @@ def test_fetch_official_cover_end_to_end_mock(monkeypatch, tmp_path):
             return _Resp(content=_jpeg())
         return _Resp(status=404)
 
+    monkeypatch.setattr("requests.post", fake_post)
     monkeypatch.setattr("requests.get", fake_get)
     raw = OC.fetch_official_cover("2580", title, timeout=1)
     assert raw and raw[:2] == b"\xff\xd8"
@@ -183,6 +188,7 @@ def test_fetch_official_cover_end_to_end_mock(monkeypatch, tmp_path):
     def boom(*a, **k):
         raise AssertionError("二次调用应命中缓存")
     monkeypatch.setattr("requests.get", boom)
+    monkeypatch.setattr("requests.post", boom)
     assert OC.fetch_official_cover("2580", title, timeout=1)
 
 
@@ -192,13 +198,12 @@ def test_negative_cache_prevents_repeat_search(monkeypatch, tmp_path):
     OC._map_cache = None
     count = {"n": 0}
 
-    def fake_get(url, **kwargs):
+    def fake_post(url, **kwargs):
         count["n"] += 1
-        if "/v0/search/subjects" in url:
-            return _Resp(json_data={"data": []})
-        return _Resp(status=404)
+        return _Resp(json_data={"data": []})
 
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("requests.post", fake_post)
+    monkeypatch.setattr("requests.get", lambda url, **kw: _Resp(status=404))
     assert OC.fetch_official_cover("9999", "冷门书", timeout=1) == b""
     first = count["n"]
     assert first > 0

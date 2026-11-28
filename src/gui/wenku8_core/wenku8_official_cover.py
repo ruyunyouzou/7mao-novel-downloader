@@ -38,6 +38,13 @@ _API_BASES = (
     "https://api.bangumi.one",
     "https://bgmapi.anibt.net",
 )
+# 搜索只能走官方域名：第三方镜像(bgmapi.anibt.net)的 /v0/search/subjects
+# 忽略 keywords、始终返回全站列表（实测 total≈81707），按书名匹配会全错。
+# 镜像仅用于 subject 详情与大图下载。
+_SEARCH_BASES = (
+    "https://api.bgm.tv",
+    "https://api.bangumi.one",
+)
 # images.large 的 host 镜像改写（保留 path/query），应对单一域名不可达
 _IMG_HOSTS = (
     "lain.bgm.tv",
@@ -192,15 +199,26 @@ def _get_json(url: str, timeout: int) -> dict:
 
 
 def _search_subjects(keyword: str, timeout: int) -> List[dict]:
-    """跨 API base 尝试书籍搜索（type=1）。"""
-    import urllib.parse
+    """跨官方 API base 搜索书籍条目（type=1）。
+
+    Bangumi v0 搜索是 **POST + JSON body**，GET 会返回 405 Not Allowed；
+    旧实现用 GET 拼 query，导致搜索永远失败、封面永远回退小图。
+    第三方镜像的 search 不过滤关键词，因此这里只走官方域名。
+    """
+    import requests
     last: Optional[Exception] = None
-    for base in _API_BASES:
-        url = (f"{base}/v0/search/subjects?"
-               + urllib.parse.urlencode({"keywords": keyword, "type": 1,
-                                         "limit": _SEARCH_LIMIT}))
+    payload = {"keywords": keyword, "type": 1, "limit": _SEARCH_LIMIT}
+    for base in _SEARCH_BASES:
         try:
-            data = _get_json(url, timeout)
+            resp = requests.post(
+                f"{base}/v0/search/subjects",
+                json=payload,
+                timeout=timeout,
+                headers={"User-Agent": _UA, "Accept": "application/json"},
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+            data = resp.json()
             items = data.get("data") if isinstance(data, dict) else data
             return [x for x in (items or []) if isinstance(x, dict)]
         except Exception as exc:  # noqa: BLE001
