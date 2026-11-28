@@ -366,6 +366,68 @@ def test_volume_cover_from_illustration_chapter():
     assert got == portrait
 
 
+def test_pick_cover_retries_missing_first_portrait(monkeypatch):
+    """真封面图预取失败时，retry 把它取回，不被后面的目录页竖图顶替。"""
+    landscape0 = _make_image_bytes(1200, 700)     # 跨页扫描横图
+    true_cover = _make_image_bytes(836, 1300)     # 真卷封面（第一张竖图）
+    toc_page = _make_image_bytes(861, 1300)       # 目录页（后面的竖图）
+    urls = ["https://x/scan.jpg", "https://x/cover.jpg", "https://x/toc.jpg"]
+    cache = {"https://x/scan.jpg": landscape0, "https://x/toc.jpg": toc_page}
+    # cover.jpg 缺失，但 retry 能拿回真封面
+    retried = {"n": 0}
+
+    def _get(u):
+        return cache.get(u, b"")
+
+    def _retry(u):
+        retried["n"] += 1
+        if u == "https://x/cover.jpg":
+            cache[u] = true_cover
+            return true_cover
+        return b""
+
+    picked = V.pick_cover_bytes(urls, _get, retry=_retry)
+    assert picked == true_cover, "必须重试取回真封面，而不是降级到目录页竖图"
+    assert retried["n"] >= 1, "首选候选缺失时应触发重试"
+
+
+def test_pick_cover_no_retry_when_cache_complete():
+    """缓存齐全时绝不触发 retry（正常下载零额外网络开销）。"""
+    cover = _make_image_bytes(600, 900)
+    cache = {"https://x/scan.jpg": _make_image_bytes(900, 600),
+             "https://x/cover.jpg": cover}
+
+    def _should_not_call(u):
+        raise AssertionError("缓存齐全时不应重试")
+
+    picked = V.pick_cover_bytes(
+        ["https://x/scan.jpg", "https://x/cover.jpg"],
+        lambda u: cache.get(u, b""), retry=_should_not_call,
+    )
+    assert picked == cover
+
+
+def test_volume_cover_retry_writes_back_cache_and_clears_missing(monkeypatch):
+    """volume_cover 的直达重试成功写回缓存，并从缺图清单移除该 URL。"""
+    from plugins.wenku8_downloader_plugin import Wenku8BookSource
+    true_cover = _make_image_bytes(836, 1300)
+    toc_page = _make_image_bytes(861, 1300)
+    s = Wenku8BookSource()
+    # cover.jpg 预取失败：不在缓存，且在缺图清单里
+    s._image_cache["https://x/toc.jpg"] = toc_page
+    s._image_missing = ["https://x/cover.jpg"]
+
+    import gui.wenku8_core.wenku8_volumes as VV
+    monkeypatch.setattr(VV, "download_image",
+                        lambda u, attempts=5: true_cover if "cover" in u else b"")
+    chapters = [{"index": 0, "title": "插图", "is_illustration": True}]
+    texts = ["[[WENKU8IMG:https://x/cover.jpg]][[WENKU8IMG:https://x/toc.jpg]]"]
+    got = s.volume_cover(chapters, texts)
+    assert got == true_cover
+    assert s._image_cache.get("https://x/cover.jpg") == true_cover, "重试结果须写回缓存"
+    assert "https://x/cover.jpg" not in s._image_missing, "拿回的图须移出缺图清单"
+
+
 def test_epub_item_build_failure_raises_in_strict_mode(monkeypatch):
     """图字节有效但 ebooklib 构造条目失败时，严格模式也必须判失败，不静默丢图。"""
     import pytest

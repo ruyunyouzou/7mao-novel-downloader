@@ -178,7 +178,9 @@ class Wenku8BookSource(BookSource):
         缓存，不发网络。没有竖图时退回插图章第一张成功的图，保证每卷封面
         来自本卷；整卷插图都失败才返回 b''，由 build_txt 回退详情页总封面。
         """
-        from gui.wenku8_core.wenku8_volumes import extract_image_urls, pick_cover_bytes
+        from gui.wenku8_core.wenku8_volumes import (
+            extract_image_urls, pick_cover_bytes, download_image,
+        )
         urls: list = []
         seen = set()
         for ch in volume_chapters or []:
@@ -192,7 +194,22 @@ class Wenku8BookSource(BookSource):
                 if u and u not in seen:
                     seen.add(u)
                     urls.append(u)
-        return pick_cover_bytes(urls, self.get_image)
+
+        # 卷封面概率性失败修复（全书通用）：预取并发下载时，真封面那张图可能
+        # 偶发下载失败（网络抖动/图床限流）。旧逻辑只从缓存挑，缺了就跳过→
+        # 降级成目录页/内页竖图，用户看到「封面抓取失败但书成功」。这里给
+        # 每个候选一次直达重试机会：缺图就现抓，成功即写回缓存（后续渲染/
+        # 严格校验都能看到），失败才降级。图都在缓存时零额外网络请求。
+        def _retry(url: str) -> bytes:
+            data = download_image(url, attempts=3)
+            if data:
+                self._image_cache[url] = data
+                # 该图此前若在缺图清单里，重试拿回后移除，避免误判整单失败。
+                if url in self._image_missing:
+                    self._image_missing.remove(url)
+            return data
+
+        return pick_cover_bytes(urls, self.get_image, retry=_retry)
 
     def _cache_images(self, text: str, rounds: int = 4) -> None:
         """抓到正文后，把其中的插图 URL 并发下载进缓存。

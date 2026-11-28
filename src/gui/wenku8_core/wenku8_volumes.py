@@ -168,17 +168,32 @@ def is_portrait(data: bytes) -> bool:
         return False
 
 
-def pick_cover_bytes(urls: Sequence[str], get_bytes) -> bytes:
+def pick_cover_bytes(urls: Sequence[str], get_bytes, retry=None) -> bytes:
     """从图片 URL 列表里挑「第一张竖图」作为卷封面字节。
 
     参考 Yorag/wenku8-to-epub 与 fateking27/wenku8-downloader：分卷封面取该卷
     插图页第一张竖版长图（width <= height）；该卷没有竖图时退回第一张成功
     下载的图片，保证每卷封面都来自本卷插图页而非全书总封面；全部失败才
     返回 b''。get_bytes(url) 从预取缓存取字节，不发网络。
+
+    参数 retry(url)：可选。当某个候选 URL 在缓存里缺失时，调用它做一次
+    「直达重试」（真正发网络、校验图片魔数并返回字节，失败返回 b''）。这是
+    卷封面概率性失败的修复关键——预取并发下载时真封面那张图偶发抖动失败，
+    旧逻辑直接跳过它、降级到后面的目录页/内页竖图，封面就错了；现在先重试
+    把首选候选拿回来，只有重试也失败才降级。正常情况（图都在缓存）零调用、
+    零额外网络开销。retry 的调用方负责把结果写回自己的缓存。
     """
     first = b""
     for url in urls or []:
         data = get_bytes(url) if get_bytes is not None else b""
+        if not data and retry is not None:
+            # 首选候选缺失：直达重试，尽量把这张图拿回来而不是静默降级。
+            try:
+                retried = retry(url)
+            except Exception:  # noqa: BLE001
+                retried = b""
+            if retried:
+                data = retried
         if not data:
             continue
         if not first:
