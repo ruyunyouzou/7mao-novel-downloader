@@ -256,7 +256,32 @@ def select_volumes(volumes: Sequence[Dict], mode: str,
         wanted = {_clean(x) for x in (selected or [])}
         if not wanted:
             return []
-        return [dict(v) for v in volumes if _clean(v.get("name")) in wanted]
+        # 挑刺 #121（用户「分卷导出有可能会失败」）：精确匹配太脆——GUI 勾选时
+        # 的卷名与下载时站点返回的卷名可能因空格/上下册后缀（「第二卷」vs
+        # 「第二卷 下」）、全半角、站点波动而不一致，导致「未选择任何卷」整单
+        # 失败。三级匹配兜底：①完全相等；②去所有空白后相等；③去空白后一方
+        # 是另一方前缀（用户勾「第二卷」应命中「第二卷 下」「第二卷 上」）。
+        # 只做「勾选名 → 实际卷」单向包含，避免一个短卷名误命中一堆长卷。
+        def _norm(s: str) -> str:
+            return re.sub(r"\s+", "", _clean(s)).lower()
+
+        # 优先精确匹配：只要勾选名能精确命中某些卷，就只返回这些卷。
+        # 这样「短篇」「杂志短篇」并存时勾「短篇」不会误带出「杂志短篇」。
+        exact: List[Dict] = []
+        for v in volumes:
+            vn = _norm(v.get("name"))
+            if any(vn == _norm(w) for w in wanted if _norm(w)):
+                exact.append(dict(v))
+        if exact:
+            return exact
+        # 精确全不中才启用容错：勾选名是实际卷名的子串（勾「第二卷」命中
+        # 「第二卷 下/上」），覆盖站点波动导致的上下册后缀/空格差异。
+        picked: List[Dict] = []
+        for v in volumes:
+            vn = _norm(v.get("name"))
+            if any(wn and wn in vn for wn in (_norm(w) for w in wanted)):
+                picked.append(dict(v))
+        return picked
     # MODE_WHOLE 及未知模式：整本一卷
     if not volumes:
         return []

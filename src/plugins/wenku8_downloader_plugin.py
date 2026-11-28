@@ -669,7 +669,11 @@ class Wenku8Downloader(DownloaderBase):
                 "start_chapter": start,
                 "end_chapter": end,
                 "source": "wenku8",
-                "images_failed": len(missing_imgs),
+                # 渲染层严格模式：缺图会在 build_txt 内抛 QimaoError 并被上方
+                # except 判失败；走到这里正文和插图必已齐全，故失败数恒为 0。
+                # （旧代码在此引用已被删除的 missing_imgs，导致整本下载渲染
+                #   到 100% 后 NameError 崩溃、任务永远完不成——挑刺 #119）
+                "images_failed": 0,
                 # 作者回填：队列卡片显示 book.author，可能为空；EPUB 内作者
                 # 来自详情。这里把详情作者带出去，由队列完成时回填任务。
                 "author": str(result.get("author") or ""),

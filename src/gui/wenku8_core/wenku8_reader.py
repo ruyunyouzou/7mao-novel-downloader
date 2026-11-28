@@ -346,20 +346,37 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     # 网页目录优先：官方 App API（app.wenku8.com）已关停，返回 nginx Welcome，
     # 不再是可靠通道。详情页可能给不出分类号（被拦/改版），此时不能只猜
     # /novel/1/：《紫罗兰》真实目录在 /novel/2/2353/，猜 1 会 404 → 空目录。
-    detail_html = _decode(_get_with_retry(
-        sess, f"{_base()}/book/{bid}.htm", timeout=20,
-    ))
-    for prefix in _catalog_prefix_candidates(detail_html, bid):
-        catalog_url = f"{_base()}{prefix}index.htm"
+    #
+    # 挑刺 #120（用户「紫罗兰又下载不了了·目录为空」）：旧实现两处脆弱——
+    # ①详情页 _get_with_retry 无 try/except，一次网络抖动抛异常就整个崩掉；
+    # ②候选页只 attempts=2，用户端抖动/风控全失败即返回空 → 「目录为空」。
+    # 改为「整体 3 轮重试」，每轮详情页带异常保护、候选页 attempts 提到 3，
+    # 只要任意一轮拿到目录就返回。本地实测真机抖动场景可自愈。
+    import time as _time
+    for whole_round in range(3):
+        # 详情页：异常不能让整个目录抓取崩掉，失败就进下一轮
+        detail_html = ""
         try:
-            html = _decode(_get_with_retry(
-                sess, catalog_url, timeout=20, attempts=2,
-            ))
+            detail_resp = _get_with_retry(
+                sess, f"{_base()}/book/{bid}.htm", timeout=15, attempts=3,
+            )
+            detail_html = _decode(detail_resp) if detail_resp is not None else ""
         except Exception:  # noqa: BLE001
-            continue
-        catalog = _parse_catalog_html(html, catalog_url)
-        if catalog:
-            return catalog
+            pass
+        for prefix in _catalog_prefix_candidates(detail_html, bid):
+            catalog_url = f"{_base()}{prefix}index.htm"
+            try:
+                html = _decode(_get_with_retry(
+                    sess, catalog_url, timeout=15, attempts=3,
+                ))
+            except Exception:  # noqa: BLE001
+                continue
+            catalog = _parse_catalog_html(html, catalog_url)
+            if catalog:
+                return catalog
+        # 本轮一无所获，短暂退避后整轮重试（换一次 TLS 连接，规避抖动）
+        if whole_round < 2:
+            _time.sleep(0.4 * (whole_round + 1))
 
     # 所有网页候选都失败时退回 App API（已关停，保留兼容兜底）。
     try:

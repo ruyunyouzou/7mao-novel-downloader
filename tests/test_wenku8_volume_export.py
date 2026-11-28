@@ -216,3 +216,33 @@ def test_missing_image_only_checks_selected_volumes(monkeypatch, tmp_path):
         "1", str(tmp_path), "epub", None, {"title": "测试书"},
         V.MODE_SELECTED, ["第二卷"])
     assert res.success is True, "只导出第二卷时，第一卷的缺图不应阻塞"
+
+
+# ---------- 挑刺 #121：选卷名容错匹配（用户「分卷导出有可能会失败」） ----------
+
+def test_select_volumes_fuzzy_match_suffix():
+    """勾选名与实际卷名有上下册/空格差异时要能命中，不能「未选择任何卷」。"""
+    vols = [
+        {"name": "第一卷 上", "start": 1, "end": 10},
+        {"name": "第二卷 下", "start": 11, "end": 20},
+        {"name": "短篇", "start": 21, "end": 25},
+        {"name": "杂志短篇", "start": 26, "end": 30},
+    ]
+    # 勾「第二卷」应命中「第二卷 下」（子串容错）
+    assert [v["name"] for v in V.select_volumes(vols, V.MODE_SELECTED, ["第二卷"])] == ["第二卷 下"]
+    # 精确存在时优先精确：「短篇」不应误带出「杂志短篇」
+    assert [v["name"] for v in V.select_volumes(vols, V.MODE_SELECTED, ["短篇"])] == ["短篇"]
+    # 空格差异也能命中
+    assert len(V.select_volumes(vols, V.MODE_SELECTED, ["第 二 卷 下"])) == 1
+    # 完全不存在返回空
+    assert V.select_volumes(vols, V.MODE_SELECTED, ["不存在的卷"]) == []
+
+
+def test_select_volumes_exact_still_works():
+    """原本的精确匹配行为不能破坏（真实卷名勾真实名）。"""
+    vols = [
+        {"name": "第一卷", "start": 1, "end": 10},
+        {"name": "第二卷", "start": 11, "end": 20},
+    ]
+    r = V.select_volumes(vols, V.MODE_SELECTED, ["第二卷"])
+    assert [v["name"] for v in r] == ["第二卷"]
