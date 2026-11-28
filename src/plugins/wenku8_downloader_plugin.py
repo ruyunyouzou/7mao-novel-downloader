@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gui.plugin.base import (
     Plugin, PluginMeta, DownloaderBase, DownloadResult, DownloadCancelled,
 )
-from gui.qimao_core import BookSource, build_txt
+from gui.qimao_core import BookSource, build_txt, sanitize_filename
 
 
 class Wenku8BookSource(BookSource):
@@ -476,6 +476,22 @@ class Wenku8Downloader(DownloaderBase):
                 extra={"images_failed": len(missing_imgs)},
             )
 
+        # 分卷产物统一收进「书名/」子目录，而不是平铺在保存目录根部。
+        # 只对文库8分卷分支生效——整本下载与其他书源不经过这里。
+        folder_name = sanitize_filename(
+            title or str(detail.get("title") or "") or f"book_{book_id}"
+        ) or f"book_{book_id}"
+        volume_root = os.path.join(save_path, folder_name)
+        created_root = not os.path.isdir(volume_root)
+        try:
+            os.makedirs(volume_root, exist_ok=True)
+        except OSError as exc:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message=f"文库8分卷导出失败：无法创建分卷文件夹「{folder_name}」：{exc}",
+            )
+
         n = len(chosen)
         span = 59.0 / n  # 40 → 99
         written: list = []
@@ -516,7 +532,7 @@ class Wenku8Downloader(DownloaderBase):
                 cover_bytes = source.volume_cover(vol.get("chapters", []), _texts)
                 result = _build_txt(
                     book_id=str(book_id),
-                    save_path=save_path,
+                    save_path=volume_root,
                     fmt=fmt,
                     progress_cb=_vol_progress,
                     title_hint=title,
@@ -576,6 +592,16 @@ class Wenku8Downloader(DownloaderBase):
                         os.remove(_p)
                 except Exception:  # noqa: BLE001
                     pass
+            # 文件夹是本次新建的 → 整个清掉（含插图等残留）；原本就存在 →
+            # 只删空文件夹，绝不碰用户此前放在里面的其它文件。
+            try:
+                if created_root:
+                    import shutil as _shutil
+                    _shutil.rmtree(volume_root, ignore_errors=True)
+                elif os.path.isdir(volume_root) and not os.listdir(volume_root):
+                    os.rmdir(volume_root)
+            except Exception:  # noqa: BLE001
+                pass
             return DownloadResult(
                 book_id=str(book_id), title=title or f"book_{book_id}",
                 success=False,
@@ -596,7 +622,8 @@ class Wenku8Downloader(DownloaderBase):
 
         total_chapters = sum(int(v.get("count", 0)) for v in written)
         fmt_label = {"txt": "TXT", "chapter": "分章TXT", "epub": "EPUB"}.get(fmt, fmt)
-        msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8，含全部插图）"
+        msg = (f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章"
+               f"（{fmt_label}·文库8，含全部插图）→ 文件夹：{folder_name}")
         return DownloadResult(
             book_id=str(book_id),
             title=title or str(detail.get("title") or f"book_{book_id}"),
@@ -610,6 +637,7 @@ class Wenku8Downloader(DownloaderBase):
                 "real": True,
                 "source": "wenku8",
                 "volume_mode": mode,
+                "output_dir": volume_root,
                 "volumes": written,
                 "volumes_progress": vol_state,  # 每卷最终状态，供队列卡片逐卷显示
                 "volume_failures": [],   # 走到这里 failed 必为空（非空已在上方判失败）

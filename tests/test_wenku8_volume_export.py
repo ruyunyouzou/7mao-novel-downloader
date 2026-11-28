@@ -246,3 +246,113 @@ def test_select_volumes_exact_still_works():
     ]
     r = V.select_volumes(vols, V.MODE_SELECTED, ["第二卷"])
     assert [v["name"] for v in r] == ["第二卷"]
+
+
+# ---------- #124：分卷产物收进书名文件夹（全书通用，不针对具体书） ----------
+
+def _fake_prefetch(cats, texts, title="测试书"):
+    """注入详情/目录/正文，避免走网络。"""
+    def fake(self, book_id, session, on_progress=None):
+        return ({"title": title, "author": "作者", "cover": ""}, cats, texts)
+    return fake
+
+
+def _install_fake_build(monkeypatch, fail_from=None):
+    """mock build_txt：按传入 save_path 写文件；fail_from 起抛错模拟卷失败。"""
+    state = {"dirs": [], "paths": [], "n": 0}
+    import gui.qimao_core as core
+
+    def fake_build(**kw):
+        state["n"] += 1
+        state["dirs"].append(kw.get("save_path", ""))
+        if fail_from is not None and int(kw.get("start_chapter", 0)) >= fail_from:
+            raise W.QimaoError("插图未能下载")
+        p = os.path.join(kw["save_path"], f"vol_{state['n']}.epub")
+        with open(p, "wb") as f:
+            f.write(b"fake epub")
+        state["paths"].append(p)
+        return {"file_path": p, "chapters": 2, "total": 4, "title": "测试书"}
+
+    monkeypatch.setattr(core, "build_txt", fake_build)
+    return state
+
+
+def test_volume_export_writes_into_book_folder(monkeypatch, tmp_path):
+    """所有卷写进「书名/」子目录，不再平铺在保存目录根部。"""
+    cats = _catalog((2, 2))
+    texts = ["    正文A", "    正文B", "    正文C", "    正文D"]
+    monkeypatch.setattr(W.Wenku8BookSource, "prefetch_book", _fake_prefetch(cats, texts))
+    st = _install_fake_build(monkeypatch)
+
+    d = W.Wenku8Downloader()
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": "测试书"},
+        V.MODE_PER_VOLUME, None)
+
+    assert res.success is True
+    book_dir = tmp_path / "测试书"
+    assert st["dirs"] and all(p == str(book_dir) for p in st["dirs"])
+    assert sorted(p.name for p in book_dir.glob("vol_*.epub")) == [
+        "vol_1.epub", "vol_2.epub"]
+    assert not list(tmp_path.glob("vol_*.epub")), "不允许平铺在保存目录根部"
+    assert res.extra["output_dir"] == str(book_dir)
+    assert os.path.dirname(res.file_path) == str(book_dir)
+    assert book_dir.name in res.message
+
+
+def test_volume_export_folder_name_sanitized(monkeypatch, tmp_path):
+    """书名含 Windows 非法字符时，文件夹名自动清洗，不会创建失败。"""
+    cats = _catalog((2,))
+    texts = ["    正文A", "    正文B"]
+    name = "测试:书/名?"
+    monkeypatch.setattr(
+        W.Wenku8BookSource, "prefetch_book", _fake_prefetch(cats, texts, title=name))
+    st = _install_fake_build(monkeypatch)
+
+    d = W.Wenku8Downloader()
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": name},
+        V.MODE_PER_VOLUME, None)
+
+    assert res.success is True
+    assert (tmp_path / "测试_书_名_").is_dir()
+    assert st["dirs"] == [str(tmp_path / "测试_书_名_")]
+
+
+def test_volume_export_failure_cleans_new_folder(monkeypatch, tmp_path):
+    """失败时本次新建的书名文件夹整个清掉，不留半成品。"""
+    cats = _catalog((2, 2))
+    texts = ["    正文A", "    正文B", "    正文C", "    正文D"]
+    monkeypatch.setattr(W.Wenku8BookSource, "prefetch_book", _fake_prefetch(cats, texts))
+    _install_fake_build(monkeypatch, fail_from=3)
+
+    d = W.Wenku8Downloader()
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": "测试书"},
+        V.MODE_PER_VOLUME, None)
+
+    assert res.success is False
+    assert not (tmp_path / "测试书").exists(), "失败时新建文件夹应整个清掉"
+    assert not list(tmp_path.glob("vol_*.epub"))
+
+
+def test_volume_export_failure_keeps_existing_folder_files(monkeypatch, tmp_path):
+    """文件夹原本就存在时，失败只清本次产物，不删用户已有文件。"""
+    cats = _catalog((2, 2))
+    texts = ["    正文A", "    正文B", "    正文C", "    正文D"]
+    book_dir = tmp_path / "测试书"
+    book_dir.mkdir()
+    keep = book_dir / "我以前放的文件.txt"
+    keep.write_text("别删我", encoding="utf-8")
+
+    monkeypatch.setattr(W.Wenku8BookSource, "prefetch_book", _fake_prefetch(cats, texts))
+    _install_fake_build(monkeypatch, fail_from=3)
+
+    d = W.Wenku8Downloader()
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": "测试书"},
+        V.MODE_PER_VOLUME, None)
+
+    assert res.success is False
+    assert keep.exists(), "不得删除用户已存在文件夹里的其它文件"
+    assert not list(book_dir.glob("vol_*.epub")), "本次产物仍要清掉"
