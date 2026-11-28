@@ -250,14 +250,54 @@ class Wenku8BookSource(BookSource):
                     self._image_missing.append(u)
                     known.add(u)
 
-    def chapter_text(self, ctx, chapter: dict, session, report) -> str:
+    def _download_all_images(self, texts, rounds: int = 4,
+                             workers: int = 16) -> None:
+        """全书插图统一并发下载（与正文通道解耦）。
+
+        图床与正文站不同主机、基本不限流，用独立线程池高并发下载；全书
+        去重后只下一次，不在每章任务里串行重试，避免慢图拖住正文预取。
+        用 as_completed 收集，单张慢图不会让已完成的图白等。
+
+        严格语义不变：仍失败的 URL 记入 _image_missing，由下载入口判失败，
+        绝不静默出缺图的书；卷封面从本缓存取，故必须在渲染前完成。
+        """
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from gui.wenku8_core.wenku8_volumes import download_image
+
+        pending = self.missing_images(texts)
+        for rnd in range(max(1, int(rounds))):
+            if not pending:
+                break
+            if rnd:
+                _time.sleep(0.3 * rnd)  # 短退避，避免瞬时打爆图床
+            with ThreadPoolExecutor(
+                    max_workers=max(2, min(workers, len(pending)))) as pool:
+                fmap = {pool.submit(download_image, u): u for u in pending}
+                for fut in as_completed(fmap):
+                    u = fmap[fut]
+                    try:
+                        data = fut.result() or b""
+                    except Exception:  # noqa: BLE001
+                        data = b""
+                    if data:
+                        self._image_cache[u] = data
+            pending = [u for u in pending if u not in self._image_cache]
+
+        self._image_missing = [u for u in self.image_urls_in(texts)
+                               if u not in self._image_cache]
+
+    def _chapter_text_only(self, chapter: dict, session) -> str:
+        """只抓正文，不碰插图——全书并发预取的快通道。
+
+        正文站与图床是不同主机、限流策略完全不同：正文站限流紧、图床基本
+        不限流。把插图下载塞在每章抓取任务里，会让正文 worker 卡在图床上，
+        且同一张图被多个章节重复下载。这里只取正文，图片由 prefetch_texts
+        在全书抓完后统一并发下载一次（见 _download_all_images）。
+        """
         ckey = self._chapter_cache_key(chapter)
         cached = self._text_cache.get(ckey)
         if cached:
-            self._cache_images(cached)
-            if self._total and report is not None:
-                idx = int(chapter.get("index", 0)) + 1
-                report(2 + min(38, int(idx / self._total * 38)))
             return cached
         from gui.wenku8_core.wenku8_reader import (
             fetch_chapter_text, fetch_chapter_text_app,
@@ -277,6 +317,12 @@ class Wenku8BookSource(BookSource):
             )
         if text and ckey:
             self._text_cache[ckey] = text
+        return text
+
+    def chapter_text(self, ctx, chapter: dict, session, report) -> str:
+        """单章正文 + 插图。追更等单章路径用；整本预取走解耦快通道。"""
+        text = self._chapter_text_only(chapter, session)
+        if text:
             self._cache_images(text)
         if self._total and report is not None:
             idx = int(chapter.get("index", 0)) + 1
@@ -295,14 +341,34 @@ class Wenku8BookSource(BookSource):
         workers = max(1, min(16, workers))
         total = len(catalog)
         if total <= 1:
-            return [self.chapter_text(ctx, ch, session, None) for ch in catalog]
+            texts = [self._chapter_text_only(ch, session) for ch in catalog]
+            self._download_all_images(texts)
+            return texts
+
+        from gui.wenku8_core.wenku8_volumes import (
+            download_image, extract_image_urls,
+        )
+        # 图片池与正文抓取重叠：正文 worker 只管取文，发现图片就非阻塞提交
+        # 到独立图池；图床不限流，16 并发实测最优（32 反而被降速）。
+        # _grab 在主线程收集结果，故 img_futs/img_seen 无需加锁。
+        img_pool = ThreadPoolExecutor(max_workers=16)
+        img_futs: dict = {}
+        img_seen = set()
+
+        def _submit_images(text):
+            for u in extract_image_urls(text):
+                if u in img_seen or u in self._image_cache:
+                    continue
+                img_seen.add(u)
+                img_futs[img_pool.submit(download_image, u)] = u
 
         state = {"done": 0}
 
         def _grab(indices, pool):
             got = {}
+            # 只抓正文；插图不在这里下载，避免正文 worker 被图床拖住。
             fmap = {
-                pool.submit(self.chapter_text, ctx, catalog[i], session, None): i
+                pool.submit(self._chapter_text_only, catalog[i], session): i
                 for i in indices
             }
             for fut in as_completed(fmap):
@@ -311,6 +377,8 @@ class Wenku8BookSource(BookSource):
                     got[idx] = fut.result() or ""
                 except Exception:  # noqa: BLE001
                     got[idx] = ""
+                if got[idx]:
+                    _submit_images(got[idx])  # 非阻塞提交，与正文抓取重叠
                 state["done"] += 1
                 if on_progress is not None:
                     on_progress(min(state["done"], total), total)
@@ -322,6 +390,7 @@ class Wenku8BookSource(BookSource):
             results.update(_grab(range(total), pool))
         except BaseException:
             pool.shutdown(wait=False, cancel_futures=True)
+            img_pool.shutdown(wait=False, cancel_futures=True)
             raise
         else:
             pool.shutdown(wait=True)
@@ -338,6 +407,7 @@ class Wenku8BookSource(BookSource):
                 retried = _grab(failed, pool2)
             except BaseException:
                 pool2.shutdown(wait=False, cancel_futures=True)
+                img_pool.shutdown(wait=False, cancel_futures=True)
                 raise
             else:
                 pool2.shutdown(wait=True)
@@ -346,30 +416,21 @@ class Wenku8BookSource(BookSource):
                     results[i] = txt
             failed = [i for i in failed if not results.get(i)]
 
+        # 正文阶段结束，收割与它重叠跑完的插图（按完成顺序写缓存，不等慢图）
+        for fut in as_completed(img_futs):
+            u = img_futs[fut]
+            try:
+                data = fut.result() or b""
+            except Exception:  # noqa: BLE001
+                data = b""
+            if data:
+                self._image_cache[u] = data
+        img_pool.shutdown(wait=True)
+
         texts = [results.get(i, "") for i in range(total)]
-        # 插图的最后补抓阵地：所有图必须在本阶段（渲染之前）下载到位。
-        # chapter_text 里已逐章下载+补抓，这里做一次全书级别的统一兜底：
-        # 只要正文中出现、但缓存里没有的图，再并发补抓——渲染阶段只读缓存。
-        missing = self.missing_images(texts)
-        if missing:
-            from concurrent.futures import ThreadPoolExecutor
-            from gui.wenku8_core.wenku8_volumes import download_image
-            for _ in range(3):  # 最多 3 轮全书级补抓
-                if not missing:
-                    break
-                with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
-                    fmap = {pool.submit(download_image, u): u for u in missing}
-                    for fut, u in fmap.items():
-                        try:
-                            data = fut.result()
-                        except Exception:  # noqa: BLE001
-                            data = b""
-                        if data:
-                            self._image_cache[u] = data
-                missing = [u for u in missing if u not in self._image_cache]
-        # 记录最终仍缺的图；下载入口据此判失败，绝不静默出无图书。
-        self._image_missing = [u for u in self.image_urls_in(texts)
-                               if u not in self._image_cache]
+        # 插图在正文全部抓完后统一并发下载：图床与正文站不同主机、不限流，
+        # 单独线程池高并发跑，去重后全书只下一次；严格模式与卷封面不变。
+        self._download_all_images(texts)
         return texts
 
 

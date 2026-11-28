@@ -191,12 +191,12 @@ def test_download_image_retries_until_success(monkeypatch):
             self.content = (b"\xff\xd8\xff\xe0JFIF" if ok
                             else b"<html>403</html>")
 
-    def fake_get(url, timeout=None, headers=None):
+    def fake_get(self, url, timeout=None, headers=None):
         calls["n"] += 1
         return _Resp(calls["n"] >= 3)
 
     import requests
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     monkeypatch.setattr(V.time, "sleep", lambda *_: None) if hasattr(V, "time") else None
     # 模块内是 `import time as _time`，patch 其 sleep 加速
     import time
@@ -211,12 +211,12 @@ def test_download_image_all_fail_returns_empty(monkeypatch):
     import gui.wenku8_core.wenku8_volumes as V
     import requests
 
-    def fake_get(url, timeout=None, headers=None):
+    def fake_get(self, url, timeout=None, headers=None):
         class _R:
             content = b"<html>403 Forbidden</html>"
         return _R()
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     # 指纹层兜底也要 mock 掉，避免测试走真实网络（并断言它确实被调用）
     called = {"cloak": 0}
 
@@ -449,12 +449,12 @@ def test_download_image_cloak_fallback_recovers(monkeypatch):
     """requests 全失败但指纹层拿到图：必须救回，不能返回空导致误判缺图。"""
     import requests
 
-    def fake_get(url, timeout=None, headers=None):
+    def fake_get(self, url, timeout=None, headers=None):
         class _R:
             content = b"<html>403 Cloudflare</html>"
         return _R()
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests.Session, "get", fake_get)
     monkeypatch.setattr(V, "_download_image_cloak",
                         lambda url, timeout=15, referer="": b"\xff\xd8\xff\xe0JFIF")
     import time
