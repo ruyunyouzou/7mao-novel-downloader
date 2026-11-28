@@ -220,25 +220,23 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     m = re.search(r"全文长度[：:]\s*([\d,]+)\s*字", html)
     if m:
         words_num = m.group(1).replace(",", "")
-    # App API meta：补完整书名（含括号别名）、作者、字数、简介。
-    # 挑刺 #29：App API 已关停，每次详情无条件调用会白等两次失败请求。
-    # 改为「按需补缺」——网页已拿到完整字段时不再请求；只有关键字段缺失
-    # （网页被风控拦/结构变化）时才兜底调用，既保留能力又不拖慢常规详情。
+
+    # 挑刺 #29 + #117：网页字段缺补只用「本地全站索引」，绝不再调 App API。
+    # 根因：app.wenku8.com/android.php 已关停（返回 nginx Welcome），原先
+    # need_meta 兜底会串行白等 meta(5s)+info(4s)=9s，网页被风控拦导致字段
+    # 缺失时必触发——这就是「详情页加载很慢」的主因。索引随包分发、字段
+    # 齐全（title/author/tags/description/cover/length），读本地 JSON 零网络。
     need_meta = (not title or not author or not words_num or not intro)
     if need_meta:
         try:
-            from .wenku8_app_api import fetch_meta, meta_to_book
-            meta = fetch_meta(bid)
-            if meta:
-                merged = meta_to_book(meta, {
-                    "title": title, "author": author, "intro": intro, "cover": cover,
-                })
-                title = merged.get("title") or title
-                author = author or merged.get("author", "")
-                intro = intro or merged.get("intro", "")
-                cover = cover or merged.get("cover", "")
-                words_num = words_num or merged.get("words_num", "")
-                tags = tags or merged.get("tags", "")
+            from .wenku8_index import search_index_book
+            local = search_index_book(bid) or {}
+            title = title or str(local.get("title") or "")
+            author = author or str(local.get("author") or "")
+            intro = intro or str(local.get("intro") or "")
+            cover = cover or str(local.get("cover") or "")
+            tags = tags or str(local.get("tags") or "")
+            words_num = words_num or str(local.get("length") or "")
         except Exception:  # noqa: BLE001
             pass
 

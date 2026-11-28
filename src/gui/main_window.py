@@ -2801,13 +2801,18 @@ class MainWindow(QMainWindow):
     def _on_detail_done(self, book: Dict[str, Any], info: Dict[str, Any]) -> None:
         if self.current_book is None or self.current_book.get("id") != book.get("id"):
             return
-        # 目录仅首次加载时联网获取，随后与详情一起缓存，主题切换复用之
+        # 目录仅首次加载时联网获取，随后与详情一起缓存，主题切换复用之。
+        # 挑刺 #118：文库8跳过——这是七猫接口，用文库8 aid 去查必然失败，
+        # 且在 UI 主线程同步调用会阻塞界面（超时可达 12s），正是「详情页
+        # 加载很慢」的第二个根因。文库8真实目录在下载对话框里按需加载，
+        # 详情页这里本来也拿不到（七猫接口查不到文库8书号），跳过零损失。
         catalog = None
-        try:
-            from .api import get_catalog
-            catalog = get_catalog(book["id"])
-        except Exception:  # noqa: BLE001
-            pass
+        if str(book.get("source", "") or info.get("source", "")) != "wenku8":
+            try:
+                from .api import get_catalog
+                catalog = get_catalog(book["id"])
+            except Exception:  # noqa: BLE001
+                pass
         self._detail_cache = {"id": book.get("id"), "info": info, "catalog": catalog}
         # 详情内核返回的封面更权威（可能是网页解析出的直链），刷新封面位
         cover = str(info.get("cover", "") or "") or str(book.get("cover", "") or "")

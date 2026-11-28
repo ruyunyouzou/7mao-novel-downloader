@@ -305,20 +305,30 @@ def test_search_no_longer_filters_server_results():
     assert "紫罗兰永恒花园" in hits[0]["title"]
 
 
-def test_fetch_detail_uses_app_meta_when_web_is_blocked(monkeypatch):
-    """网页被风控拦时，详情仍能从 App meta 拿到括号别名和字数。"""
+def test_fetch_detail_uses_local_index_when_web_is_blocked(monkeypatch):
+    """网页被拦时详情从本地全站索引补齐，不再白等已关停的 App API（#117）。
+
+    旧实现走 App meta（串行 5s+4s 超时）导致详情页加载很慢；App API 已关停，
+    改用随包分发的索引零网络补齐。本测试同时断言 App API 不被调用。
+    """
     from gui.wenku8_core import wenku8_reader as reader
+    from gui.wenku8_core import wenku8_index as wx
 
     class _BlockedSession:
         def get(self, *args, **kwargs):
             raise RuntimeError("blocked")
 
-    monkeypatch.setattr(api, "fetch_meta", lambda aid: {
+    monkeypatch.setattr(wx, "search_index_book", lambda aid: {
         "title": "薇尔莉特·伊芙加登(紫罗兰永恒花园)",
         "author": "晓佳奈",
-        "booklength": "258000",
-        "intropreview": "自动人偶与人之间的故事",
+        "length": "258000",
+        "intro": "自动人偶与人之间的故事",
+        "tags": "战争,奇幻",
     })
+    def _boom(*a, **k):
+        raise AssertionError("不应再调用已关停的 App API")
+    monkeypatch.setattr(api, "fetch_meta", _boom)
+
     detail = reader.fetch_detail("2353", session=_BlockedSession())
     assert detail["title"] == "薇尔莉特·伊芙加登(紫罗兰永恒花园)"
     assert detail["author"] == "晓佳奈"
