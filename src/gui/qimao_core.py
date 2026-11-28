@@ -21,6 +21,8 @@ import html
 import io
 import os
 import re
+import shutil
+import time
 import zipfile
 from base64 import b64decode
 from typing import Callable, Dict, List, Optional
@@ -739,6 +741,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     with source.context(book_id, session, report) as ctx:
         os.makedirs(save_path, exist_ok=True)
         chapters_written = 0
+        chapters_failed = 0  # 正文抓取最终失败的章节数（丢章根治：不能静默报 100%）
 
         # 可选并发预取正文：番茄逐章请求是整链路瓶颈（1441 章=1441 次网络往返），
         # 由书源覆写 prefetch_texts 一次并发抓完；七猫返回 None 保持原逐章解密路径。
@@ -748,11 +751,26 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             on_progress=lambda done, total: report(2 + int(done / total * 38)),
         )
 
+        # 文库8要求「全本下载全」：预取和多轮补抓之后仍为空的章节，在渲染阶段
+        # 再兜底重试，绝不能把空章写进成品。其他书源保持原单次行为。
+        _rescue_attempts = 4 if getattr(source, "source_key", "") == "wenku8" else 1
+
         def _chapter_text(i, ch):
-            """优先用预取结果；未预取（七猫）或预取失败时回退逐章抓取。"""
+            """优先用预取结果；仍为空则多轮补抓，直到拿到正文。
+
+            回退时不传 report：渲染阶段进度由外层 40→100 统一推进，若这里再
+            调 chapter_text 内部的 report(2+...)，进度条会从 40+ 倒退到 2+，
+            造成"进度乱跳/倒退"的观感。
+            """
             if prefetched is not None and i < len(prefetched) and prefetched[i]:
                 return prefetched[i]
-            return source.chapter_text(ctx, ch, session, report)
+            for attempt in range(_rescue_attempts):
+                text = source.chapter_text(ctx, ch, session, None)
+                if text:
+                    return text
+                if attempt < _rescue_attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+            return ""
 
         if fmt == "chapter":
             # 分章 txt：每章一个文件
@@ -762,7 +780,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 text = _chapter_text(i, ch)
                 if not text:
                     # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
-                    report(40 + int((i + 1) / len(catalog) * 60))
+                    chapters_failed += 1
+                    # 渲染阶段封顶 99：只有失败率校验通过后才允许 report(100)，
+                    # 否则最后一章仍会先把 UI 推到 100%，再抛"下载不完整"。
+                    report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
                     continue
                 fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
                 # 与单文件 TXT 统一带 BOM：微信读书等阅读器对无 BOM 的中文 TXT
@@ -777,7 +798,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             hdr = " › ".join(bits) + "\n\n"
                     f.write(f"{hdr}{ch['title']}\n\n{text}\n")
                 chapters_written += 1
-                report(40 + int((i + 1) / len(catalog) * 60))
+                report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             result_path = book_dir
 
         elif fmt == "epub":
@@ -973,7 +994,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 raw = _chapter_text(i, ch)
                 if not raw:
                     # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
-                    report(40 + int((i + 1) / len(catalog) * 60))
+                    chapters_failed += 1
+                    # 渲染阶段封顶 99：只有失败率校验通过后才允许 report(100)，
+                    # 否则最后一章仍会先把 UI 推到 100%，再抛"下载不完整"。
+                    report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
                     continue
                 if colorize_dialogue:
                     # highlight_text 内部已做 HTML 转义并生成 <br/>，直接可用
@@ -1060,7 +1084,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 epub_chapters.append(c)
                 toc_pairs.append((ch, c))
                 chapters_written += 1
-                report(40 + int((i + 1) / len(catalog) * 60))
+                report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             if _hierarchy and _toc_builder is not None:
                 # 三级目录：卷 → 集 → 章（自动适配实际层数）
                 book.toc = _toc_builder(toc_pairs, epub)
@@ -1105,7 +1129,9 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         text = _chapter_text(i, ch)
                         if not text:
                             # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
-                            report(40 + int((i + 1) / len(catalog) * 60))
+                            chapters_failed += 1
+                            # 渲染阶段封顶 99：最终校验通过后才允许 report(100)
+                            report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
                             continue
                         heads = ""
                         if _hierarchy and txt_heading_lines is not None:
@@ -1113,7 +1139,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         f.write(f"{heads}\n\n{ch['title']}\n\n{text}\n")
                         prev_ch = ch
                         chapters_written += 1
-                        report(40 + int((i + 1) / len(catalog) * 60))
+                        # 渲染阶段封顶 99：最终校验通过后才允许 report(100)
+                        report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             except Exception:
                 _discard_partial(_tmp)
                 raise
@@ -1124,6 +1151,30 @@ def build_txt(book_id: str, save_path: str, fmt: str,
 
         if chapters_written == 0:
             raise QimaoError("没有任何章节成功写入（章节ID与缓存文件不匹配）")
+        # 全量补齐校验：文库8经过「单次请求重试 → 预取失败多轮补抓 → 渲染兜底」
+        # 三层保障后，只要还有一章缺正文就绝不出成品，更不会报 100%。
+        # 其他书源保留原有 >10% 容忍空章策略，避免误伤七猫合法空章。
+        _strict = getattr(source, "source_key", "") == "wenku8"
+        _fail_ratio = chapters_failed / max(1, len(catalog))
+        if (_strict and chapters_failed > 0) or (not _strict and _fail_ratio > 0.10):
+            try:
+                # result_path 在分章 TXT 模式下是目录，os.remove 会失败并残留半成品；
+                # EPUB/TXT 是文件（可能还有 .part 临时文件），两类都要清干净。
+                if result_path:
+                    for p in (result_path, result_path + ".part"):
+                        if not p:
+                            continue
+                        if os.path.isdir(p):
+                            shutil.rmtree(p, ignore_errors=True)
+                        elif os.path.exists(p):
+                            os.remove(p)
+            except Exception:  # noqa: BLE001
+                pass
+            raise QimaoError(
+                f"下载不完整：{len(catalog)} 章中有 {chapters_failed} 章正文经多轮重试仍未取到"
+                f"（网络波动或站点拦截）。已丢弃残缺文件；"
+                f"若反复失败可降低并发线程数或检查文库8登录态。"
+            )
         report(100)
 
     return {

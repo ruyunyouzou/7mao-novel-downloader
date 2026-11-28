@@ -24,9 +24,59 @@ import re
 import zipfile
 from functools import lru_cache
 from typing import Optional
+from urllib.parse import urlparse
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPixmap
+
+# 封面图 CDN（如 img.wenku8.com）会拦截无浏览器指纹的裸 requests（403 返回
+# HTML 页面）。所有页面共用这一套浏览器头：UA + 站点 Referer，必要时配合
+# Accept 头。这是"全部书封面都显示占位图"的根因修复——之前多个加载点都用
+# requests.get(url) 裸请求，统一改走这里。
+_COVER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+def _is_image_bytes(content: bytes) -> bool:
+    """魔数校验，拒绝把 403 的 HTML 错误页当图片喂给 QImage。"""
+    c = (content or b"")[:512]
+    low = c.lower()
+    if (b"<html" in low or b"<!doctype" in low or b"<h1>welcome</h1>" in low
+            or b"attention required" in low or b"just a moment" in low):
+        return False
+    return (
+        content.startswith(b"\xff\xd8")              # JPEG
+        or content.startswith(b"\x89PNG\r\n\x1a\n")  # PNG
+        or content.startswith(b"GIF8")               # GIF
+        or (content[:4] == b"RIFF" and content[8:12] == b"WEBP")
+        or content.startswith(b"BM")                 # BMP
+    )
+
+
+def fetch_cover_bytes(url: str, timeout: int = 10) -> bytes:
+    """带浏览器头下载封面字节，含魔数校验；失败返回 b""。
+
+    这是所有页面封面加载的统一入口：搜索卡片、详情页、历史/队列/封面墙
+    都复用它，避免各处再写裸 requests.get 导致 403。
+    """
+    import requests
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return b""
+    headers = {"User-Agent": _COVER_UA, "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"}
+    try:
+        host = urlparse(url).netloc
+        # 站点 Referer：让 CDN 认为是站内图片请求
+        headers["Referer"] = f"https://{host}/"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        resp = requests.get(url, timeout=timeout, headers=headers)
+        content = resp.content or b""
+        return content if _is_image_bytes(content) else b""
+    except Exception:  # noqa: BLE001
+        return b""
 
 # 与 reader_view 保持一致的兜底渐变配色
 _COVER_GRADIENTS = [
@@ -239,9 +289,9 @@ class AsyncCover(QThread):
 
     def run(self) -> None:
         try:
-            import requests
-            resp = requests.get(self.url, timeout=8)
-            img = _first_image(resp.content)
+            # 统一走带浏览器头的下载，裸 requests.get 会被 img CDN 403。
+            raw = fetch_cover_bytes(self.url)
+            img = _first_image(raw) if raw else None
             if img:
                 self.loaded.emit(self.url, img)
         except Exception:  # noqa: BLE001

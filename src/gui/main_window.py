@@ -661,6 +661,21 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(6)
         self.detail_section_title = section_title(tr("search.detail_title"))
         right_layout.addWidget(self.detail_section_title)
+        # 详情封面：选中书后异步加载真实封面，失败退回渐变首字占位。
+        # 用独立 QLabel 放在详情文字上方，不改动现有 QTextEdit 的文字渲染。
+        from PySide6.QtWidgets import QHBoxLayout as _HBox
+        self.detail_cover_row = _HBox()
+        self.detail_cover_label = QLabel()
+        self.detail_cover_label.setFixedSize(72, 96)
+        self.detail_cover_label.setAlignment(Qt.AlignCenter)
+        self.detail_cover_label.setStyleSheet("border-radius:4px;")
+        self.detail_cover_title = QLabel("")
+        self.detail_cover_title.setWordWrap(True)
+        self.detail_cover_row.addWidget(self.detail_cover_label, 0, Qt.AlignTop)
+        self.detail_cover_row.addWidget(self.detail_cover_title, 1, Qt.AlignTop)
+        right_layout.addLayout(self.detail_cover_row)
+        self._detail_cover_loader = None
+        self._show_detail_cover("", "")
         self.detail_text = QTextEdit()
         self.detail_text.setReadOnly(True)
         self.detail_text.setPlaceholderText(tr("search.detail_placeholder"))
@@ -2647,6 +2662,45 @@ class MainWindow(QMainWindow):
         if hasattr(self, "btn_bookmark"):
             self.btn_bookmark.setText(self._bookmark_label(bid))
 
+    def _show_detail_cover(self, url: str, title: str) -> None:
+        """详情封面：有 URL 则异步加载真实图，否则渐变首字占位。
+
+        url 为空时只更新占位与标题；url 有值时用 cover_helper.AsyncCover
+        走统一浏览器头下载（裸 requests 会被 img CDN 403）。
+        """
+        from PySide6.QtGui import QImage
+        from .cover_helper import AsyncCover, fallback_pixmap, scaled_pixmap
+
+        label = getattr(self, "detail_cover_label", None)
+        if label is None:
+            return
+        if getattr(self, "detail_cover_title", None) is not None:
+            self.detail_cover_title.setText(title or "")
+
+        # 取消上一次未完成的加载，避免旧书封面覆盖新书。
+        old = getattr(self, "_detail_cover_loader", None)
+        if old is not None:
+            try:
+                old.loaded.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self._detail_cover_loader = None
+
+        if not url:
+            label.setPixmap(fallback_pixmap(title or "书", 72, 96))
+            return
+        # 先给占位，再异步补真实图
+        label.setPixmap(fallback_pixmap(title or "书", 72, 96))
+
+        def _apply(_u: str, img: "QImage") -> None:
+            if img and not img.isNull():
+                label.setPixmap(scaled_pixmap(img, 72, 96))
+
+        loader = AsyncCover(url)
+        loader.loaded.connect(_apply)
+        self._detail_cover_loader = loader
+        loader.start()
+
     def _detail_colors(self):
         """详情区文字配色随主题切换。"""
         if self._dark_theme:
@@ -2657,6 +2711,10 @@ class MainWindow(QMainWindow):
         self.current_book = book
         # 加载新书：失效旧详情缓存，避免主题切换把上一本的详情重着色过来
         self._detail_cache = None
+        # 先用搜索结果自带的封面/标题立即展示，详情加载完成后再以权威数据刷新
+        self._show_detail_cover(
+            str(book.get("cover", "") or ""), str(book.get("title", "") or "")
+        )
         self.detail_download_btn.setEnabled(True)
         main_c, dim_c, warn_c, border_c = self._detail_colors()
         # 字段统一用 get 兜底：番茄直达只有三元组元数据，硬取键会 KeyError
@@ -2751,6 +2809,14 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
         self._detail_cache = {"id": book.get("id"), "info": info, "catalog": catalog}
+        # 详情内核返回的封面更权威（可能是网页解析出的直链），刷新封面位
+        cover = str(info.get("cover", "") or "") or str(book.get("cover", "") or "")
+        # 文库8兜底：网页未解析出封面时按 aid 构造官方 CDN 直链（最稳通道）
+        if not cover and str(book.get("source", "")) == "wenku8" and str(book.get("id", "")).isdigit():
+            from .wenku8_core.wenku8_app_api import build_cover_url
+            cover = build_cover_url(str(book["id"]))
+        if cover:
+            self._show_detail_cover(cover, str(info.get("title", "") or book.get("title", "")))
         self.detail_text.setHtml(self._render_detail_html(info, catalog))
 
     def do_download(self) -> None:
@@ -3328,6 +3394,19 @@ class MainWindow(QMainWindow):
                             loader.wait(800)
                 except RuntimeError:
                     pass
+        except Exception:  # noqa: BLE001
+            pass
+        # 详情/历史/封面墙用的 AsyncCover 也有独立 orphan 集合，同样要停，
+        # 否则退出时若封面仍在下载会报 "QThread: Destroyed while running"。
+        try:
+            from .cover_helper import AsyncCover
+            AsyncCover.stop_all()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            loader = getattr(self, "_detail_cover_loader", None)
+            if loader is not None and loader.isRunning():
+                loader.wait(800)
         except Exception:  # noqa: BLE001
             pass
         self.pm.unload_all()

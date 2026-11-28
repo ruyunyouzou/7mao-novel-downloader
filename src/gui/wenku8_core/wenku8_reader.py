@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import re
-from typing import Dict, List
+import time as _time
+from typing import Any, Dict, List
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -33,6 +34,41 @@ def _decode(resp) -> str:
     """文库8 为 GBK；用浏览器等价策略解码（gbk 容错）。"""
     resp.encoding = "gbk"
     return resp.text
+
+
+def _get_with_retry(sess, url: str, timeout: int = 20, attempts: int = 3) -> Any:
+    """带退避重试的 GET（下载丢章根治）。
+
+    httpcloak 在网络抖动时会抛 ``unexpected EOF`` / 连接重置，普通 requests
+    也会有偶发超时。正文抓取是逐章单请求，任何一次抖动都会让该章静默变空、
+    最终产出「9/29 章却显示 100%」的残缺文件。这里对每次请求做有限重试 +
+    短退避，让瞬态故障自愈；重试仍失败才返回最后一次结果/抛异常交给上层。
+
+    :return: 成功返回响应对象；全部失败时返回最后一次的响应（供调用方检查），
+        若连一次都没成功（每次都抛异常）则抛出最后一次异常。
+    """
+    last_exc: Exception | None = None
+    last_resp: Any = None
+    for i in range(max(1, int(attempts))):
+        try:
+            resp = sess.get(url, timeout=timeout)
+            last_resp = resp
+            # 有响应体但明显是网关错误页（502/503/504/429）时也重试
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status in (429, 502, 503, 504):
+                if i < attempts - 1:
+                    _time.sleep(0.4 * (i + 1))
+                    continue
+            return resp
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if i < attempts - 1:
+                _time.sleep(0.4 * (i + 1))
+    if last_resp is not None:
+        return last_resp
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def resolve_book_id(raw: str) -> str:
@@ -93,7 +129,7 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     )
     for url in detail_urls:
         try:
-            resp = sess.get(url, timeout=10)
+            resp = _get_with_retry(sess, url, timeout=10)
             candidate = _decode(resp)
             low = (candidate or "").lower()
             if ("<h1>welcome</h1>" in low or "attention required" in low
@@ -241,12 +277,12 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     # 网页目录优先：官方 App API（app.wenku8.com）已关停，返回 nginx Welcome，
     # 不再是可靠通道。实测 .cc 网页目录（/novel/1/{id}/index.htm）可用且含完整
     # 卷/章结构，故网页优先、App API 仅作兜底。
-    d = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
+    d = _get_with_retry(sess, f"{_base()}/book/{bid}.htm", timeout=20)
     prefix = _novel_prefix(_decode(d), bid)
     catalog_url = f"{_base()}{prefix}index.htm"
 
     try:
-        resp = sess.get(catalog_url, timeout=20)
+        resp = _get_with_retry(sess, catalog_url, timeout=20)
         html = _decode(resp)
     except Exception:  # noqa: BLE001
         html = ""
@@ -344,7 +380,9 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
         bid = resolve_book_id(book_id)
         url = f"{_base()}/novel/0/{bid}/{raw}.htm"
 
-    resp = sess.get(url, timeout=20)
+    # 逐章请求是下载丢章的直接位置：一次网络抖动（httpcloak unexpected EOF /
+    # 连接重置）就会让这章静默变空，最终「9/29 章却显示 100%」。带退避重试。
+    resp = _get_with_retry(sess, url, timeout=20, attempts=6)
     html = _decode(resp)
     soup = BeautifulSoup(html, "html.parser")
     node = soup.select_one("#content")

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-import requests
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QPixmap, QImage, QPainter, QColor, QFont
 from PySide6.QtWidgets import (
@@ -60,8 +59,12 @@ class CoverLoader(QThread):
                 if not img.isNull():
                     self.loaded.emit(self.app_aid, img)
                 return
-            resp = requests.get(self.url, timeout=8)
-            img = QImage.fromData(resp.content)
+            # 无 cover_aid 时走 cover URL。裸 requests.get 会被 img CDN 403
+            #（返回 HTML 错误页）——这是全部书封面变占位图的根因。统一走
+            # cover_helper 的带浏览器头 + 魔数校验下载。
+            from .cover_helper import fetch_cover_bytes
+            raw = fetch_cover_bytes(self.url)
+            img = QImage.fromData(raw) if raw else QImage()
             if not img.isNull():
                 self.loaded.emit(self.url, img)
         except Exception:  # noqa: BLE001
@@ -196,6 +199,12 @@ class BookCard(QFrame):
         # 其他书源仍使用普通 HTTP 封面 URL。
         cover_url = self.book.get("cover", "")
         cover_aid = str(self.book.get("cover_aid", "") or "").strip()
+        # 文库8兜底：目录/网页结果可能只给 id 没有 cover_aid，按 aid 构造
+        # 官方 CDN 直链（fetch_cover_data 通道最稳），避免走裸 URL 时被 403。
+        if not cover_aid and not cover_url \
+                and str(self.book.get("source", "")) == "wenku8" \
+                and str(self.book.get("id", "")).isdigit():
+            cover_aid = str(self.book["id"])
         if cover_aid or cover_url:
             self._loader = CoverLoader(cover_url, app_aid=cover_aid)
             self._loader.loaded.connect(self._on_cover)
