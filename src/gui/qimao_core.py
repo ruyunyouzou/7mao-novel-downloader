@@ -901,29 +901,34 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                 source if getattr(source, "get_image", None) else None,
                 os.path.join(book_dir, "插图"),
             )
-            for i, ch in enumerate(catalog):
-                text = _chapter_text(i, ch)
-                if not text:
-                    # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
-                    chapters_failed += 1
-                    # 渲染阶段封顶 99：只有失败率校验通过后才允许 report(100)，
-                    # 否则最后一章仍会先把 UI 推到 100%，再抛"下载不完整"。
+            try:
+                for i, ch in enumerate(catalog):
+                    text = _chapter_text(i, ch)
+                    if not text:
+                        # 失败章节也推进度，避免进度条卡在某一档让用户误以为死锁
+                        chapters_failed += 1
+                        # 渲染阶段封顶 99：只有失败率校验通过后才允许 report(100)，
+                        # 否则最后一章仍会先把 UI 推到 100%，再抛"下载不完整"。
+                        report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
+                        continue
+                    fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
+                    # 与单文件 TXT 统一带 BOM：微信读书等阅读器对无 BOM 的中文 TXT
+                    # 偶发误判为 GBK 导致乱码。三源共用本导出函数，分章格式同样受益。
+                    with open(os.path.join(book_dir, fname), "w", encoding="utf-8-sig") as f:
+                        # 分章 TXT：章文件内写卷/集归属，导入微信读书后可识别层级
+                        hdr = ""
+                        if _hierarchy:
+                            bits = [p.strip() for p in (
+                                str(ch.get("vol") or ""), str(ch.get("sub") or "")) if p.strip()]
+                            if bits:
+                                hdr = " › ".join(bits) + "\n\n"
+                        f.write(f"{hdr}{ch['title']}\n\n{_txt_images(text, _txt_writer)}\n")
+                    chapters_written += 1
                     report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
-                    continue
-                fname = sanitize_filename(f"{ch['index']:04d}_{ch['title']}") + ".txt"
-                # 与单文件 TXT 统一带 BOM：微信读书等阅读器对无 BOM 的中文 TXT
-                # 偶发误判为 GBK 导致乱码。三源共用本导出函数，分章格式同样受益。
-                with open(os.path.join(book_dir, fname), "w", encoding="utf-8-sig") as f:
-                    # 分章 TXT：章文件内写卷/集归属，导入微信读书后可识别层级
-                    hdr = ""
-                    if _hierarchy:
-                        bits = [p.strip() for p in (
-                            str(ch.get("vol") or ""), str(ch.get("sub") or "")) if p.strip()]
-                        if bits:
-                            hdr = " › ".join(bits) + "\n\n"
-                    f.write(f"{hdr}{ch['title']}\n\n{_txt_images(text, _txt_writer)}\n")
-                chapters_written += 1
-                report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
+            except Exception:
+                # 缺图抛错等中途失败：清掉已写章节 + 已落地插图，不留残缺目录
+                shutil.rmtree(book_dir, ignore_errors=True)
+                raise
             result_path = book_dir
 
         elif fmt == "epub":
@@ -1244,9 +1249,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         else:
             # 单 txt 文件：按顺序写入所有章节（同样先写 .part 再替换）
             result_path = os.path.join(save_path, f"{out_name}.txt")
+            _img_dir = os.path.join(save_path, f"{out_name}_插图")
             _txt_writer = _ImageWriter(
                 source if getattr(source, "get_image", None) else None,
-                os.path.join(save_path, f"{out_name}_插图"),
+                _img_dir,
             )
             _tmp = result_path + ".part"
             try:
@@ -1282,9 +1288,12 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             except Exception:
                 _discard_partial(_tmp)
+                # 缺图抛错时 ImageWriter 已落地部分插图，一并清掉，不留散图
+                shutil.rmtree(_img_dir, ignore_errors=True)
                 raise
             if chapters_written == 0:
                 _discard_partial(_tmp)
+                shutil.rmtree(_img_dir, ignore_errors=True)
             else:
                 os.replace(_tmp, result_path)
 
@@ -1307,6 +1316,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             shutil.rmtree(p, ignore_errors=True)
                         elif os.path.exists(p):
                             os.remove(p)
+                # 单 TXT 的插图落在书外的「书名_插图/」目录，也要清掉，
+                # 否则正文没下全却留一堆散图（分章 TXT 的插图在 book_dir 内已随上一步清掉）
+                shutil.rmtree(os.path.join(save_path, f"{out_name}_插图"),
+                              ignore_errors=True)
             except Exception:  # noqa: BLE001
                 pass
             raise QimaoError(

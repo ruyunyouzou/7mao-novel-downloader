@@ -98,6 +98,56 @@ def download_image(url: str, timeout: int = 15, attempts: int = 5) -> bytes:
             pass
         if attempt < max(1, int(attempts)) - 1:
             _time.sleep(0.3 * (attempt + 1))  # 递增退避，避免瞬时打爆图床
+
+    # 指纹层兜底：图床将来若上 Cloudflare，普通 requests 会全部被拦。
+    # 仅当上面所有 attempts 都失败才走这里，正常情况零开销；每个工作线程
+    # 复用自己的 CloakSession（httpcloak 非线程安全，绝不能跨线程共享）。
+    raw = _download_image_cloak(url, timeout=timeout, referer=referers[0])
+    return raw if is_image_bytes(raw) else b""
+
+
+def _download_image_cloak(url: str, timeout: int = 15,
+                          referer: str = "") -> bytes:
+    """httpcloak 指纹层兜底取图（每线程一个会话，失败返回 b''）。
+
+    独立于主抓取通道，图床域名与主站不同：这里只借用浏览器 TLS/HTTP2 指纹
+    绕过可能的 CDN 拦截，不碰主站登录态。会话放 threading.local 长期复用，
+    避免每图新建会话导致握手风暴。
+    """
+    import threading
+    _tls = getattr(_download_image_cloak, "_tls", None)
+    if _tls is None:
+        _tls = threading.local()
+        _download_image_cloak._tls = _tls
+    sess = getattr(_tls, "session", None)
+    for attempt in range(2):
+        try:
+            if sess is None:
+                from gui.wenku8_core.wenku8_http import CloakSession
+                sess = CloakSession(timeout=timeout)
+                _tls.session = sess
+            resp = sess.get(
+                url, timeout=timeout,
+                headers={
+                    "User-Agent": _IMAGE_UAS[0],
+                    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Referer": referer or "https://www.wenku8.cc/",
+                },
+            )
+            raw = resp.content or b""
+            if is_image_bytes(raw):
+                return raw
+        except Exception:  # noqa: BLE001
+            # 会话可能因网络抖动损坏，下次重建
+            sess = None
+            try:
+                delattr(_tls, "session")
+            except Exception:  # noqa: BLE001
+                pass
+        if attempt < 1:
+            import time as _time
+            _time.sleep(0.5)
     return b""
 
 

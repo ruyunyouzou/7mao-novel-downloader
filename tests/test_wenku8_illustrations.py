@@ -217,9 +217,18 @@ def test_download_image_all_fail_returns_empty(monkeypatch):
         return _R()
 
     monkeypatch.setattr(requests, "get", fake_get)
+    # 指纹层兜底也要 mock 掉，避免测试走真实网络（并断言它确实被调用）
+    called = {"cloak": 0}
+
+    def fake_cloak(url, timeout=15, referer=""):
+        called["cloak"] += 1
+        return b""
+
+    monkeypatch.setattr(V, "_download_image_cloak", fake_cloak)
     import time
     monkeypatch.setattr(time, "sleep", lambda *_: None)
     assert V.download_image("https://img.wenku8.com/a.jpg", attempts=3) == b""
+    assert called["cloak"] == 1, "requests 全失败后应触发一次指纹层兜底"
 
 
 def test_missing_images_detects_undownloaded():
@@ -372,3 +381,53 @@ def test_epub_item_build_failure_raises_in_strict_mode(monkeypatch):
             "[[WENKU8IMG:https://img.wenku8.com/a.jpg]]",
             _StrictSource(with_images=True), book, epub, False, [0], [],
         )
+
+
+def test_download_image_cloak_fallback_recovers(monkeypatch):
+    """requests 全失败但指纹层拿到图：必须救回，不能返回空导致误判缺图。"""
+    import requests
+
+    def fake_get(url, timeout=None, headers=None):
+        class _R:
+            content = b"<html>403 Cloudflare</html>"
+        return _R()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(V, "_download_image_cloak",
+                        lambda url, timeout=15, referer="": b"\xff\xd8\xff\xe0JFIF")
+    import time
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    data = V.download_image("https://pic.wenku8.com/a.jpg", attempts=3)
+    assert data.startswith(b"\xff\xd8\xff"), "指纹层救回的图片应被采用"
+
+
+def test_txt_missing_image_cleans_up_image_dir(tmp_path):
+    """TXT 缺图失败时，ImageWriter 已落地的部分插图目录必须被清理。"""
+    import pytest
+    from gui.qimao_core import build_txt, QimaoError, BookSource
+
+    class _Src(BookSource):
+        source_key = "wenku8"
+        name = "测试书源"
+
+        def fetch_detail(self, book_id, session):
+            return {"title": "测试书", "author": "作者"}
+
+        def fetch_catalog(self, book_id, session):
+            return [{"id": "1", "index": 1, "title": "第一章", "url": "https://x/1.htm"}]
+
+        def get_image(self, url):
+            return b""  # 缺图
+
+        def prefetch_texts(self, ctx, catalog, session, on_progress=None):
+            # 第一章有图标记；渲染时缺图抛错
+            return ["[[WENKU8IMG:https://x/a.jpg]]", "正文"]
+
+    src = _Src()
+    with pytest.raises(QimaoError):
+        build_txt("1", str(tmp_path), "txt", title_hint="测试书",
+                  chapter_hero=False, chapter_tail=False, smart_art=False,
+                  source=src)
+    # 插图目录「测试书_插图」应被清理，不留散图
+    leftovers = [p for p in tmp_path.iterdir() if "插图" in p.name]
+    assert not leftovers, f"失败后不应残留插图目录/散图，实际: {[p.name for p in leftovers]}"
