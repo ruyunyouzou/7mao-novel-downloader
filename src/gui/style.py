@@ -473,6 +473,28 @@ QFrame#queueCardLine, QFrame#histCardLine {{ background-color: {BORDER_LIGHT}; }
 QLabel#queueStatusText, QLabel#histStatusText {{ font-size: 11px; }}
 QProgressBar {{ min-height: 8px; }}
 
+/* 分卷导出：可收缩逐卷进度区（仅文库8分卷任务显示） */
+QPushButton#queueVolToggle {{
+    background: transparent; border: none; border-top: 1px dashed #3f3a4a;
+    color: {ACCENT}; font-size: 11px; padding: 6px 2px 2px 2px; text-align: center;
+}}
+QPushButton#queueVolToggle:hover {{ color: {ACCENT_HOVER}; }}
+QWidget#queueVolArea {{ background: transparent; }}
+QLabel#queueVolSummary {{ color: {TEXT_DIM}; font-size: 11px; padding: 2px 0; }}
+QLabel#queueVolIdx {{
+    border-radius: 5px; background: rgba(179,157,219,.14); color: {ACCENT};
+    font-size: 11px; font-weight: bold;
+}}
+QLabel#queueVolIdx[volState="done"] {{ background: rgba(129,199,132,.16); color: {SUCCESS}; }}
+QLabel#queueVolIdx[volState="failed"] {{ background: rgba(200,90,90,.18); color: #e07a7a; }}
+QLabel#queueVolName {{ color: #d5d5d5; font-size: 11px; }}
+QLabel#queueVolPct {{ color: {ACCENT}; font-size: 11px; font-weight: bold; }}
+QLabel#queueVolState {{ color: {TEXT_DIM}; font-size: 10px; }}
+QLabel#queueVolPct[volState="done"], QLabel#queueVolState[volState="done"] {{ color: {SUCCESS}; }}
+QLabel#queueVolPct[volState="failed"], QLabel#queueVolState[volState="failed"] {{ color: #e07a7a; }}
+QLabel#queueVolIdx[volState="waiting"], QLabel#queueVolPct[volState="waiting"],
+QLabel#queueVolState[volState="waiting"] {{ color: #777; }}
+
 /* ============ 消息框 ============ */
 QMessageBox {{
     background-color: {BG_CARD};
@@ -563,6 +585,27 @@ QLabel#queueCardTitle, QLabel#histCardTitle {{ font-size: 13.5px; font-weight: b
 QLabel#queueMetaText, QLabel#histMetaText {{ color: #666; font-size: 11px; }}
 QLabel#queuePct {{ color: #666; font-size: 11px; }}
 QFrame#queueCardLine, QFrame#histCardLine {{ background-color: #ececec; }}
+/* 分卷导出：可收缩逐卷进度区（浅色） */
+QPushButton#queueVolToggle {{
+    background: transparent; border: none; border-top: 1px dashed #e0e0e0;
+    color: #7E6AA6; font-size: 11px; padding: 6px 2px 2px 2px; text-align: center;
+}}
+QPushButton#queueVolToggle:hover {{ color: #5f4d82; }}
+QWidget#queueVolArea {{ background: transparent; }}
+QLabel#queueVolSummary {{ color: #666; font-size: 11px; padding: 2px 0; }}
+QLabel#queueVolIdx {{
+    border-radius: 5px; background: #f0ebf8; color: #7E6AA6;
+    font-size: 11px; font-weight: bold;
+}}
+QLabel#queueVolIdx[volState="done"] {{ background: #e8f5e9; color: #4e9c52; }}
+QLabel#queueVolIdx[volState="failed"] {{ background: #fdecea; color: #c0392b; }}
+QLabel#queueVolName {{ color: #444; font-size: 11px; }}
+QLabel#queueVolPct {{ color: #7E6AA6; font-size: 11px; font-weight: bold; }}
+QLabel#queueVolState {{ color: #888; font-size: 10px; }}
+QLabel#queueVolPct[volState="done"], QLabel#queueVolState[volState="done"] {{ color: #4e9c52; }}
+QLabel#queueVolPct[volState="failed"], QLabel#queueVolState[volState="failed"] {{ color: #c0392b; }}
+QLabel#queueVolIdx[volState="waiting"], QLabel#queueVolPct[volState="waiting"],
+QLabel#queueVolState[volState="waiting"] {{ color: #aaa; }}
 {modern_scrollbar_qss(False)}
 QMessageBox {{ background: #fff; }}
 """

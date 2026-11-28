@@ -27,7 +27,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QLinearGradient
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QFrame, QLabel,
-    QPushButton, QSpinBox, QStackedWidget, QMenu, QMessageBox,
+    QPushButton, QSpinBox, QStackedWidget, QMenu, QMessageBox, QSizePolicy,
 )
 
 from ..datastore import DataStore
@@ -81,7 +81,8 @@ class GlowProgressBar(QWidget):
     颜色通过 apply_colors() 从当前主题色重取，深浅主题自适应。
     """
 
-    def __init__(self, accent: str = ACCENT, dark: bool = True, parent=None) -> None:
+    def __init__(self, accent: str = ACCENT, dark: bool = True, parent=None,
+                 height: int = 11) -> None:
         super().__init__(parent)
         self._value = 0.0
         self._display = 0.0          # 动画显示值
@@ -90,7 +91,7 @@ class GlowProgressBar(QWidget):
         self._flowing = False        # 是否进行中（决定是否跑流光）
         self._phase = 0.0            # 流光相位 0..1
 
-        self.setFixedHeight(11)
+        self.setFixedHeight(height)  # 主进度条 11px；分卷小条传 6px
         self.setMinimumWidth(40)
 
         # 数值平滑过渡动画
@@ -271,6 +272,124 @@ class TaskCard(_CardBase):
         self.elapsed = self._chip(self.meta)
         self.time = self._chip(self.meta)
 
+        # 分卷导出：可收缩的逐卷进度区（仅 extra.volumes_progress 存在时显示）。
+        self._vol_expanded = False
+        self._vol_rows: list = []
+        self._build_volume_area()
+
+    def _build_volume_area(self) -> None:
+        """构造逐卷进度区：独立的展开箭头按钮（防误触）+ 每卷小进度条列表。"""
+        # 展开/收起按钮：只有它连接 toggle，卡片其他区域点击仍是选中，防误触
+        self.vol_toggle = QPushButton()
+        self.vol_toggle.setObjectName("queueVolToggle")
+        self.vol_toggle.setCursor(Qt.PointingHandCursor)
+        self.vol_toggle.setVisible(False)
+        self.vol_toggle.clicked.connect(self._toggle_volume_area)
+        self.body.addWidget(self.vol_toggle)
+
+        self.vol_area = QWidget()
+        self.vol_area.setObjectName("queueVolArea")
+        self.vol_area.setVisible(False)
+        vol_root = QVBoxLayout(self.vol_area)
+        vol_root.setContentsMargins(2, 6, 2, 2)
+        vol_root.setSpacing(6)
+        self.vol_summary = QLabel()
+        self.vol_summary.setObjectName("queueVolSummary")
+        vol_root.addWidget(self.vol_summary)
+        self.vol_rows_box = QVBoxLayout()
+        self.vol_rows_box.setContentsMargins(0, 0, 0, 0)
+        self.vol_rows_box.setSpacing(5)
+        vol_root.addLayout(self.vol_rows_box)
+        self.body.addWidget(self.vol_area)
+
+    def _toggle_volume_area(self) -> None:
+        """仅由展开箭头触发（防误触：卡片其他区域点击不会展开）。"""
+        self._vol_expanded = not self._vol_expanded
+        self.vol_area.setVisible(self._vol_expanded and bool(self._vol_rows))
+        self.vol_toggle.setText(
+            ("收起分卷进度  ▲" if self._vol_expanded else "展开查看每卷进度  ▼")
+        )
+        self.vol_toggle.setProperty("expanded", self._vol_expanded)
+        self.vol_toggle.style().polish(self.vol_toggle)
+        # 展开态才让进行中的小进度条跑流光，收起即停止省资源
+        for row in self._vol_rows:
+            parts = getattr(row, "_parts", {})
+            bar = parts.get("bar")
+            if bar is not None:
+                bar.setFlowing(self._vol_expanded and 0 < bar._value < 100)
+
+    def _make_vol_row(self):
+        """构造一行分卷进度：序号 + 卷名 + 小进度条 + 百分比 + 状态。"""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        idx_lbl = QLabel()
+        idx_lbl.setObjectName("queueVolIdx")
+        idx_lbl.setFixedWidth(26)
+        idx_lbl.setAlignment(Qt.AlignCenter)
+        name_lbl = QLabel()
+        name_lbl.setObjectName("queueVolName")
+        name_lbl.setFixedWidth(150)
+        name_lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        bar = GlowProgressBar(height=6)
+        accent, dark = self.view._bar_colors()
+        bar.apply_colors(accent, dark)
+        pct_lbl = QLabel()
+        pct_lbl.setObjectName("queueVolPct")
+        pct_lbl.setFixedWidth(40)
+        pct_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        state_lbl = QLabel()
+        state_lbl.setObjectName("queueVolState")
+        state_lbl.setFixedWidth(48)
+        state_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        for w in (idx_lbl, name_lbl, bar, pct_lbl, state_lbl):
+            lay.addWidget(w)
+        row._parts = {  # type: ignore[attr-defined]
+            "idx": idx_lbl, "name": name_lbl, "bar": bar,
+            "pct": pct_lbl, "state": state_lbl,
+        }
+        return row
+
+    def _fill_volume_area(self, vps: list) -> None:
+        """用每卷明细填充展开区（复用行控件，避免频繁重建）。"""
+        n = len(vps)
+        while len(self._vol_rows) < n:
+            row = self._make_vol_row()
+            self.vol_rows_box.addWidget(row)
+            self._vol_rows.append(row)
+        for i, row in enumerate(self._vol_rows):
+            row.setVisible(i < n)
+        done = 0
+        for i, v in enumerate(vps):
+            if i >= len(self._vol_rows):
+                break
+            p = self._vol_rows[i]._parts  # type: ignore[attr-defined]
+            status = str(v.get("status") or "waiting")
+            pct = int(v.get("progress", 0) or 0)
+            if status == "done":
+                pct = 100
+            if status == "done":
+                done += 1
+            name = str(v.get("name") or f"第{i + 1}卷")
+            chap = int(v.get("chapters", 0) or 0)
+            p["idx"].setText("✓" if status == "done" else str(i + 1))
+            p["idx"].setProperty("volState", status)
+            p["name"].setText(f"{name}（{chap}章）" if chap else name)
+            p["name"].setToolTip(name)
+            accent, dark = self.view._bar_colors()
+            p["bar"].apply_colors(accent, dark)
+            p["bar"].setValue(pct)
+            p["bar"].setFlowing(status == "downloading" and self._vol_expanded)
+            p["pct"].setText(f"{pct}%" if status != "waiting" else "—")
+            state_text = {"done": "完成", "downloading": "下载中",
+                          "waiting": "等待中", "failed": "失败"}.get(status, status)
+            p["state"].setText(state_text)
+            for w in (p["idx"], p["pct"], p["state"]):
+                w.setProperty("volState", status)
+                w.style().polish(w)
+        self.vol_summary.setText(f"分卷进度 · {done}/{n} 卷完成")
+
     def update_data(self, task: Dict[str, Any], selected: bool = False) -> None:
         self.item_id = task.get("id", "")
         status = task.get("status", "waiting")
@@ -331,6 +450,16 @@ class TaskCard(_CardBase):
 
         self.time.set_icon(self.nations["time"])
         self.time.set_text(str(task.get("created_at", ""))[:16])
+
+        # 分卷导出：仅当任务带 volumes_progress 明细时显示可收缩区。
+        vps = list((task.get("extra") or {}).get("volumes_progress") or [])
+        has_vols = bool(vps)
+        self.vol_toggle.setVisible(has_vols)
+        if has_vols:
+            self._fill_volume_area(vps)
+            self.vol_area.setVisible(self._vol_expanded)
+        else:
+            self.vol_area.setVisible(False)
 
         self.set_selected(selected)
 
@@ -506,6 +635,10 @@ class QueueView(QWidget):
             options=task.get("options", {}),
         )
         worker.progress.connect(lambda p: self._on_progress(task["id"], p))
+        # 分卷导出逐卷进度：明细写进任务 extra.volumes，卡片展开后逐卷显示。
+        # 非分卷内核永不发此信号，行为与原来完全一致。
+        worker.volume_progress.connect(
+            lambda vols: self._on_volume_progress(task["id"], vols))
         worker.finished.connect(lambda r: self._on_finished(task["id"], r))
         worker.failed.connect(lambda msg: self._on_failed(task["id"], msg))
         worker.cancelled.connect(lambda: self._on_cancelled(task["id"]))
@@ -520,6 +653,15 @@ class QueueView(QWidget):
         self.store.queue_update(task_id, {"progress": progress})
         self.refresh()
 
+    def _on_volume_progress(self, task_id: str, vols) -> None:
+        """分卷导出：把每卷实时明细存进任务 extra，供可收缩卡片逐卷显示。"""
+        task = self.store.queue_find(task_id) or {}
+        extra = dict(task.get("extra") or {})
+        extra["volumes_progress"] = list(vols or [])
+        self.store.queue_update(task_id, {"extra": extra})
+        # 不在这里 refresh：紧随其后的 _on_progress 会统一刷新，避免双刷闪烁。
+        # 若进度值与上次相同（_on_progress 已刷过），卡片直接读新 extra 即可。
+
     def _on_finished(self, task_id: str, result: DownloadResult) -> None:
         task = self.store.queue_find(task_id) or {}
         elapsed = time.time() - task.get("start_ts", time.time())
@@ -531,6 +673,13 @@ class QueueView(QWidget):
             "elapsed": round(elapsed, 1),
             "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        # 分卷导出：把每卷最终明细（含成功/失败状态）写进任务，供卡片逐卷展示。
+        result_extra = result.extra or {}
+        if "volumes_progress" in result_extra:
+            extra = dict(task.get("extra") or {})
+            extra["volumes_progress"] = list(result_extra.get("volumes_progress") or [])
+            extra["volumes"] = list(result_extra.get("volumes") or [])
+            updates["extra"] = extra
         # 作者显示回填：队列卡片读 task.book.author，入队时可能为空；
         # EPUB 内作者来自详情，下载后由 result.extra.author 回填给任务。
         author = str((result.extra or {}).get("author") or "") if result.success else ""

@@ -480,11 +480,36 @@ class Wenku8Downloader(DownloaderBase):
         span = 59.0 / n  # 40 → 99
         written: list = []
         failed: list = []
+        # 每卷实时进度明细（供任务队列的可收缩卡片逐卷显示）。全书通用，
+        # 与具体书名/卷名无关；失败卷在 except 分支单独标红。
+        vol_state: list = [{
+            "name": str(v.get("name") or f"第{i + 1}卷"),
+            "chapters": int(v.get("count", 0) or 0),
+            "progress": 0,
+            "status": "waiting",
+        } for i, v in enumerate(chosen)]
+
+        def _report(percent: int) -> None:
+            """上报总进度 + 每卷明细；兼容只接受单参数的旧 progress_cb。"""
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(percent, volumes=vol_state)
+            except TypeError:  # 旧回调签名 progress_cb(p)
+                progress_cb(percent)
+
         for i, vol in enumerate(chosen):
 
-            def _vol_progress(_p, _base=40 + i * span, _span=span):
-                if progress_cb is not None:
-                    progress_cb(min(99, int(_base + (max(0, min(100, _p)) / 100.0) * _span)))
+            def _vol_progress(_p, _base=40 + i * span, _span=span, _i=i):
+                pct = max(0, min(100, int(_p)))
+                vol_state[_i]["progress"] = pct
+                vol_state[_i]["status"] = "downloading" if pct < 100 else "done"
+                _report(min(99, int(_base + (pct / 100.0) * _span)))
+
+            # 标记本卷开始
+            vol_state[i]["status"] = "downloading"
+            vol_state[i]["progress"] = 0
+            _report(min(99, int(40 + i * span)))
 
             try:
                 # 卷封面：取该卷插图章里的第一张竖图（无则回退详情页总封面）。
@@ -524,10 +549,16 @@ class Wenku8Downloader(DownloaderBase):
                     "chapters": result.get("chapters", 0),
                     "label": volume_label(vol),
                 })
+                vol_state[i]["progress"] = 100
+                vol_state[i]["status"] = "done"
+                _report(min(99, int(40 + (i + 1) * span)))
             except DownloadCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{volume_label(vol)}: {exc}")
+                vol_state[i]["status"] = "failed"
+                vol_state[i]["error"] = str(exc)
+                _report(min(99, int(40 + (i + 1) * span)))
 
         # 严格模式：图和书必须一起成功。任一卷失败（含渲染阶段缺图抛错）即整单
         # 失败，绝不允许「部分卷成功、部分卷缺图」却返回 success=True。同时清理
@@ -551,7 +582,8 @@ class Wenku8Downloader(DownloaderBase):
                 message=("文库8下载失败：图和书必须一起成功，本次不出书。"
                          f"共 {len(failed)} 卷未成功（" + "；".join(failed[:3]) + "）"),
                 extra={"volume_failures": failed,
-                       "volumes_written_discarded": len(written)},
+                       "volumes_written_discarded": len(written),
+                       "volumes_progress": vol_state},
             )
         if not written:
             return DownloadResult(
@@ -579,6 +611,7 @@ class Wenku8Downloader(DownloaderBase):
                 "source": "wenku8",
                 "volume_mode": mode,
                 "volumes": written,
+                "volumes_progress": vol_state,  # 每卷最终状态，供队列卡片逐卷显示
                 "volume_failures": [],   # 走到这里 failed 必为空（非空已在上方判失败）
                 "images_failed": 0,       # 走到这里缺图必为空（非空已在上方判失败）
                 "author": str(detail.get("author") or kwargs.get("author", "") or ""),

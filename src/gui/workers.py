@@ -131,6 +131,7 @@ class DownloadWorker(QThread):
     """下载线程，通过插件提供的下载内核执行；支持暂停/继续/取消。"""
 
     progress = Signal(int)        # 0-100
+    volume_progress = Signal(object)  # 分卷导出时每卷明细 list（其他内核不发）
     finished = Signal(object)     # DownloadResult
     failed = Signal(str)
     cancelled = Signal()
@@ -196,11 +197,22 @@ class DownloadWorker(QThread):
                 self.cancelled.emit()
                 return
 
-            def progress_cb(p):
+            def progress_cb(p, volumes=None):
                 # 进度回调中处理暂停与取消
                 if self._check_pause():
                     raise DownloadCancelled()
                 self.progress.emit(int(p))
+                # 分卷导出：把每卷实时明细转给队列卡片逐卷显示；非分卷内核
+                # 永远不传 volumes，信号不触发，零影响。Qt 队列连接会复制对象，
+                # 这里主动深拷贝，避免插件后续原地修改同一 list 导致 UI 读到旧值。
+                if volumes is not None:
+                    try:
+                        self.volume_progress.emit(
+                            [dict(v) for v in volumes] if isinstance(volumes, list)
+                            else volumes
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
 
             # 下载选项（章节范围 / 文件名模板等）随请求透传给下载内核
             extra = dict(self.options)
