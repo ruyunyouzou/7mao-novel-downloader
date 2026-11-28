@@ -94,15 +94,16 @@ def download_image(url: str, timeout: int = 15, attempts: int = 5) -> bytes:
     except Exception:  # noqa: BLE001
         host = "www.wenku8.cc"
     import time as _time
+    # 轮换 Referer：图片域根 / 官网根目录 / 正文页目录，覆盖不同防盗链策略。
+    # 必须在 try 外定义：否则若 import requests 或 host 解析在某一轮抛异常，
+    # 循环结束后第 128 行的 referers[0] 会 UnboundLocalError，连指纹兜底都走不到。
+    referers = [
+        f"https://{host}/",
+        "https://www.wenku8.cc/",
+        "https://www.wenku8.com/",
+    ]
     for attempt in range(max(1, int(attempts))):
         try:
-            import requests
-            # 轮换 Referer：图片域根 / 官网根目录 / 正文页目录，覆盖不同防盗链策略
-            referers = [
-                f"https://{host}/",
-                "https://www.wenku8.cc/",
-                "https://www.wenku8.com/",
-            ]
             headers = {
                 # 多 UA 轮换：完整 Edge / 简短 Mozilla / okhttp / 完整 Chrome。
                 # 首轮用完整 UA（真实成功率最高），后续轮换以防被指纹限流。

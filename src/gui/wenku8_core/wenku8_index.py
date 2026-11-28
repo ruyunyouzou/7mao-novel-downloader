@@ -73,7 +73,7 @@ def load_catalog() -> Dict[str, dict]:
     条目来自 mojimoon/wenku8 的公开目录，包含 aid/title/author/tags/
     description/cover_url，正好覆盖「按别名搜全站」所需的全部字段。
     """
-    global _catalog_cache, _catalog_cache_mtime
+    global _catalog_cache
     # 目录随包分发、运行期不热更；缓存一旦加载即固定。特意尊重外部
     # （含单测）注入的 _catalog_cache——它是公开的可覆盖契约。
     if _catalog_cache is not None:

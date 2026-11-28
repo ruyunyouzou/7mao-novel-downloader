@@ -346,8 +346,10 @@ def decrypt_chapter(encrypted: bytes) -> str:
 
 
 def sanitize_filename(name: str) -> str:
-    """替换文件名非法字符。"""
-    return re.sub(r'[\/:*?"<>|]', "_", name).strip()
+    """替换文件名非法字符（正反斜杠都处理，防 Windows 路径穿越）。"""
+    # 反斜杠在 Windows 是路径分隔符，必须一并替换：分卷文件夹名直接把书名
+    # 经本函数后交给 os.path.join，若书名含 `..\` 会穿越到上级目录。
+    return re.sub(r'[\\/:*?"<>|]', "_", str(name or "")).strip()
 
 
 def _discard_partial(path: str) -> None:
@@ -503,9 +505,20 @@ def render_filename(template: str, title: str, author: str = "", book_id: str = 
         "end": str(end),
         "total": str(total),
     }
+
+    class _KeepUnknown(dict):
+        """未知占位符（如用户误写的 {vol}）原样保留，而不是让整串格式失败。
+
+        旧实现 tpl.format(**values) 遇到任一未知占位符就抛 KeyError，回退成
+        纯书名——分卷导出时这会让所有卷的文件名都塌成同一个书名而互相覆盖。
+        保留未知占位符则只影响那一小段，其余结构（卷名/章节范围）仍然有效。
+        """
+        def __missing__(self, key):
+            return "{" + key + "}"
+
     try:
-        name = tpl.format(**values)
-    except (KeyError, ValueError):
+        name = tpl.format_map(_KeepUnknown(values))
+    except (KeyError, ValueError, IndexError):
         name = values["title"]
     # 防止模板产生路径穿越或空名
     name = sanitize_filename(name.replace("/", "_").replace("\\", "_"))
@@ -729,7 +742,8 @@ class _ImageWriter:
 def _txt_images(text: str, writer: Optional["_ImageWriter"] = None) -> str:
     """把正文里的插图标记转成 TXT 可读引用。
 
-    - 有 writer（文库8）：图片已落地到本地目录，引用本地文件名；缺图留占位说明；
+    - 有 writer（文库8）：图片已落地到本地目录，引用本地文件名；缺图由
+      writer.write() 抛 QimaoError（图和书必须一起成功，绝不静默留占位）；
     - 无 writer：转成原始链接文字（仅非文库8兼容路径，实际不会有该标记）。
     """
     if not text or "[[WENKU8IMG:" not in text:
