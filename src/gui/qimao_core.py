@@ -769,7 +769,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
               chapter_tail: Optional[bool] = None, tail_mode: Optional[str] = None,
               tail_fixed: str = "", smart_art: Optional[bool] = None,
               source: Optional[BookSource] = None,
-              cover_override: bytes = b"") -> Dict:
+              cover_override: bytes = b"",
+              cover_bytes: bytes = b"") -> Dict:
     """
     完整下载一本书并写出文件。
 
@@ -803,6 +804,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
     :param smart_art: 智能选题预设：题图每本随机 40 张（必含 7 张神明），尾图随机 100 张。
         True=启用 / False=关闭 / None=读取全局设置。
         缺省（如追更重建未传参）时，题图参数自动回退到全局设置。
+    :param cover_bytes: 整本下载时传入的官方高清封面字节（仅文库8调用），
+        优先级高于 cover_src 的网络小图；为空则原逻辑不变，其他书源零影响。
     :return: {file_path, title, chapters, ...}
     """
     # ---- 题图参数缺省时回退到全局设置（修复追更重建丢图） ----
@@ -963,12 +966,20 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             # cover_override：分卷导出时传入「该卷插图章里的卷封面」字节，
             # 每卷用自己那一卷的封面（而非全书共用详情页总封面）。仅文库8分卷用。
             cover_img = b""
-            if cover_override and (
-                cover_override.startswith(b"\xff\xd8\xff") or
-                cover_override.startswith(b"\x89PNG") or
-                cover_override[:6] in (b"GIF87a", b"GIF89a") or
-                (len(cover_override) >= 12 and cover_override[8:12] == b"WEBP")
-            ):
+
+            def _is_cover_image(raw: bytes) -> bool:
+                return bool(
+                    raw.startswith(b"\xff\xd8\xff") or
+                    raw.startswith(b"\x89PNG") or
+                    raw[:6] in (b"GIF87a", b"GIF89a") or
+                    (len(raw) >= 12 and raw[8:12] == b"WEBP")
+                )
+
+            # cover_bytes：文库8整本下载的 Bangumi 官方高清封面（最高优先级）。
+            if cover_bytes and _is_cover_image(cover_bytes):
+                cover_img = cover_bytes
+            elif cover_override and _is_cover_image(cover_override):
+                # 分卷导出：该卷插图章里的卷封面
                 cover_img = cover_override
             cover_src = detail.get("cover")
             if not cover_img and cover_src:

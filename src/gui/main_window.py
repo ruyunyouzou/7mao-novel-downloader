@@ -2696,7 +2696,7 @@ class MainWindow(QMainWindow):
             if img and not img.isNull():
                 label.setPixmap(scaled_pixmap(img, 72, 96))
 
-        loader = AsyncCover(url)
+        loader = AsyncCover(url, title)
         loader.loaded.connect(_apply)
         self._detail_cover_loader = loader
         loader.start()

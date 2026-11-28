@@ -35,7 +35,7 @@ class CoverLoader(QThread):
 
     loaded = Signal(str, QImage)  # url, image
 
-    def __init__(self, url: str, app_aid: str = "") -> None:
+    def __init__(self, url: str, app_aid: str = "", title: str = "") -> None:
         # 不设 parent：宿主卡片销毁时不要连带销毁可能仍在运行的线程
         super().__init__()
         self.url = str(url or "")
@@ -43,6 +43,8 @@ class CoverLoader(QThread):
         # 不是普通 HTTP URL。搜索结果只带 aid，封面由这里异步补齐，
         # 避免为了封面拖慢搜索线程。
         self.app_aid = str(app_aid or "").strip()
+        # 书名用于严格匹配 Bangumi 官方高清大图（括号别名参与匹配）
+        self.title = str(title or "")
         # 从创建起就纳入全局追踪：结束时自动释放；程序退出时由主窗口统一停止。
         # 否则卡片被 deleteLater 后，运行中的线程随即被 GC 销毁，触发
         # "QThread: Destroyed while thread is still running" 警告。
@@ -51,6 +53,17 @@ class CoverLoader(QThread):
 
     def run(self) -> None:
         try:
+            # 文库8（无论是否带 app_aid）优先取 Bangumi 官方高清大图，
+            # 未命中再回退原通道（图片直链 / App API 二进制接口）。
+            from .wenku8_core.wenku8_official_cover import fetch_official_cover
+            aid = self.app_aid
+            if aid:
+                official = fetch_official_cover(aid, self.title)
+                if official:
+                    img = QImage.fromData(official)
+                    if not img.isNull():
+                        self.loaded.emit(aid, img)
+                        return
             if self.app_aid:
                 from .wenku8_core.wenku8_app_api import fetch_cover_data
                 # 图片直链优先（参考项目同款），失败回退 App API 二进制接口
@@ -61,9 +74,9 @@ class CoverLoader(QThread):
                 return
             # 无 cover_aid 时走 cover URL。裸 requests.get 会被 img CDN 403
             #（返回 HTML 错误页）——这是全部书封面变占位图的根因。统一走
-            # cover_helper 的带浏览器头 + 魔数校验下载。
-            from .cover_helper import fetch_cover_bytes
-            raw = fetch_cover_bytes(self.url)
+            # cover_helper 的智能入口（含官方大图 + 带头小图兜底）。
+            from .cover_helper import fetch_cover_smart
+            raw = fetch_cover_smart(self.url, self.title)
             img = QImage.fromData(raw) if raw else QImage()
             if not img.isNull():
                 self.loaded.emit(self.url, img)
@@ -206,7 +219,9 @@ class BookCard(QFrame):
                 and str(self.book.get("id", "")).isdigit():
             cover_aid = str(self.book["id"])
         if cover_aid or cover_url:
-            self._loader = CoverLoader(cover_url, app_aid=cover_aid)
+            self._loader = CoverLoader(
+                cover_url, app_aid=cover_aid,
+                title=str(self.book.get("title", "") or ""))
             self._loader.loaded.connect(self._on_cover)
             self._loader.start()
 

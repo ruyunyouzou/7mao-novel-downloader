@@ -141,7 +141,7 @@ class CoverThumb(QLabel):
         self.setToolTip(self._title)
 
     def _load(self, url: str) -> None:
-        loader = CoverLoader(url)
+        loader = CoverLoader(url, title=self._title)
         self._loader = loader
         loader.loaded.connect(self._on_loaded)
         # CoverLoader 现在在 __init__ 里自动纳入 _orphan_loaders 并在 finished 时释放，

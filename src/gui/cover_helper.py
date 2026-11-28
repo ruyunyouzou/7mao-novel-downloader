@@ -78,6 +78,33 @@ def fetch_cover_bytes(url: str, timeout: int = 10) -> bytes:
     except Exception:  # noqa: BLE001
         return b""
 
+
+def fetch_cover_smart(url: str, title: str = "", timeout: int = 10) -> bytes:
+    """封面统一智能入口：文库8优先官方正版大图，其余书源走原通道。
+
+    优先级：
+    1. 本地已有 EPUB 内嵌封面由调用方处理（本函数只管联网/缓存部分）；
+    2. 文库8图床 URL → 先查/取 Bangumi 官方大图缓存（≈800×1200），
+       失败回退文库8小图（≈217×310，本身就是官方日版封面）；
+    3. 其他书源 → 原样走带浏览器头的直链下载。
+
+    全程吞异常，绝不把网络错误抛到加载线程之外。
+    """
+    if not url:
+        return b""
+    try:
+        from .wenku8_core.wenku8_official_cover import (
+            extract_aid, fetch_official_cover,
+        )
+        aid = extract_aid(url)
+        if "wenku8" in url.lower() and aid:
+            official = fetch_official_cover(aid, title, timeout=timeout)
+            if official and _is_image_bytes(official):
+                return official
+    except Exception:  # noqa: BLE001
+        pass
+    return fetch_cover_bytes(url, timeout=timeout)
+
 # 与 reader_view 保持一致的兜底渐变配色
 _COVER_GRADIENTS = [
     ("#7e6aa6", "#3f3560"), ("#5a86ad", "#304a63"), ("#b87a58", "#6e4634"),
@@ -276,9 +303,11 @@ class AsyncCover(QThread):
 
     _orphans: set = set()
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, title: str = "") -> None:
         super().__init__()
         self.url = url
+        # 文库8书名用于严格匹配 Bangumi 官方大图（括号别名参与匹配）
+        self.title = title
         AsyncCover._orphans.add(self)
         self.finished.connect(lambda l=self: self._release(l))
 
@@ -289,8 +318,9 @@ class AsyncCover(QThread):
 
     def run(self) -> None:
         try:
-            # 统一走带浏览器头的下载，裸 requests.get 会被 img CDN 403。
-            raw = fetch_cover_bytes(self.url)
+            # 统一智能入口：文库8优先官方高清大图，失败回退小图；
+            # 裸 requests.get 会被 img CDN 403，故不走它。
+            raw = fetch_cover_smart(self.url, getattr(self, "title", ""))
             img = _first_image(raw) if raw else None
             if img:
                 self.loaded.emit(self.url, img)

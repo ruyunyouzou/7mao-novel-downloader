@@ -18,6 +18,20 @@ from gui.plugin.base import (
 from gui.qimao_core import BookSource, build_txt, sanitize_filename
 
 
+def _official_cover_bytes_for(book_id) -> bytes:
+    """取本地缓存的 Bangumi 官方高清封面（零网络），供整本 EPUB 内嵌封面用。
+
+    下载阶段不再联网查 Bangumi（避免拖慢下载/触发风控）；UI 在搜索/详情
+    展示时已把官方大图落盘缓存，这里直接读。没缓存则 b""，build_txt 会
+    回退原来的文库8官方小图网络下载，行为与之前完全一致。
+    """
+    try:
+        from gui.wenku8_core.wenku8_official_cover import cached_official_cover
+        return cached_official_cover(book_id)
+    except Exception:  # noqa: BLE001
+        return b""
+
+
 class Wenku8BookSource(BookSource):
     """文库8章节源：自研内核，逐章明文抓取（无字体混淆）。"""
 
@@ -780,6 +794,7 @@ class Wenku8Downloader(DownloaderBase):
                 tail_fixed=str(tail_fixed),
                 smart_art=bool(smart_art),
                 source=source,
+                cover_bytes=_official_cover_bytes_for(book_id),
             )
             # 严格模式：build_txt 渲染时遇到缺图会抛 QimaoError（图和书须一起
             # 成功），被下方 except 捕获判失败；走到这里说明正文和插图都齐全。

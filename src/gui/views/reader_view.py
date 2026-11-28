@@ -685,12 +685,13 @@ class ReaderView(QWidget):
             if img is not None and not img.isNull():
                 cover.setPixmap(scaled_pixmap(img, 72, 100))
                 loaded = True
-        # 本地无封面时，再用记录里的 cover URL 兜底
+        # 本地无封面时，再用记录里的 cover URL 兜底（文库8优先官方大图）。
+        # 不再裸 requests.get：会被 img CDN 403，且绕过官方大图。
         if not loaded and cover_url:
             try:
-                import requests
-                resp = requests.get(cover_url, timeout=6)
-                img = QImage.fromData(resp.content)
+                from ..cover_helper import fetch_cover_smart
+                raw = fetch_cover_smart(cover_url, title)
+                img = QImage.fromData(raw) if raw else QImage()
                 if not img.isNull():
                     cover.setPixmap(QPixmap.fromImage(img).scaled(
                         72, 100, Qt.KeepAspectRatio, Qt.SmoothTransformation))

@@ -195,7 +195,7 @@ class _CardBase(QFrame):
         if not cover_url:
             return
         try:
-            loader = AsyncCover(cover_url)
+            loader = AsyncCover(cover_url, title)
 
             def done(url: str, got, _self=self) -> None:
                 # 卡片可能已被销毁，校验有效性后再设置

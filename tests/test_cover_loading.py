@@ -72,12 +72,19 @@ def test_fetch_cover_bytes_rejects_non_http():
 
 
 def test_book_card_no_bare_requests_get():
-    """回归：搜索卡片封面加载不能再出现裸 requests.get(self.url)。"""
+    """回归：搜索卡片封面加载不能再出现裸 requests.get(self.url)。
+
+    统一入口升级为 fetch_cover_smart（文库8优先官方大图，失败回退
+    fetch_cover_bytes 带头小图）；两者都算合法，裸 GET 仍禁止。
+    """
     with open(os.path.join(ROOT, "src", "gui", "book_card.py"), encoding="utf-8") as f:
         src = f.read()
-    assert "fetch_cover_bytes" in src, "封面加载必须走统一带头的下载函数"
+    assert ("fetch_cover_smart" in src or "fetch_cover_bytes" in src), \
+        "封面加载必须走统一带头下载函数（含智能入口）"
     # 裸 GET 形式不应存在（注释里提到无妨，检查实际的调用语句）
     assert "requests.get(self.url" not in src
+    # 搜索卡片必须把书名传给加载器，供 Bangumi 严格匹配官方大图
+    assert "title=" in src and "CoverLoader(" in src
 
 
 def test_async_cover_uses_unified_fetcher():
@@ -85,10 +92,12 @@ def test_async_cover_uses_unified_fetcher():
     with open(os.path.join(ROOT, "src", "gui", "cover_helper.py"), encoding="utf-8") as f:
         src = f.read()
     run_body = src.split("class AsyncCover", 1)[1]
-    assert "fetch_cover_bytes" in run_body
-    # 实际调用语句必须是 fetch_cover_bytes，不能有裸 requests.get(...)
+    assert ("fetch_cover_smart" in run_body or "fetch_cover_bytes" in run_body)
+    # 实际调用语句不能是裸 requests.get(...)
     assert "resp = requests.get" not in run_body
     assert "requests.get(self.url" not in run_body
+    # AsyncCover 需接收书名，供文库8严格匹配 Bangumi 官方大图
+    assert "def __init__(self, url: str, title: str" in run_body
 
 
 def test_wenku8_cover_url_from_aid():
