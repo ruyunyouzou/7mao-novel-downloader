@@ -147,3 +147,72 @@ def test_download_dialog_volume_panel_only_wenku8(monkeypatch):
     wenku8.deleteLater()
     fanqie.deleteLater()
     app.processEvents()
+
+
+# ---------- 严格模式：图和书必须一起成功（挑刺新增） ----------
+
+def test_partial_volume_failure_fails_whole(monkeypatch, tmp_path):
+    """任一卷渲染失败（含缺图抛错）→ 整单 success=False，不能部分成功。"""
+    d = W.Wenku8Downloader()
+
+    cats = _catalog((2, 2))
+    texts = ["    正文A", "    正文B", "    正文C", "    正文D"]
+
+    def fake_prefetch(self, book_id, session, on_progress=None):
+        return ({"title": "测试书", "author": "作者", "cover": ""}, cats, texts)
+
+    monkeypatch.setattr(W.Wenku8BookSource, "prefetch_book", fake_prefetch)
+
+    # 让第一卷成功、第二卷抛错（模拟渲染阶段缺图 QimaoError）
+    built = {"n": 0}
+
+    def fake_build(**kw):
+        built["n"] += 1
+        if kw.get("start_chapter", 0) >= 3:
+            raise W.QimaoError("插图未能下载")
+        p = str(tmp_path / f"vol_{built['n']}.epub")
+        with open(p, "wb") as f:
+            f.write(b"fake epub")
+        return {"file_path": p, "chapters": 2, "total": 4, "title": "测试书"}
+
+    import gui.qimao_core as core
+    monkeypatch.setattr(core, "build_txt", fake_build)
+
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": "测试书"},
+        V.MODE_PER_VOLUME, None)
+    assert res.success is False, "部分卷失败也必须整单失败"
+    assert "一起成功" in res.message
+    # 已写出的半成品要被清理
+    assert not list(tmp_path.glob("vol_*.epub")), "失败时应删除已写出的残缺卷"
+
+
+def test_missing_image_only_checks_selected_volumes(monkeypatch, tmp_path):
+    """只导出第二卷时，未导出卷的缺图不应导致整单失败。"""
+    d = W.Wenku8Downloader()
+
+    cats = _catalog((2, 2))  # 第一卷1-2章，第二卷3-4章
+    # 第一卷正文含一张缺图，第二卷正文无图
+    texts = [
+        "[[WENKU8IMG:https://x/missing.jpg]]", "    正文B",
+        "    正文C", "    正文D",
+    ]
+
+    def fake_prefetch(self, book_id, session, on_progress=None):
+        return ({"title": "测试书", "author": "作者", "cover": ""}, cats, texts)
+
+    monkeypatch.setattr(W.Wenku8BookSource, "prefetch_book", fake_prefetch)
+
+    def fake_build(**kw):
+        p = str(tmp_path / "vol2.epub")
+        with open(p, "wb") as f:
+            f.write(b"fake epub")
+        return {"file_path": p, "chapters": 2, "total": 4, "title": "测试书"}
+
+    import gui.qimao_core as core
+    monkeypatch.setattr(core, "build_txt", fake_build)
+
+    res = d._download_volumes(
+        "1", str(tmp_path), "epub", None, {"title": "测试书"},
+        V.MODE_SELECTED, ["第二卷"])
+    assert res.success is True, "只导出第二卷时，第一卷的缺图不应阻塞"

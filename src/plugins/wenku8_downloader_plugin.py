@@ -429,19 +429,6 @@ class Wenku8Downloader(DownloaderBase):
                 success=False, message=f"文库8分卷导出失败（预取正文）: {exc}",
             )
 
-        # 严格模式：图和书必须一起成功。预取阶段已多轮尽力下载；只要还有图
-        # 没下下来，就判失败，绝不静默出「没图/缺图」的书（用户明确要求）。
-        missing_imgs = source.missing_images(_texts)
-        if missing_imgs:
-            return DownloadResult(
-                book_id=str(book_id), title=title or f"book_{book_id}",
-                success=False,
-                message=(f"文库8下载失败：有 {len(missing_imgs)} 张插图未能下载，"
-                         f"图和书必须一起下载成功，本次不出书。示例："
-                         f"{missing_imgs[0][:120]}"),
-                extra={"images_failed": len(missing_imgs)},
-            )
-
         volumes = group_volumes(catalog)
         chosen = select_volumes(volumes, mode, selected_volumes)
         if not chosen:
@@ -449,6 +436,27 @@ class Wenku8Downloader(DownloaderBase):
                 book_id=str(book_id), title=title or f"book_{book_id}",
                 success=False,
                 message="文库8分卷导出失败：未选择任何卷（请至少勾选一卷）",
+            )
+
+        # 严格模式：图和书必须一起成功。预取阶段已多轮尽力下载；只要本次要
+        # 导出的卷里还有图没下下来，就判失败，绝不静默出「没图/缺图」的书。
+        # 关键：只校验「所选卷」范围内的图——仅导出第2卷时不该因未导出的第5卷
+        # 有张图没下下来而整单失败（那张图根本不会进本单任何一卷 EPUB）。
+        scope_texts = []
+        for _vol in chosen:
+            for _ch in _vol.get("chapters", []):
+                _idx = int(_ch.get("index", 0) or 0)
+                if 0 <= _idx < len(_texts):
+                    scope_texts.append(_texts[_idx])
+        missing_imgs = source.missing_images(scope_texts)
+        if missing_imgs:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message=(f"文库8下载失败：本次要导出的卷里有 {len(missing_imgs)} 张"
+                         f"插图未能下载，图和书必须一起下载成功，本次不出书。"
+                         f"示例：{missing_imgs[0][:120]}"),
+                extra={"images_failed": len(missing_imgs)},
             )
 
         n = len(chosen)
@@ -504,20 +512,42 @@ class Wenku8Downloader(DownloaderBase):
             except Exception as exc:  # noqa: BLE001
                 failed.append(f"{volume_label(vol)}: {exc}")
 
+        # 严格模式：图和书必须一起成功。任一卷失败（含渲染阶段缺图抛错）即整单
+        # 失败，绝不允许「部分卷成功、部分卷缺图」却返回 success=True。同时清理
+        # 已经写出的半成品，避免留下缺图/缺卷的残缺 EPUB 误导用户。
+        if failed:
+            for _w in written:
+                _p = _w.get("file_path", "")
+                if not _p:
+                    continue
+                try:
+                    if os.path.isdir(_p):
+                        import shutil as _shutil
+                        _shutil.rmtree(_p, ignore_errors=True)
+                    elif os.path.exists(_p):
+                        os.remove(_p)
+                except Exception:  # noqa: BLE001
+                    pass
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message=("文库8下载失败：图和书必须一起成功，本次不出书。"
+                         f"共 {len(failed)} 卷未成功（" + "；".join(failed[:3]) + "）"),
+                extra={"volume_failures": failed,
+                       "volumes_written_discarded": len(written)},
+            )
         if not written:
             return DownloadResult(
                 book_id=str(book_id), title=title or f"book_{book_id}",
                 success=False,
-                message="文库8分卷导出失败：所有卷均未写出（" + "；".join(failed[:3]) + "）",
+                message="文库8分卷导出失败：所有卷均未写出",
             )
         if progress_cb is not None:
             progress_cb(100)
 
         total_chapters = sum(int(v.get("count", 0)) for v in written)
         fmt_label = {"txt": "TXT", "chapter": "分章TXT", "epub": "EPUB"}.get(fmt, fmt)
-        msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8）"
-        if failed:
-            msg += f"；{len(failed)} 卷失败（" + "；".join(failed[:2]) + "）"
+        msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8，含全部插图）"
         return DownloadResult(
             book_id=str(book_id),
             title=title or str(detail.get("title") or f"book_{book_id}"),
@@ -532,8 +562,8 @@ class Wenku8Downloader(DownloaderBase):
                 "source": "wenku8",
                 "volume_mode": mode,
                 "volumes": written,
-                "volume_failures": failed,
-                "images_failed": len(missing_imgs),
+                "volume_failures": [],   # 走到这里 failed 必为空（非空已在上方判失败）
+                "images_failed": 0,       # 走到这里缺图必为空（非空已在上方判失败）
                 "author": str(detail.get("author") or kwargs.get("author", "") or ""),
             },
         )

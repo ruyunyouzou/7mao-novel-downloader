@@ -668,7 +668,12 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
                 'style="display:block;margin:1em auto;max-width:100%;"/>'
             )
         else:
+            # 图字节有但 ebooklib 构造条目失败：严格模式同样不许静默丢图。
+            # 否则 _image_failures>0 却照常出书，还会误报「含全部插图」。
             image_fail.append(url)
+            if strict:
+                raise QimaoError(
+                    f"插图写入 EPUB 失败，本次不出书（图和书须一起成功）：{url[:120]}")
         pos = m.end()
     tail = raw[pos:]
     if tail:

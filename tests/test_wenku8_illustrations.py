@@ -355,3 +355,20 @@ def test_volume_cover_from_illustration_chapter():
     ]
     got = s.volume_cover(chapters, texts)
     assert got == portrait
+
+
+def test_epub_item_build_failure_raises_in_strict_mode(monkeypatch):
+    """图字节有效但 ebooklib 构造条目失败时，严格模式也必须判失败，不静默丢图。"""
+    import pytest
+    from ebooklib import epub
+
+    class _StrictSource(_FakeSource):
+        source_key = "wenku8"
+
+    monkeypatch.setattr(C, "_w8_image_item", lambda *a, **k: None)
+    book = epub.EpubBook()
+    with pytest.raises(C.QimaoError):
+        C._render_body(
+            "[[WENKU8IMG:https://img.wenku8.com/a.jpg]]",
+            _StrictSource(with_images=True), book, epub, False, [0], [],
+        )
