@@ -8,9 +8,15 @@ wenku8_cookie，只保存在本机；软件不内置任何账号凭据。
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import requests
+
+from .wenku8_http import (
+    make_fingerprint_session,
+    make_requests_session,
+    network_mode,
+)
 
 # 站点域名候选。2026 年起官方 App API（app.wenku8.com）与老网页接口
 # （/modules/article/search.php）已关停；实测 .cc 的网页详情页/目录/正文
@@ -70,17 +76,32 @@ def parse_cookie(cookie: str) -> dict:
 
 
 def get_base_url() -> str:
-    """返回当前文库8站点根地址。
+    """返回当前文库8站点根地址（挑刺 #6：与登录线路统一为单一真相源）。
 
-    优先级：用户在设置页固定值 `wenku8_base_url` > 缓存的探测结果 >
-    候选列表首个（现为 .cc，实测唯一稳定可用的域名）。探测由
-    `probe_base_url()` 完成并缓存，避免每次请求都探测。
+    优先级：用户固定值 `wenku8_base_url` > 线路管理 active > 探测缓存 >
+    候选首项（.cc）。
+
+    关键修复：搜索走本函数、登录/线路走 `get_active_base()`，过去两者读
+    不同设置项（wenku8_base_url vs wenku8_lines.active），可长期分叉导致
+    「登录后搜索仍打旧域名」。现在把线路 active 纳入本函数的优先级链，
+    两处自然指向同一域名；`get_active_base()` 仍以线路 active 为先，二者一致。
     """
     try:
         from gui.datastore import DataStore
         custom = str(DataStore().settings_get("wenku8_base_url", "") or "").strip()
         if custom:
             return custom.rstrip("/")
+    except Exception:  # noqa: BLE001
+        pass
+    # 线路管理中选中的线路是「当前生效域名」的权威来源之一。
+    try:
+        active = str(get_lines_state().get("active", "") or "").strip()
+        if active:
+            return active.rstrip("/")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from gui.datastore import DataStore
         cached = str(DataStore().settings_get("wenku8_base_cached", "") or "").strip()
         if cached:
             return cached.rstrip("/")
@@ -94,14 +115,17 @@ def probe_base_url(session=None, timeout: int = 8) -> str:
 
     探测失败时回退到候选首个，绝不抛异常。桌面端网络正常时应能命中活站。
     """
-    sess = session or requests.Session()
+    sess = session or make_session()
     for base in _BASE_CANDIDATES:
         # 用详情页 /book/1034.htm 判定可用性，比首页更可靠：
         # 首页可能是关站占位或 Cloudflare 403，而详情静态页仍可读。
         for probe_path in ("/book/1034.htm", "/"):
             try:
+                # 挑刺 #7：不再显式覆盖 User-Agent。make_session 返回的
+                # httpcloak 会话自带与 TLS 指纹一致的 UA；强塞 _UA 反而制造
+                # 「UA 说 Edge / TLS 说 Chrome」的指纹矛盾，招致风控。
                 resp = sess.get(base + probe_path, timeout=timeout,
-                                allow_redirects=True, headers={"User-Agent": _UA})
+                                allow_redirects=True)
                 resp.encoding = "gbk"
                 text = resp.text or ""
                 low = text.lower()
@@ -126,8 +150,12 @@ def probe_base_url(session=None, timeout: int = 8) -> str:
 
 
 def make_session(cookie: Optional[str] = None, timeout: int = 20,
-                 base: Optional[str] = None) -> requests.Session:
-    """构造带登录态、浏览器头的 Session，供详情/目录/正文复用。
+                 base: Optional[str] = None) -> Any:
+    """构造带登录态的文库8会话，供搜索/详情/目录/正文统一复用。
+
+    网络层由 `wenku8_http` 决定：装了 httpcloak 就走全栈浏览器指纹通道
+    （本机诊断已证明这是唯一能稳定过 Cloudflare 的方案），没装则退回
+    requests，保证离线单测与老环境不崩。
 
     Cookie 的 domain 随站点域名动态调整（.net/.cc/.com），避免旧版写死
     `.wenku8.cc` 导致换域名后登录态失效。
@@ -137,22 +165,14 @@ def make_session(cookie: Optional[str] = None, timeout: int = 20,
         域名不匹配导致登录态被判无效。
     """
     base = (base or get_base_url()).rstrip("/")
-    host = base.split("//", 1)[-1].split("/", 1)[0]
-    cookie_domain = host[4:] if host.startswith("www.") else host
-    sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": _UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
-        "Referer": base + "/",
-    })
     raw = cookie if cookie is not None else get_cookie()
-    if raw:
-        for key, val in parse_cookie(raw).items():
-            # 主域 cookie：用不带 www 的域，保证 www/裸域都带上
-            sess.cookies.set(key, val, domain="." + cookie_domain)
-    sess.timeout = timeout  # type: ignore[attr-defined]
-    return sess
+    if network_mode() == "httpcloak":
+        try:
+            return make_fingerprint_session(raw, base, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            # 指纹会话创建失败时仍退回 requests，不让整个功能不可用
+            pass
+    return make_requests_session(raw, base, timeout=timeout, user_agent=_UA)
 
 
 def is_logged_in(session: Optional[requests.Session] = None,
@@ -231,15 +251,17 @@ def login_with_password(username: str, password: str,
     from urllib.parse import quote
     jumpurl = site.replace("https://", "http://", 1) + "/index.php"
     login_url = site + "/login.php?do=submit&jumpurl=" + quote(jumpurl, safe="")
-    sess = requests.Session()
+    # 登录也必须走同一套指纹会话：普通 requests 在 .net/.com 必被 403，
+    # 即便在 .cc 能打开详情页，POST 登录仍可能被风控拦。
+    sess = make_session(base=site, timeout=20)
+    # 挑刺 #9：Origin/Referer 与登录请求 URL 同协议。jumpurl 为对齐站点
+    # 表单仍用 http（原样提交），但浏览器同源头应跟随实际页面协议（https），
+    # 避免跨协议 Origin 被站点或 Cloudflare 判为异常。
+    origin = site.rsplit("/", 1)[0] + "/" if "/" in site[8:] else site + "/"
     sess.headers.update({
-        "User-Agent": _UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9",
         "Content-Type": "application/x-www-form-urlencoded",
-        # 页面 HTTP/HTTPS 混用，浏览器实际发的是 http 源
-        "Origin": jumpurl.rsplit("/", 1)[0] + "/",
-        "Referer": jumpurl.rsplit("/", 1)[0] + "/",
+        "Origin": origin,
+        "Referer": origin,
     })
     try:
         resp = sess.post(login_url, data=_build_login_form(username, password),
@@ -277,6 +299,18 @@ def login_with_password(username: str, password: str,
 # ---------------------------------------------------------------------------
 
 _LINES_KEY = "wenku8_lines"
+
+# 挑刺 #14：线路检测状态的合法取值集中定义，避免散落字符串拼写错误。
+LINE_STATE_UNCHECKED = "unchecked"
+LINE_STATE_OK = "ok"
+LINE_STATE_GUEST = "guest"
+LINE_STATE_CLOSED = "closed"
+LINE_STATE_BLOCKED = "blocked"
+LINE_STATE_ERROR = "error"
+LINE_STATES = (
+    LINE_STATE_UNCHECKED, LINE_STATE_OK, LINE_STATE_GUEST,
+    LINE_STATE_CLOSED, LINE_STATE_BLOCKED, LINE_STATE_ERROR,
+)
 
 
 def _default_lines() -> dict:
@@ -422,11 +456,17 @@ def remove_line(base: str) -> bool:
     state = get_lines_state()
     state["lines"] = [ln for ln in state["lines"] if ln["base"] != base]
     if state.get("active") == base:
-        state["active"] = state["lines"][0]["base"] if state["lines"] else _BASE_CANDIDATES[0]
-        set_cookie("")
+        # 挑刺 #13：删当前线路不该无声清空全局登录态。切到第一条剩余线路，
+        # 并把该线路自己保存的 Cookie 同步为当前生效值；仅当剩余线路都没有
+        # 登录态时才清空（此时确实无处可继承）。
+        fallback = state["lines"][0] if state["lines"] else None
+        new_active = fallback["base"] if fallback else _BASE_CANDIDATES[0]
+        state["active"] = new_active
+        inherited_cookie = str((fallback or {}).get("cookie", "") or "")
+        set_cookie(inherited_cookie)
         try:
             from gui.datastore import DataStore
-            DataStore().settings_set("wenku8_base_url", state["active"])
+            DataStore().settings_set("wenku8_base_url", new_active)
         except Exception:  # noqa: BLE001
             pass
     save_lines_state(state)
@@ -524,28 +564,24 @@ def classify_line_response(status: int, final_url: str, text: str) -> tuple[str,
     url = str(final_url or "")
     body = str(text or "")
     if status == 403 or "人机验证" in body or "cloudflare" in body.lower():
-        return "blocked", "站点风控拦截（403/人机验证）"
+        return LINE_STATE_BLOCKED, "站点风控拦截（403/人机验证）"
     if "本站正式关闭" in body or "正式关闭" in body:
-        return "closed", "站点已关闭（关站旧页）"
+        return LINE_STATE_CLOSED, "站点已关闭（关站旧页）"
     if "login.php" in url.lower():
-        return "guest", "可访问，但未登录（跳转登录页）"
+        return LINE_STATE_GUEST, "可访问，但未登录（跳转登录页）"
     if any(k in body for k in ("会员中心", "我的书架", "退出登录")):
-        return "ok", "可访问，登录态有效"
+        return LINE_STATE_OK, "可访问，登录态有效"
     if "轻小说文库" in body or "/book/" in body or "小说排行榜" in body:
-        return "guest", "可访问，未识别到登录态"
-    return "guest", "线路可访问（页面结构未知）"
+        return LINE_STATE_GUEST, "可访问，未识别到登录态"
+    return LINE_STATE_GUEST, "线路可访问（页面结构未知）"
 
 
 def check_line(base: str, cookie: str = "", timeout: int = 8) -> tuple[str, str]:
     """检测单条线路连接状态，返回 (state, detail)，不抛异常、不写数据。"""
     base = str(base or "").strip().rstrip("/")
-    sess = requests.Session()
-    sess.headers.update({"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9"})
-    if cookie:
-        host = base.split("//", 1)[-1].split("/", 1)[0]
-        domain = host[4:] if host.startswith("www.") else host
-        for k, v in parse_cookie(cookie).items():
-            sess.cookies.set(k, v, domain="." + domain)
+    # 线路检测同样不能再用裸 requests：诊断显示裸通道全线 403，会把
+    # 可用线路误标记为「风控拦截」。统一走 make_session 的指纹通道。
+    sess = make_session(cookie, timeout=timeout, base=base)
     try:
         resp = sess.get(base + "/", timeout=timeout, allow_redirects=True)
         # 必须先按 GBK 解码再取 text：requests 默认按 apparent_encoding 猜测，

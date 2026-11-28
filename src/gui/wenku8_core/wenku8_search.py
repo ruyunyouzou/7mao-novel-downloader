@@ -13,9 +13,10 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FutureTimeout
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote
 
 from bs4 import BeautifulSoup
@@ -39,19 +40,37 @@ def _is_blocked(html: str) -> bool:
     text = html or ""
     return any(m.lower() in text.lower() for m in _BLOCK_MARKERS)
 
-# 站内搜索候选：不同站点版本参数名不同，逐个尝试直到拿到结果。
-# 真实书源配置（JackiuDeepInkSource / 开源阅读器）用的是
-#   /modules/article/search.php?searchtype=articlename&searchkey={kw}  (charset=gbk)
-# 参数 searchtype=articlename 是老接口必需，缺失时部分站点返回 Welcome 空页。
+# 站内搜索候选。2026-11-28 本机诊断结论：
+#   * GBK 编码关键词不带 charset 参数 → 指纹通道 200，单结果会 302 到详情页；
+#   * 带 charset=gbk → Cloudflare 403 / nginx Welcome，必须彻底移除。
+# 因此这里只保留不带 charset 的 GET 通道，POST /so.php 降为最后兜底。
 _SEARCH_ENDPOINTS = (
-    # 与官网搜索表单（及 mikufoxxx/Wenku8_Flutter）完全一致：charset=gbk 必带
-    "/modules/article/search.php?searchtype=articlename&searchkey={kw}&charset=gbk",
     "/modules/article/search.php?searchtype=articlename&searchkey={kw}",
     "/modules/article/search.php?searchkey={kw}",
     "/search.php?keyword={kw}",
     "/so.php?keyword={kw}",
     "/so.php?searchkey={kw}",
 )
+
+# 站内搜索节流：参考 pywenku8api 的来源级限速，两次站内搜索至少间隔 5 秒，
+# 避免连续搜索触发 Cloudflare 风控。只在同一进程内生效，不影响单测注入的假会话。
+_SEARCH_MIN_INTERVAL = 5.0
+_last_search_at = 0.0
+_throttle_lock = threading.Lock()  # 挑刺 #16：并发搜索下保护时间戳更新
+
+
+def _throttle_search() -> None:
+    """两次站内搜索至少间隔 5 秒（线程安全）。
+
+    挑刺 #16：加互斥锁，避免并发调用同时 sleep 或竞态写 _last_search_at。
+    """
+    global _last_search_at
+    with _throttle_lock:
+        now = time.monotonic()
+        wait = _SEARCH_MIN_INTERVAL - (now - _last_search_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_search_at = time.monotonic()
 
 
 def _extract_books(html: str, base: str) -> List[dict]:
@@ -73,7 +92,11 @@ def _extract_books(html: str, base: str) -> List[dict]:
         if bid in seen:
             continue
         name = a.get_text(" ", strip=True)
-        if not name or name in ("我要阅读", "返回书页", "点击阅读"):
+        # 挑刺 #20：搜索/榜单页里的功能链接文本不该被当成书名。
+        if not name or re.fullmatch(
+            r"(我要阅读|返回书页|点击阅读|目录|书评|推荐|更多|详情|"
+            r"上一页|下一页|首页|末页|加入书架|开始阅读)", name
+        ):
             continue
         seen.add(bid)
         books.append({
@@ -121,9 +144,11 @@ def _search_via_so_post(keyword: str, session, base: str, page: int = 1) -> List
             submit = quote("轻小说搜索".encode(enc))
         except Exception:  # noqa: BLE001
             continue
+        # 关键：不要带 charset=gbk。诊断证明该参数会触发 Cloudflare 403 /
+        # nginx Welcome；GBK 关键词本身已足够，站点表单新版也不再发这个字段。
         body = (
             f"searchtype=articlename&searchkey={kw}"
-            f"&charset=gbk&Submit={submit}"
+            f"&Submit={submit}"
         ).encode("ascii")
         if page > 1:
             body += f"&page={page}".encode("ascii")
@@ -151,19 +176,39 @@ def _search_via_so_post(keyword: str, session, base: str, page: int = 1) -> List
     return []
 
 
+def _extract_detail_result(html: str, base: str, final_url: str) -> Optional[dict]:
+    """搜索单结果时站方会 302 到详情页，此时从 <title> 取主书而非相关推荐。
+
+    详情页里还有十几条相关书籍链接，直接套 _extract_books 会把主书淹没。
+    这里只在最终 URL 明确是 /book/{id}.htm 时启用，避免影响正常结果页。
+    """
+    m = re.search(r"/book/(\d+)\.htm", str(final_url or ""), re.I)
+    if not m:
+        return None
+    soup = BeautifulSoup(html or "", "html.parser")
+    if not soup.title:
+        return None
+    parts = [p.strip() for p in soup.title.get_text().split(" - ")]
+    if len(parts) < 2:
+        return None
+    title = parts[0]
+    author = parts[1] if len(parts) >= 2 else ""
+    return {
+        "id": m.group(1), "title": title, "author": author, "intro": "",
+        "cover": "", "source": "wenku8", "_rel": 0,
+    }
+
+
 def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dict]:
     """尝试站内搜索接口，返回命中的书籍（已按相关性排序）。
 
-    对每种关键词编码（GBK 优先 / UTF-8 兜底）× 每个候选接口逐个尝试；
-    任一接口返回含匹配书籍的页面即视为成功；全部失败返回空列表由调用方兜底。
+    诊断后的正确顺序：GBK/UTF-8 编码 × 不带 charset 的 GET 候选优先，
+    最后才退回 POST /so.php。单结果 302 到详情页时直接解析主书。
     """
     kw_variants = _encode_keyword_variants(keyword)
     if not kw_variants:
         return []
-    # 0) 官网真实表单 POST /so.php（浏览器/参考 App 通道），优先于 GET 候选
-    post_hits = _search_via_so_post(keyword, session, base, page=page)
-    if post_hits:
-        return post_hits
+    _throttle_search()
     for kw in kw_variants:
         blocked = False
         for tpl in _SEARCH_ENDPOINTS:
@@ -174,14 +219,18 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
             try:
                 resp = session.get(url, timeout=_REQUEST_TIMEOUT)
                 html = _decode(resp)
+                final_url = str(getattr(resp, "url", "") or "")
             except Exception:  # noqa: BLE001
                 continue
-            # 部分镜像（如 .cc）的搜索路径只返回 Welcome 占位页，
-            # 命中风控/占位页说明整条线路不可用：熔断所有剩余候选与编码，
-            # 不再逐个等 15 秒超时（这是先前半分钟延迟的主因）。
+            # 占位/风控页说明整条线路不可用，熔断剩余候选与编码。
             if _is_blocked(html):
                 blocked = True
                 break
+            # 单结果 302 到详情页：主书优先命中。
+            main = _extract_detail_result(html, base, final_url)
+            if main and _matches(keyword, main["title"]):
+                main["_rel"] = _relevance(keyword, main["title"])
+                return [main]
             books = _extract_books(html, base)
             if not books:
                 continue
@@ -193,7 +242,8 @@ def _search_on_site(keyword: str, session, base: str, page: int = 1) -> List[dic
                 return hits
         if blocked:
             break  # 整条线路被拦，换编码无意义
-    return []
+    # GET 全部失败才走 POST 兜底（且同样不带 charset=gbk）。
+    return _search_via_so_post(keyword, session, base, page=page)
 
 
 def _fetch_class_page(cls: int, page: int, session, base: str) -> List[dict]:
@@ -251,6 +301,7 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
             for cls, p in tasks
         }
         done_count = 0
+        pages_with_books = 0  # 挑刺 #15：真正用于熔断的计数
         try:
             iterator = as_completed(fmap, timeout=_SEARCH_BUDGET)
             for fut in iterator:
@@ -260,9 +311,12 @@ def _search_categories(keyword: str, session, base: str, max_pages: int,
                     books = []
                 all_books.extend(books)
                 done_count += 1
-                # 熔断：前 16 页全部无书（正常站点不可能），说明整站不可用，
-                # 取消剩余任务立即返回，避免空等 112 页 = 半分钟。
-                if done_count >= 16 and not any(b["title"] for b in all_books):
+                if books:
+                    pages_with_books += 1
+                # 挑刺 #15：原条件 `not any(b["title"] for b in all_books)` 恒为假
+                #（all_books 里每条书 title 必非空），熔断永不触发。改为统计
+                # 「有书的页数」——前 16 页全部 0 本才是整站不可用的可靠信号。
+                if done_count >= 16 and pages_with_books == 0:
                     for pending in fmap:
                         pending.cancel()
                     break
@@ -297,16 +351,13 @@ def _normalize_result(book: dict) -> dict:
     搜索页表格与详情区会读取 words_num/tags/score 等字段；文库8内核本身
     不提供这些信息，缺失时补空值，避免消费方硬取键 KeyError。
     """
-    out = {k: v for k, v in (book or {}).items() if k != "_rel"}
-    out.setdefault("id", "")
-    out.setdefault("title", "")
-    out.setdefault("author", "")
-    out.setdefault("intro", "")
-    out.setdefault("cover", "")
-    out.setdefault("words_num", "")
-    out.setdefault("tags", "")
-    out.setdefault("score", "")
+    # 挑刺 #21：白名单式输出，避免 cover_aid/_rel 等内部键污染 UI 结果结构。
+    keys = ("id", "title", "author", "intro", "cover",
+            "words_num", "tags", "score", "source")
+    out = {k: (book or {}).get(k, "") for k in keys}
     out.setdefault("source", "wenku8")
+    if not out.get("source"):
+        out["source"] = "wenku8"
     return out
 
 
@@ -354,37 +405,43 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
 
     # 1.1) 全站索引检索（通用方案）：本地索引保存了**所有**书籍的完整标题
     #     （含括号别名），任何书的别名都能命中，不再对具体书名做硬编码。
-    #     索引缺失/过期时后台自动构建，并立即触发一次构建以便首轮也能覆盖。
-    if page == 1:
-        try:
-            from .wenku8_index import search_index, ensure_index_async
+    #     挑刺 #18：翻页时用 offset 从同一全站目录切片，数据源与第 1 页一致。
+    index_page_size = 20
+    try:
+        from .wenku8_index import (
+            search_index, search_index_book, ensure_index_async,
+        )
 
-            aid_hits = search_index(kw)
-            if aid_hits:
-                from .wenku8_reader import fetch_detail
+        index_offset = (page - 1) * index_page_size
+        aid_hits = search_index(kw, limit=index_page_size, offset=index_offset)
+        if aid_hits:
+            from .wenku8_reader import fetch_detail
 
-                books: List[dict] = []
-                for aid in aid_hits[:20]:
-                    try:
-                        d = fetch_detail(aid, sess)
-                    except Exception:  # noqa: BLE001
-                        d = {}
-                    if d and d.get("title"):
-                        books.append({
-                            "id": aid,
-                            "title": d.get("title", ""),
-                            "author": d.get("author", ""),
-                            "intro": d.get("intro", ""),
-                            "cover": d.get("cover", ""),
-                            "words_num": d.get("words_num", ""),
-                            "tags": d.get("tags", ""),
-                            "source": "wenku8",
-                            "_rel": _relevance(kw, d.get("title", "")),
-                        })
-                if books:
-                    books.sort(key=lambda b: -b["_rel"])
-                    return [_normalize_result(b) for b in books]
-            # 无论是否命中，索引过期都异步重建（失败不影响本次搜索）。
+            books: List[dict] = []
+            for aid in aid_hits[:index_page_size]:
+                # 全站目录 JSON 自带完整元数据，命中后无需再联网取详情；
+                # 目录里没有的书才回退网页详情，避免别名书被二次改写。
+                try:
+                    d = search_index_book(aid) or fetch_detail(aid, sess)
+                except Exception:  # noqa: BLE001
+                    d = {}
+                if d and d.get("title"):
+                    books.append({
+                        "id": aid,
+                        "title": d.get("title", ""),
+                        "author": d.get("author", ""),
+                        "intro": d.get("intro", ""),
+                        "cover": d.get("cover", ""),
+                        "words_num": d.get("words_num", "") or d.get("length", ""),
+                        "tags": d.get("tags", ""),
+                        "source": "wenku8",
+                        "_rel": _relevance(kw, d.get("title", "")),
+                    })
+            if books:
+                books.sort(key=lambda b: -b["_rel"])
+                return [_normalize_result(b) for b in books]
+        # 无论是否命中，索引过期都异步重建（只在首屏触发，避免翻页重复）。
+        if page == 1:
             try:
                 from gui.datastore import DataStore
 
@@ -394,24 +451,27 @@ def search_wenku8(keyword: str, session=None, max_pages: int = 8,
                 ensure_index_async(base=base, cookie=cookie)
             except Exception:  # noqa: BLE001
                 pass
-        except Exception:  # noqa: BLE001
-            pass
+    except Exception:  # noqa: BLE001
+        pass
 
     # 1.5) 首页/榜单补充：.cc 站内 search.php 已改为 Google CSE（返回框架页无结果），
     #     但首页推荐与榜单页仍含书籍链接。带登录 Cookie 抓这些页面做本地别名
     #     匹配，可覆盖「紫罗兰」→《薇尔莉特(紫罗兰永恒花园)》这类别名漏搜，且很快。
     quick_books: List[dict] = []
-    for path in ("/", "/modules/article/toplist.php?sort=allvisit",
-                 "/modules/article/toplist.php?sort=lastupdate",
-                 "/modules/article/articlelist.php?class=1"):
-        try:
-            resp = sess.get(base + path, timeout=_REQUEST_TIMEOUT)
-            html = _decode(resp)
-            if _is_blocked(html):
+    # 挑刺 #17/#18：榜单/首页是无序补充，只在首屏抓一次；翻页不再重复请求，
+    # 避免拖拽 4 个页面又与全站目录分页混杂。
+    if page == 1:
+        for path in ("/", "/modules/article/toplist.php?sort=allvisit",
+                     "/modules/article/toplist.php?sort=lastupdate",
+                     "/modules/article/articlelist.php?class=1"):
+            try:
+                resp = sess.get(base + path, timeout=_REQUEST_TIMEOUT)
+                html = _decode(resp)
+                if _is_blocked(html):
+                    continue
+                quick_books.extend(_extract_books(html, base))
+            except Exception:  # noqa: BLE001
                 continue
-            quick_books.extend(_extract_books(html, base))
-        except Exception:  # noqa: BLE001
-            continue
     if quick_books:
         seen: set = set()
         qhits: List[dict] = []

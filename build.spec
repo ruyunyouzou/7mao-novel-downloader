@@ -28,10 +28,28 @@ datas = [
     # 更新源配置与 manifest 模板：随包分发，用户改 repo 即可换更新源，无需重打包
     ("update_config.json", "."),
     ("update-manifest.json", "."),
+    # 文库8全站目录（mojimoon/wenku8, MIT）：全站别名搜索的地基
+    ("src/gui/wenku8_core/data", "gui/wenku8_core/data"),
 ]
 
 # 三方库数据（ebooklib 的模板等）
 datas += collect_data_files("ebooklib")
+
+# 挑刺 #49：httpcloak 的原生库（lib/libhttpcloak-<os>-<arch>.so|dll|dylib）
+# 不在 package_data 里，collect_data_files("httpcloak") 实测返回 0 项，
+# 打包后会因找不到库导致 import 失败、静默回退裸 requests（全线 403）。
+# 必须显式把整个 httpcloak/lib 目录收集到 _MEIPASS/httpcloak/lib，
+# 与 client.py 的 Path(__file__).parent/"lib"/lib_name 搜索路径吻合。
+import os as _os
+try:
+    import httpcloak as _httpcloak
+    _hc_lib = _os.path.join(_os.path.dirname(_httpcloak.__file__), "lib")
+    if _os.path.isdir(_hc_lib):
+        datas.append((_hc_lib, "httpcloak/lib"))
+except Exception:
+    # 打包机未装 httpcloak 时不影响其它功能；但发布机必须装，否则指纹通道缺失
+    pass
+datas += collect_data_files("httpcloak")  # 保留：未来版本若声明 package_data 亦兼容
 
 # 隐藏导入（动态加载或 hook 未覆盖的模块）
 # 关键：gui / SLQimao 是 src 下的本地包，入口脚本靠运行时 sys.path.insert 加载，
@@ -41,7 +59,7 @@ hiddenimports = [
     "gui", "SLQimao",
     "ebooklib", "ebooklib.epub", "ebooklib.plugins", "ebooklib.plugins.standard",
     "bs4", "lxml", "Crypto", "Crypto.Cipher", "Crypto.Util.Padding",
-    "yaml", "requests", "packaging", "rich", "colorama",
+    "yaml", "requests", "httpcloak", "packaging", "rich", "colorama",
     # 听书与扫码登录（动态导入/隐式后端）
     "edge_tts", "qrcode", "qrcode.image.pil",
     "PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont",

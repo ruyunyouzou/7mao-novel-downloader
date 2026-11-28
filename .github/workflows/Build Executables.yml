@@ -52,6 +52,40 @@ jobs:
       - name: PyInstaller 打包 GUI
         run: python -m PyInstaller build.spec --clean --noconfirm
 
+      # 打包自检（#49）：httpcloak 原生库不在 package_data，collect_data_files
+      # 实测返回 0 项；漏收时发布版会静默回退裸 requests、文库8全线 403，
+      # 且界面无任何报错。这里用刚打出的 exe 直接验证指纹通道能否加载，
+      # 失败即让构建红灯，避免再发出一个"看起来正常但文库8全废"的版本。
+      # 该分支在 GUI 导入前执行，不需要显示环境或登录态。
+      - name: 文库8指纹内核打包自检
+        shell: pwsh
+        run: |
+          $exe = "dist\星隅小说下载器\GUI-novel下载器.exe"
+          $report = "wenku8_selftest_result.txt"
+          if (-not (Test-Path $exe)) {
+            Write-Error "找不到打包产物：$exe"; exit 1
+          }
+          if (Test-Path $report) { Remove-Item $report -Force }
+          Write-Host "运行打包自检：$exe --wenku8-selftest=$report"
+          # exe 是 console=False 的 GUI 程序：& 调用不会等待其退出，
+          # 必须用 Start-Process -Wait，否则报告还没写完就去读文件。
+          $argList = @("--wenku8-selftest=$report")
+          $proc = Start-Process -FilePath $exe -ArgumentList $argList -Wait -PassThru
+          $code = $proc.ExitCode
+          Write-Host "自检退出码：$code"
+          if (Test-Path $report) { Get-Content $report }
+          else { Write-Error "自检未生成报告文件 $report"; exit 1 }
+          if ($code -ne 0) {
+            Write-Error "打包自检失败：发布版 exe 里 httpcloak 指纹内核未能加载（详见上方报告）。请检查 build.spec 是否收集了 httpcloak/lib 原生库。"
+            exit 1
+          }
+          $content = Get-Content $report -Raw
+          if ($content -notmatch 'network_mode=httpcloak') {
+            Write-Error "打包自检失败：报告里 network_mode 不是 httpcloak。$content"
+            exit 1
+          }
+          Write-Host "打包自检通过：network_mode=httpcloak"
+
       - name: 生成绿色版压缩包
         shell: pwsh
         run: |

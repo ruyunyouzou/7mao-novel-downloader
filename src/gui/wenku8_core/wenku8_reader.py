@@ -70,7 +70,9 @@ def _novel_prefix(html: str, book_id: str) -> str:
     m = re.search(rf"href=\"([^\"]*novel/\d+/{book_id}/)", html)
     if m:
         return m.group(1)
-    return f"/novel/0/{book_id}/"  # 兜底，通常不会用到
+    # 挑刺 #31：分类号 0 是无效假值，实测主站轻小说分类多为 1；
+    # 兜底改用 1，显著降低详情页被拦时目录请求必然 404 的概率。
+    return f"/novel/1/{book_id}/"
 
 
 def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
@@ -106,13 +108,23 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
 
     title, author, intro, cover = "", "", "", ""
 
-    # 书名/作者：网页 <title> 格式「书名 - 作者 - 分类 - 轻小说文库」
+    # 书名/作者：网页 <title> 格式「书名 - 作者 - 分类 - 轻小说文库」。
+    # 挑刺 #32：站点后缀不一定是 4 段（实测有「书名 - 作者 - 轻小说文库」
+    # 的 3 段式，旧逻辑 len>=4 才取 author，丢作者）。改为过滤站点/分类
+    # 尾巴后，把第二段直接当作者。
     if soup.title:
         parts = [p.strip() for p in soup.title.get_text().split(" - ")]
-        if len(parts) >= 4:
-            title, author = parts[0], parts[1]
-        elif len(parts) >= 2:
-            title = parts[0]
+        site_suffixes = ("轻小说文库", "wenku8", "小说文库")
+        # 只剔除「纯站点尾巴」段，避免误伤书名里恰好含这些词的书。
+        meaningful = [
+            p for p in parts
+            if p and not any(p.lower() == s or p.lower().endswith("-" + s)
+                             for s in site_suffixes)
+        ]
+        if meaningful:
+            title = meaningful[0]
+            if len(meaningful) >= 2:
+                author = meaningful[1]
 
     # 详情页表格里的「小说作者：xxx」/「作者：xxx」
     if not author:
@@ -123,7 +135,13 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     # 封面：img.wenku8.com/image/{n}/{id}/{id}s.jpg
     for img in soup.select("img[src]"):
         src = img.get("src", "")
-        if "wenku8" in src and ("cover" in src.lower() or bid in src):
+        low = src.lower()
+        # 挑刺 #33：既接受 CDN 绝对地址（含 wenku8 + bid/cover），也接受
+        # 站内相对路径（/images/cover.jpg 等，不含 wenku8 域名）。
+        is_cdn = "wenku8" in low and ("cover" in low or bid in src)
+        is_relative = bool(src) and not src.lower().startswith(("http://", "https://")) \
+            and ("cover" in low or bid in src)
+        if is_cdn or is_relative:
             cover = urljoin(_base(), src)
             break
 
@@ -166,22 +184,27 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     m = re.search(r"全文长度[：:]\s*([\d,]+)\s*字", html)
     if m:
         words_num = m.group(1).replace(",", "")
-    # App API meta：补完整书名（含括号别名）、作者、字数、简介；网页失败也仍可用
-    try:
-        from .wenku8_app_api import fetch_meta, meta_to_book
-        meta = fetch_meta(bid)
-        if meta:
-            merged = meta_to_book(meta, {
-                "title": title, "author": author, "intro": intro, "cover": cover,
-            })
-            title = merged.get("title") or title
-            author = author or merged.get("author", "")
-            intro = intro or merged.get("intro", "")
-            cover = cover or merged.get("cover", "")
-            words_num = merged.get("words_num", "")
-            tags = tags or merged.get("tags", "")
-    except Exception:  # noqa: BLE001
-        pass
+    # App API meta：补完整书名（含括号别名）、作者、字数、简介。
+    # 挑刺 #29：App API 已关停，每次详情无条件调用会白等两次失败请求。
+    # 改为「按需补缺」——网页已拿到完整字段时不再请求；只有关键字段缺失
+    # （网页被风控拦/结构变化）时才兜底调用，既保留能力又不拖慢常规详情。
+    need_meta = (not title or not author or not words_num or not intro)
+    if need_meta:
+        try:
+            from .wenku8_app_api import fetch_meta, meta_to_book
+            meta = fetch_meta(bid)
+            if meta:
+                merged = meta_to_book(meta, {
+                    "title": title, "author": author, "intro": intro, "cover": cover,
+                })
+                title = merged.get("title") or title
+                author = author or merged.get("author", "")
+                intro = intro or merged.get("intro", "")
+                cover = cover or merged.get("cover", "")
+                words_num = words_num or merged.get("words_num", "")
+                tags = tags or merged.get("tags", "")
+        except Exception:  # noqa: BLE001
+            pass
 
     return {
         "title": title,
@@ -234,7 +257,11 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     # 文库8把插图作为独立章节（正文容器为空，只有图片），下载后是空章。
     # 标题可能是纯"插图"也可能带序号（"插图1"/"彩页02"/"插图 3"），用前缀
     # 匹配一律过滤，避免产出空章节。
-    _image_re = re.compile(r"^(插图|插画|图片|图|封面|彩页)\s*\d*\s*$")
+    # 挑刺 #34：兼容带序号/括号说明的插图标题（插图1(上)/彩页 · 封二等），
+    # 但仍要求以插图类词开头，避免误杀以「图」开头的正文标题。
+    _image_re = re.compile(
+        r"^(插图|插画|图片|彩页|封面)\s*[\d一二三四五六七八九十]*\s*[（(\-—·:：]?.*$"
+    )
     # 章节链接：绝大多数是相对数字 "177990.htm"，但部分线路给绝对地址
     # 或带 query（"?a=1"）。用 search 从路径末段提取数字文件名，兼容之。
     _chap_re = re.compile(r"(?:^|/)(\d+)\.htm(?:\?|$)", re.I)
@@ -338,7 +365,9 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
         # 过滤站点版权声明行：只删明显的来源推广句，避免误删正文里恰好提到
         # 「轻小说文库」的正常内容（原文此处 and/or 优先级也易踩坑，改用括号明确）。
         low = line.lower()
+        # 挑刺 #30：补上 .cc（当前主线路）与裸域名，避免推广行混进正文。
         if ("本文来自" in line or "wenku8.com" in low or "wenku8.net" in low
+                or "wenku8.cc" in low
                 or ("轻小说文库" in line and ("http" in low or "www." in low))):
             continue
         lines.append("    " + line)

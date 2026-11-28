@@ -29,15 +29,41 @@ class Wenku8BookSource(BookSource):
         self._prefix = ""
         self._aid = ""
         self._app_mode = False
+        # 挑刺 #39：线程本地会话缓存。httpcloak Session 非线程安全，但不能
+        # 每章都重建（20 章=20 次 TLS 握手，是下载慢的直接放大器）。每个
+        # 工作线程复用自己的会话，仅一次握手；key 含 cookie 防止登录态串味。
+        import threading
+        self._tls = threading.local()
 
     def _session(self, session=None):
-        """文库8必须带登录 Cookie；追更等调用方传入的是裸 Session，不可直接用。"""
+        """文库8必须带登录 Cookie；追更等调用方传入的是裸 Session，不可直接用。
+
+        httpcloak Session 非线程安全：同线程复用（含主线程），跨线程各自
+        用线程本地缓存持有一份，避免"每章重建会话"的风控特征与性能损耗。
+        """
+        import threading
         from gui.wenku8_core.wenku8_auth import make_session, get_cookie
-        # 传入的 session 若已带文库8 Cookie 则复用，否则用自己的登录态 Session
-        if session is not None and getattr(session, "cookies", None) is not None \
-                and "PHPSESSID" in session.cookies.get_dict():
-            return session
-        return make_session(get_cookie())
+        cookie = get_cookie()
+        if session is not None and getattr(session, "cookies", None) is not None:
+            try:
+                jar = session.cookies.get_dict()
+                if "PHPSESSID" in jar or "jieqiUserInfo" in jar:
+                    owner = getattr(session, "owner_thread", None)
+                    if owner is None or owner == threading.get_ident():
+                        return session
+                    cookie = "; ".join(f"{k}={v}" for k, v in jar.items())
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 线程本地缓存：同线程、同 cookie 直接复用。
+        cached = getattr(self._tls, "session", None)
+        cached_key = getattr(self._tls, "cookie_key", None)
+        if cached is not None and cached_key == cookie:
+            return cached
+        new_session = make_session(cookie)
+        self._tls.session = new_session
+        self._tls.cookie_key = cookie
+        return new_session
 
     def fetch_detail(self, book_id: str, session) -> dict:
         from gui.wenku8_core.wenku8_reader import fetch_detail
@@ -221,7 +247,9 @@ class Wenku8Downloader(DownloaderBase):
             raise
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            if "login" in msg.lower() or "cookie" in msg.lower() or not str(Wenku8CookieProbe.ok()):
+            # 挑刺 #40：原 `not str(Wenku8CookieProbe.ok())` 恒为 False
+            #（str(False)='False' 非空），登录提示分支永不生效。改为直接判布尔。
+            if "login" in msg.lower() or "cookie" in msg.lower() or not Wenku8CookieProbe.ok():
                 msg = ("文库8下载失败：登录态无效，请在「文库8登录」中"
                        "用账号密码或官网登录重新登录（无需手动填写 Cookie）。原因：" + msg)
             return DownloadResult(

@@ -48,7 +48,7 @@ def test_check_line_sets_gbk_before_reading_text():
     fake_sess = MagicMock()
     fake_sess.get.return_value = resp
 
-    with patch.object(auth.requests, "Session", return_value=fake_sess), \
+    with patch.object(auth, "make_session", return_value=fake_sess), \
          patch.object(auth, "set_line_checked"):
         state, _detail = auth.check_line("https://www.wenku8.cc")
 

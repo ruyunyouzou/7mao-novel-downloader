@@ -64,7 +64,7 @@ class TestLoginWithPassword(unittest.TestCase):
             cookies={"PHPSESSID": "abc123", "jieqiUserInfo": "uid=7"},
             text="",  # 响应体可能是挑战页，靠 Cookie 判定
         )
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             ok, cookie, msg = login_with_password(
                 "user", "pass", base="https://www.wenku8.net"
@@ -84,7 +84,7 @@ class TestLoginWithPassword(unittest.TestCase):
     def test_success_by_text_without_cookie(self) -> None:
         # 某些响应 Set-Cookie 在 history 里，正文含会员标记也算成功
         sess, _ = _fake_session(cookies={}, text="欢迎回来，退出登录")
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             ok, cookie, msg = login_with_password("user", "pass")
         self.assertTrue(ok)
@@ -92,7 +92,7 @@ class TestLoginWithPassword(unittest.TestCase):
 
     def test_forbidden_403(self) -> None:
         sess, _ = _fake_session(status=403)
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             ok, cookie, msg = login_with_password("user", "pass")
         self.assertFalse(ok)
@@ -102,7 +102,7 @@ class TestLoginWithPassword(unittest.TestCase):
 
     def test_wrong_password(self) -> None:
         sess, _ = _fake_session(cookies={}, text="密码错误，请重新输入")
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             ok, cookie, msg = login_with_password("user", "wrong")
         self.assertFalse(ok)
@@ -111,7 +111,7 @@ class TestLoginWithPassword(unittest.TestCase):
     def test_login_response_decoded_as_gbk(self) -> None:
         # 回归：登录响应必须显式设 GBK，否则中文失败文案乱码导致匹配失败。
         sess, resp = _fake_session(cookies={}, text="验证码错误")
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             login_with_password("user", "pass")
         self.assertEqual(resp.encoding, "gbk")
@@ -119,7 +119,7 @@ class TestLoginWithPassword(unittest.TestCase):
     def test_network_exception(self) -> None:
         sess, _ = _fake_session()
         sess.post.side_effect = RuntimeError("connection refused")
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session",
+        with patch("gui.wenku8_core.wenku8_auth.make_session",
                    return_value=sess):
             ok, cookie, msg = login_with_password("user", "pass")
         self.assertFalse(ok)

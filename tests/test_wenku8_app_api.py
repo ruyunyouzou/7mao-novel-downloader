@@ -510,7 +510,7 @@ def test_search_wenku8_uses_local_index_when_site_search_empty(monkeypatch):
     from gui.wenku8_core import wenku8_index as idx
 
     monkeypatch.setattr(s, "_search_on_site", lambda *a, **k: [])
-    monkeypatch.setattr(idx, "search_index", lambda kw, limit=40: ["2353"])
+    monkeypatch.setattr(idx, "search_index", lambda kw, limit=40, offset=0: ["2353"])
     monkeypatch.setattr(idx, "ensure_index_async", lambda **k: None)
     monkeypatch.setattr("gui.wenku8_core.wenku8_reader.fetch_detail",
                         lambda aid, session=None: {
@@ -581,6 +581,8 @@ def test_local_index_matches_any_alias(monkeypatch, tmp_path):
     """通用索引对任意书名别名生效（非特判）：从列表页提取完整标题即可命中。"""
     from gui.wenku8_core import wenku8_index as idx
 
+    # 本例专测用户本机自抓索引，暂时屏蔽随包全站目录以免混入额外命中。
+    monkeypatch.setattr(idx, "_catalog_cache", {})
     fake_index = tmp_path / "wenku8_index.json"
     monkeypatch.setattr(idx, "_INDEX_FILE", str(fake_index))
     idx.save_index({

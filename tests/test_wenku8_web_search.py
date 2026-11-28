@@ -9,11 +9,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from gui.wenku8_web_search import build_search_url, parse_search_html  # noqa: E402
 
 
-def test_build_search_url_gbk_and_charset():
+def test_build_search_url_gbk_without_charset():
     url = build_search_url("https://www.wenku8.net/", "邻家天使", 2)
     assert "searchtype=articlename" in url
     assert "searchkey=%C1%DA%BC%D2%CC%EC%CA%B9" in url
-    assert "charset=gbk" in url
+    # 诊断结论：charset=gbk 会触发 Cloudflare / nginx Welcome，必须不带
+    assert "charset" not in url
     assert url.endswith("&page=2")
 
 

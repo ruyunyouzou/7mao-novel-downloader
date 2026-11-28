@@ -97,7 +97,7 @@ def test_check_line_records_state():
             def get(self, *a, **k):
                 return _Resp()
 
-        with patch("gui.wenku8_core.wenku8_auth.requests.Session", return_value=_Sess()):
+        with patch("gui.wenku8_core.wenku8_auth.make_session", return_value=_Sess()):
             state, detail = auth.check_line("https://www.wenku8.net", "")
         assert state == "ok"
         ln = next(l for l in auth.get_lines_state()["lines"]

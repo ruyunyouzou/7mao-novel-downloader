@@ -4,9 +4,10 @@
 参考 mikufoxxx/Wenku8_Flutter：在线书源的搜索页在真实 WebView 里打开，
 由浏览器完成 Cloudflare 质询并携带登录 Cookie，再把页面结果解析成书目。
 
-普通 requests 拿不到 `.net` 的搜索结果时（403 / <h1>Welcome</h1> 占位页），
+普通通道拿不到 `.net` 的搜索结果时（403 / <h1>Welcome</h1> 占位页），
 改用本模块在软件内嵌 Chromium 中执行同源 fetch，按 GBK 解码后返回 HTML，
 交给 wenku8_search._extract_books() 复用同一套解析与模糊匹配逻辑。
+2026-11-28 诊断后已移除 charset=gbk，并把不带 charset 的 GET 搜索提为第一通道。
 """
 
 from __future__ import annotations
@@ -32,21 +33,21 @@ _WEB_UA = (
 
 
 def build_search_url(base: str, keyword: str, page: int = 1) -> str:
-    """构造与官网搜索表单一致的 GBK 查询地址。"""
+    """构造 GBK 查询地址；**不要带 charset=gbk**（会触发 Cloudflare 403）。"""
     kw = quote(str(keyword or "").strip().encode("gbk"))
     url = (f"{base.rstrip('/')}/modules/article/search.php"
-           f"?searchtype=articlename&searchkey={kw}&charset=gbk")
+           f"?searchtype=articlename&searchkey={kw}")
     if page > 1:
         url += f"&page={page}"
     return url
 
 
 def build_search_post_body(keyword: str, page: int = 1, enc: str = "gbk") -> str:
-    """构造官网搜索表单 POST /so.php 的请求体（GBK 字节的百分号编码）。"""
+    """构造 POST /so.php 兜底请求体（GBK 百分号编码，不含 charset 参数）。"""
     raw = str(keyword or "").strip()
     kw = quote(raw.encode(enc))
     submit = quote("轻小说搜索".encode(enc))
-    body = f"searchtype=articlename&searchkey={kw}&charset=gbk&Submit={submit}"
+    body = f"searchtype=articlename&searchkey={kw}&Submit={submit}"
     if page > 1:
         body += f"&page={page}"
     return body
@@ -109,8 +110,10 @@ class Wenku8WebSearch(QObject):
         # 兜底超时：WebEngine 在某些网络下不回调 loadFinished
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
+        # 挑刺 #44：WebEngine 是兜底通道（主通道 httpcloak 已能过盾），
+        # 30 秒看门狗过长，失败时会长时间拖住界面；收紧到 15 秒。
         self._timer.timeout.connect(lambda: self._fail("浏览器搜索超时"))
-        self._timer.start(30000)
+        self._timer.start(15000)
 
     def _inject_cookies(self) -> None:
         """把软件保存的登录 Cookie 注入共享 Profile。
@@ -155,6 +158,8 @@ class Wenku8WebSearch(QObject):
             "window.__wk8result='PENDING';"
             "(async function(){"
             f"const u={json.dumps(url)};"
+            # 挑刺 #45：POST 兜底用基于 base 的完整路径，兼容带子路径的部署。
+            f"const postUrl={json.dumps(self.base.rstrip('/') + '/so.php')};"
             f"const body={json.dumps(body)};"
             "const sleep=ms=>new Promise(r=>setTimeout(r,ms));"
             "async function grab(u,opt){"
@@ -170,12 +175,13 @@ class Wenku8WebSearch(QObject):
             "const postOpt={method:'POST',body:body,credentials:'include',"
             "headers:{'Content-Type':'application/x-www-form-urlencoded'}};"
             "let t='';"
-            "try{t=await grab('/so.php',postOpt);}catch(e){}"
-            # 命中风控/占位页：等待 Cloudflare 质询 JS 完成后再重试一次
+            # 诊断结论：带 charset 的 POST 会被拦；不带 charset 的 GET 已实测可用，
+            # 所以 GET 优先，POST 仅作为最后的浏览器表单兜底。
+            "try{t=await grab(u,{credentials:'include'});}catch(e){}"
             "if(blocked(t)){await sleep(1500);"
-            "try{t=await grab('/so.php',postOpt);}catch(e){}}"
-            "if(blocked(t)){"
             "try{t=await grab(u,{credentials:'include'});}catch(e){}}"
+            "if(blocked(t)){"
+            "try{t=await grab(postUrl,postOpt);}catch(e){}}"
             "window.__wk8result=(t&&!blocked(t))?t:'ERR:empty';})();"
         )
         try:
@@ -190,7 +196,7 @@ class Wenku8WebSearch(QObject):
 
     def _poll_result(self) -> None:
         self._poll_count = getattr(self, "_poll_count", 0) + 1
-        if self._poll_count > 80:  # 24 秒
+        if self._poll_count > 40:  # 挑刺 #44：12 秒（配合 15 秒看门狗）
             self._poll.stop()
             self._fail("浏览器搜索响应超时")
             return

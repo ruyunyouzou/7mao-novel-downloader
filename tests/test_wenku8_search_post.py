@@ -62,20 +62,24 @@ def test_post_so_uses_gbk_keyword_and_finds_book():
     )
     assert unquote_to_bytes(field["searchkey"]).decode("gbk") == "邻家天使"
     assert field["searchtype"] == "articlename"
-    assert field["charset"] == "gbk"
+    # 关键回归：charset=gbk 会被 Cloudflare 拦截，POST 兜底也不能带
+    assert "charset" not in field
 
 
-def test_search_wenku8_prefers_post_and_skips_get_when_hit(monkeypatch):
+def test_search_wenku8_prefers_get_and_skips_post_when_hit(monkeypatch):
     s = _Session(HTML)
     monkeypatch.setattr("gui.wenku8_core.wenku8_search.get_base_url",
                         lambda: "https://www.wenku8.net")
-    # App API 通道在该测试里固定返回空，隔离网络，专注验证网页 POST 优先。
+    monkeypatch.setattr("gui.wenku8_core.wenku8_search._throttle_search",
+                        lambda: None)
+    # App API 通道在该测试里固定返回空，隔离网络，专注验证网页 GET 优先。
     monkeypatch.setattr("gui.wenku8_core.wenku8_app_api.search_via_app_api",
                         lambda *a, **k: [])
     results = search_wenku8("邻家天使", session=s)
     assert results and results[0]["id"] == "2580"
-    assert s.posts, "应先走官网表单 POST /so.php"
-    assert not s.gets, "POST 已命中时不应再走 GET 候选"
+    # 诊断结论：不带 charset 的 GET search.php 已实测可用，应优先于 POST。
+    assert s.gets, "应先走 GET search.php"
+    assert not s.posts, "GET 已命中时不应再走 POST /so.php 兜底"
     # 回归：结果须含 UI 所需同构字段，避免搜索结果表格 KeyError 崩溃
     for key in ("words_num", "tags", "score", "source", "title", "author"):
         assert key in results[0]

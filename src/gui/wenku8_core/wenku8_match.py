@@ -89,14 +89,25 @@ def matches(query: str, title: str, *, author: str = "", summary: str = "") -> b
     return True
 
 
-def relevance(query: str, title: str) -> int:
-    """命中强度：子串命中记 2 分、子序列记 1 分，用于结果排序（高者靠前）。"""
+def relevance(query: str, title: str, *, author: str = "", summary: str = "") -> int:
+    """命中强度：子串记 2 分、子序列记 1 分，用于排序（高者靠前）。
+
+    挑刺 #26：title 命中权重最高；作者命中记 1 分、简介命中记 0.5 分
+    （取整后相加），这样「作者名搜到书」不会因 0 分被排到末尾。
+    默认 author/summary 为空，保持既有调用（含单测）行为不变。
+    """
     terms = terms_of(query)
     t = normalize(title)
+    a = normalize(author)
+    s = normalize(summary)
     score = 0
     for term in terms:
         if term in t:
             score += 2
         elif len(term) >= 2 and _is_subsequence(term, t):
+            score += 1
+        elif a and (term in a or (len(term) >= 2 and _is_subsequence(term, a))):
+            score += 1
+        elif s and term in s:
             score += 1
     return score
