@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gui.plugin.base import (
     Plugin, PluginMeta, DownloaderBase, DownloadResult, DownloadCancelled,
 )
-from gui.qimao_core import BookSource, build_txt
+from gui.qimao_core import BookSource, build_txt, QimaoError
 
 
 class Wenku8BookSource(BookSource):
@@ -37,6 +37,9 @@ class Wenku8BookSource(BookSource):
         self._text_cache: dict = {}
         # 插图缓存：key=图片 URL，value=图片字节。预取阶段并发下载，渲染阶段只读。
         self._image_cache: dict = {}
+        # 插图严格模式：预取阶段统一下载 + 多轮补抓；最终仍失败的 URL 记在
+        # _image_missing，由下载入口判为失败，绝不静默丢图后照常出书。
+        self._image_missing: list = []
         # 正确模型：每个工作线程一个会话并长期复用。
         # 取证：
         #   - 每章新建会话：295 章 49 次 unexpected EOF（TLS 握手太频繁）；
@@ -145,8 +148,35 @@ class Wenku8BookSource(BookSource):
         """渲染阶段读取插图字节（只读缓存，绝不发网络请求）。"""
         return self._image_cache.get(str(url or ""), b"")
 
-    def _cache_images(self, text: str) -> None:
-        """抓到正文后，把其中的插图 URL 并发下载进缓存（缺失的才下）。"""
+    def image_urls_in(self, texts) -> list:
+        """汇总给定正文列表里的全部插图 URL（去重、保序）。"""
+        from gui.wenku8_core.wenku8_volumes import extract_image_urls
+        seen, out = set(), []
+        for t in texts or []:
+            for u in extract_image_urls(t):
+                if u and u not in seen:
+                    seen.add(u)
+                    out.append(u)
+        return out
+
+    def missing_images(self, texts=None) -> list:
+        """返回仍未下载成功的插图 URL。
+
+        texts 给了就以「这些正文里出现的图」为准做校验；否则用上次记录。
+        严格模式：这个列表非空 = 插图没下全 = 不允许出书。
+        """
+        if texts is None:
+            return list(self._image_missing)
+        wanted = self.image_urls_in(texts)
+        return [u for u in wanted if not self._image_cache.get(u)]
+
+    def _cache_images(self, text: str, rounds: int = 4) -> None:
+        """抓到正文后，把其中的插图 URL 并发下载进缓存。
+
+        严格实现：多轮补抓——第一轮没拿到的图再按退避重试，直到所有图都
+        下载成功或用尽轮次。仍失败的 URL 记入 _image_missing，由下载入口
+        判失败，绝不静默丢弃。
+        """
         from gui.wenku8_core.wenku8_volumes import (
             extract_image_urls, download_image,
         )
@@ -154,15 +184,30 @@ class Wenku8BookSource(BookSource):
         if not urls:
             return
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=min(8, len(urls))) as pool:
-            fmap = {pool.submit(download_image, u): u for u in urls}
-            for fut, u in fmap.items():
-                try:
-                    data = fut.result()
-                except Exception:  # noqa: BLE001
-                    data = b""
-                if data:
-                    self._image_cache[u] = data
+        import time as _time
+        pending = list(urls)
+        for rnd in range(max(1, int(rounds))):
+            if not pending:
+                break
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+                fmap = {pool.submit(download_image, u): u for u in pending}
+                for fut, u in fmap.items():
+                    try:
+                        data = fut.result()
+                    except Exception:  # noqa: BLE001
+                        data = b""
+                    if data:
+                        self._image_cache[u] = data
+            pending = [u for u in pending if u not in self._image_cache]
+            if pending and rnd < rounds - 1:
+                _time.sleep(0.5 * (rnd + 1))
+        # 记录最终仍失败的图（并集，不覆盖之前其他章节的失败）
+        if pending:
+            known = set(self._image_missing)
+            for u in pending:
+                if u not in known:
+                    self._image_missing.append(u)
+                    known.add(u)
 
     def chapter_text(self, ctx, chapter: dict, session, report) -> str:
         ckey = self._chapter_cache_key(chapter)
@@ -259,7 +304,32 @@ class Wenku8BookSource(BookSource):
                 if txt:
                     results[i] = txt
             failed = [i for i in failed if not results.get(i)]
-        return [results.get(i, "") for i in range(total)]
+
+        texts = [results.get(i, "") for i in range(total)]
+        # 插图的最后补抓阵地：所有图必须在本阶段（渲染之前）下载到位。
+        # chapter_text 里已逐章下载+补抓，这里做一次全书级别的统一兜底：
+        # 只要正文中出现、但缓存里没有的图，再并发补抓——渲染阶段只读缓存。
+        missing = self.missing_images(texts)
+        if missing:
+            from concurrent.futures import ThreadPoolExecutor
+            from gui.wenku8_core.wenku8_volumes import download_image
+            for _ in range(3):  # 最多 3 轮全书级补抓
+                if not missing:
+                    break
+                with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
+                    fmap = {pool.submit(download_image, u): u for u in missing}
+                    for fut, u in fmap.items():
+                        try:
+                            data = fut.result()
+                        except Exception:  # noqa: BLE001
+                            data = b""
+                        if data:
+                            self._image_cache[u] = data
+                missing = [u for u in missing if u not in self._image_cache]
+        # 记录最终仍缺的图；下载入口据此判失败，绝不静默出无图书。
+        self._image_missing = [u for u in self.image_urls_in(texts)
+                               if u not in self._image_cache]
+        return texts
 
 
 class Wenku8Downloader(DownloaderBase):
@@ -333,6 +403,17 @@ class Wenku8Downloader(DownloaderBase):
             return DownloadResult(
                 book_id=str(book_id), title=title or f"book_{book_id}",
                 success=False, message=f"文库8分卷导出失败（预取正文）: {exc}",
+            )
+
+        # 插图严格校验：任何一张图没下下来都不出书（用户要求「所有图必须下载」）。
+        missing_imgs = source.missing_images(_texts)
+        if missing_imgs:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message=(f"文库8下载失败：有 {len(missing_imgs)} 张插图未能下载，"
+                         f"为保证「所有图都下载」，本次不出书。示例："
+                         f"{missing_imgs[0][:120]}"),
             )
 
         volumes = group_volumes(catalog)
@@ -464,6 +545,7 @@ class Wenku8Downloader(DownloaderBase):
         if smart_art is None:
             smart_art = bool(store.settings_get("epub_smart_art", True))
 
+        source = Wenku8BookSource()
         try:
             result = build_txt(
                 book_id=str(book_id),
@@ -488,8 +570,23 @@ class Wenku8Downloader(DownloaderBase):
                 tail_mode=str(tail_mode),
                 tail_fixed=str(tail_fixed),
                 smart_art=bool(smart_art),
-                source=Wenku8BookSource(),
+                source=source,
             )
+            # 插图严格校验：build_txt 已经在预取阶段集中下载了所有图；
+            # 这里只要还有图没下下来，就判整本失败并清理已写出的文件，
+            # 绝不静默出「没图/缺图」的书（用户明确要求「所有图必须下载」）。
+            missing_imgs = source.missing_images()
+            if missing_imgs:
+                _fp = result.get("file_path", "")
+                try:
+                    if _fp and os.path.isfile(_fp):
+                        os.remove(_fp)
+                except Exception:  # noqa: BLE001
+                    pass
+                raise QimaoError(
+                    f"有 {len(missing_imgs)} 张插图未能下载，"
+                    f"为保证「所有图都下载」，本次不出书。示例：{missing_imgs[0][:120]}"
+                )
         except DownloadCancelled:
             raise
         except Exception as exc:  # noqa: BLE001

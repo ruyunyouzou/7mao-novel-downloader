@@ -646,6 +646,9 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
         return html.escape(raw).replace("\n", "<br/>")
 
     from .wenku8_core.wenku8_volumes import IMG_MARK_RE
+    # 文库8严格模式：插图必须全部下载并内嵌，缺图直接抛异常终止出书，
+    # 绝不静默丢掉 <img> 后照常出「没图」的书（用户明确要求所有图都要下载）。
+    strict = str(getattr(source, "source_key", "") or "") == "wenku8"
     parts: List[str] = []
     pos = 0
     for m in IMG_MARK_RE.finditer(raw):
@@ -654,6 +657,9 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
             parts.append(_hl_or_escape(seg, colorize))
         url = str(m.group(1) or "").strip()
         img_bytes = get_image(url) or b""
+        if strict and not img_bytes:
+            image_fail.append(url)
+            raise QimaoError(f"插图未能下载，拒绝生成缺图 EPUB：{url[:120]}")
         counter[0] += 1
         item = _w8_image_item(book, epub, img_bytes, counter[0])
         if item is not None:
@@ -677,11 +683,52 @@ def _hl_or_escape(text: str, colorize: bool) -> str:
     return html.escape(text).replace("\n", "<br/>")
 
 
-def _txt_images(text: str) -> str:
-    """TXT 无法内嵌图片：把插图标记转成可读的链接文字。"""
+class _ImageWriter:
+    """把文库8插图字节落地到磁盘目录，供 TXT 引用（TXT 无法内嵌图片）。
+
+    只在有 get_image 的文库8书源时使用；图片全部来自预取缓存，不在写文件阶段发网络。
+    严格模式：图片字节缺失时直接抛错，绝不退化成「网络链接文字」这种兜底。
+    """
+
+    def __init__(self, source, out_dir: str):
+        self._get = getattr(source, "get_image", None)
+        self._dir = out_dir
+        self._count = 0
+        self._named: dict = {}
+        if self._get is not None:
+            os.makedirs(self._dir, exist_ok=True)
+
+    def write(self, url: str) -> str:
+        """把一张图写入目录，返回相对文件名；缺图抛 QimaoError。"""
+        from .wenku8_core.wenku8_volumes import image_ext
+        if url in self._named:
+            return self._named[url]
+        data = self._get(url) if self._get is not None else b""
+        if not data:
+            raise QimaoError(f"插图未能下载，无法写入 TXT：{url[:120]}")
+        self._count += 1
+        name = f"插图_{self._count:04d}.{image_ext(data)}"
+        try:
+            with open(os.path.join(self._dir, name), "wb") as fh:
+                fh.write(data)
+        except Exception as exc:  # noqa: BLE001
+            raise QimaoError(f"插图写入失败：{exc}") from exc
+        self._named[url] = name
+        return name
+
+
+def _txt_images(text: str, writer: Optional["_ImageWriter"] = None) -> str:
+    """把正文里的插图标记转成 TXT 可读引用。
+
+    - 有 writer（文库8）：图片已落地到本地目录，引用本地文件名；
+    - 无 writer：转成原始链接文字（仅非文库8兼容路径，实际不会有该标记）。
+    """
     if not text or "[[WENKU8IMG:" not in text:
         return text
     from .wenku8_core.wenku8_volumes import IMG_MARK_RE
+    if writer is not None:
+        return IMG_MARK_RE.sub(
+            lambda m: f"[插图: {writer.write(str(m.group(1) or '').strip())}]", text)
     return IMG_MARK_RE.sub(lambda m: f"[插图: {m.group(1)}]", text)
 
 
@@ -840,6 +887,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             # 分章 txt：每章一个文件
             book_dir = os.path.join(save_path, out_name)
             os.makedirs(book_dir, exist_ok=True)
+            _txt_writer = _ImageWriter(
+                source if getattr(source, "get_image", None) else None,
+                os.path.join(book_dir, "插图"),
+            )
             for i, ch in enumerate(catalog):
                 text = _chapter_text(i, ch)
                 if not text:
@@ -860,7 +911,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             str(ch.get("vol") or ""), str(ch.get("sub") or "")) if p.strip()]
                         if bits:
                             hdr = " › ".join(bits) + "\n\n"
-                    f.write(f"{hdr}{ch['title']}\n\n{_txt_images(text)}\n")
+                    f.write(f"{hdr}{ch['title']}\n\n{_txt_images(text, _txt_writer)}\n")
                 chapters_written += 1
                 report(min(99, 40 + int((i + 1) / len(catalog) * 60)))
             result_path = book_dir
@@ -1173,6 +1224,10 @@ def build_txt(book_id: str, save_path: str, fmt: str,
         else:
             # 单 txt 文件：按顺序写入所有章节（同样先写 .part 再替换）
             result_path = os.path.join(save_path, f"{out_name}.txt")
+            _txt_writer = _ImageWriter(
+                source if getattr(source, "get_image", None) else None,
+                os.path.join(save_path, f"{out_name}_插图"),
+            )
             _tmp = result_path + ".part"
             try:
                 # utf-8-sig（带 BOM）：微信读书等阅读器对纯 UTF-8 无 BOM 的中文
@@ -1200,7 +1255,7 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                         heads = ""
                         if _hierarchy and txt_heading_lines is not None:
                             heads = txt_heading_lines(catalog, i, prev_ch)
-                        f.write(f"{heads}\n\n{ch['title']}\n\n{_txt_images(text)}\n")
+                        f.write(f"{heads}\n\n{ch['title']}\n\n{_txt_images(text, _txt_writer)}\n")
                         prev_ch = ch
                         chapters_written += 1
                         # 渲染阶段封顶 99：最终校验通过后才允许 report(100)

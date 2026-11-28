@@ -146,7 +146,26 @@ def test_render_body_without_image_support_unchanged():
     assert counter[0] == 0
 
 
-def test_failed_image_does_not_break_render():
+def test_failed_image_raises_in_strict_mode():
+    """严格模式：文库8书源缺图必须抛错，绝不静默出无图书。"""
+    import pytest
+    from ebooklib import epub
+
+    class _StrictSource(_FakeSource):
+        source_key = "wenku8"  # 触发严格模式
+
+    book = epub.EpubBook()
+    counter = [0]
+    fails = []
+    with pytest.raises(C.QimaoError):
+        C._render_body(
+            "[[WENKU8IMG:https://img.wenku8.com/missing.jpg]]",
+            _StrictSource(with_images=False), book, epub, False, counter, fails,
+        )
+
+
+def test_failed_image_non_wenku8_unchanged():
+    """非文库8书源：缺图仍走老的兜底（不影响番茄/七猫）。"""
     from ebooklib import epub
     book = epub.EpubBook()
     counter = [0]
@@ -156,4 +175,119 @@ def test_failed_image_does_not_break_render():
         _FakeSource(with_images=False), book, epub, False, counter, fails,
     )
     assert fails == ["https://img.wenku8.com/missing.jpg"]
-    assert "<img" not in out  # 失败图不写入空 <img>，但整章照常渲染
+    assert "<img" not in out
+
+
+# ---------- 严格模式：所有图必须下载/落地，缺图判失败 ----------
+
+def test_download_image_retries_until_success(monkeypatch):
+    """单张图首两次失败、第三次成功：必须重试到成功，不静默放弃。"""
+    import gui.wenku8_core.wenku8_volumes as V
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __init__(self, ok):
+            self.content = (b"\xff\xd8\xff\xe0JFIF" if ok
+                            else b"<html>403</html>")
+
+    def fake_get(url, timeout=None, headers=None):
+        calls["n"] += 1
+        return _Resp(calls["n"] >= 3)
+
+    import requests
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(V.time, "sleep", lambda *_: None) if hasattr(V, "time") else None
+    # 模块内是 `import time as _time`，patch 其 sleep 加速
+    import time
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    data = V.download_image("https://img.wenku8.com/a.jpg", attempts=5)
+    assert data.startswith(b"\xff\xd8\xff")
+    assert calls["n"] == 3, f"应重试到第 3 次成功，实际 {calls['n']} 次"
+
+
+def test_download_image_all_fail_returns_empty(monkeypatch):
+    """全部失败才返回空，由上层判失败。"""
+    import gui.wenku8_core.wenku8_volumes as V
+    import requests
+
+    def fake_get(url, timeout=None, headers=None):
+        class _R:
+            content = b"<html>403 Forbidden</html>"
+        return _R()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    import time
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    assert V.download_image("https://img.wenku8.com/a.jpg", attempts=3) == b""
+
+
+def test_missing_images_detects_undownloaded():
+    """missing_images 必须准确报出没下下来的图。"""
+    from plugins.wenku8_downloader_plugin import Wenku8BookSource
+    s = Wenku8BookSource()
+    s._image_cache["https://img.wenku8.com/a.jpg"] = b"\xff\xd8\xff"
+    texts = [
+        "正文[[WENKU8IMG:https://img.wenku8.com/a.jpg]]",
+        "正文[[WENKU8IMG:https://img.wenku8.com/b.jpg]]",
+        "正文[[WENKU8IMG:https://img.wenku8.com/c.jpg]]",
+    ]
+    missing = s.missing_images(texts)
+    assert missing == ["https://img.wenku8.com/b.jpg", "https://img.wenku8.com/c.jpg"]
+
+
+def test_cache_images_retries_and_records_missing(monkeypatch):
+    """逐章下载里的多轮补抓：首轮失败次轮成功；仍失败要记入 _image_missing。"""
+    from plugins.wenku8_downloader_plugin import Wenku8BookSource
+    s = Wenku8BookSource()
+
+    import gui.wenku8_core.wenku8_volumes as V
+    calls = {"a": 0, "b": 0}
+
+    def fake_dl(url, timeout=15):
+        key = "a" if url.endswith("a.jpg") else "b"
+        calls[key] += 1
+        if key == "a":
+            return b"\xff\xd8\xff" if calls[key] >= 2 else b""  # 第2轮成功
+        return b""  # b 永远失败
+
+    monkeypatch.setattr(V, "download_image", fake_dl)
+    import time
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    s._cache_images("[[WENKU8IMG:https://x/a.jpg]][[WENKU8IMG:https://x/b.jpg]]", rounds=3)
+    assert s._image_cache.get("https://x/a.jpg")  # 补抓成功
+    assert "https://x/b.jpg" in s.missing_images()  # 记入失败
+
+
+def test_txt_writer_writes_images_to_disk(tmp_path):
+    """TXT 插图必须真实落地到本地文件，不退化成网络链接文字。"""
+    from gui.qimao_core import _ImageWriter, _txt_images, QimaoError
+    import pytest
+
+    class _Src:
+        source_key = "wenku8"
+
+        def get_image(self, url):
+            return b"\xff\xd8\xff\xe0JFIFDATA"
+
+    imgdir = str(tmp_path / "imgs")
+    w = _ImageWriter(_Src(), imgdir)
+    text = "正文[[WENKU8IMG:https://img.wenku8.com/a.jpg]]结尾"
+    out = _txt_images(text, w)
+    assert "[插图: 插图_0001.jpg]" in out
+    assert "https://" not in out
+    assert (tmp_path / "imgs" / "插图_0001.jpg").exists(), "图片必须真实写入磁盘"
+
+
+def test_txt_writer_missing_image_raises(tmp_path):
+    """TXT 严格模式：图片没下下来必须抛错，不写链接兜底。"""
+    from gui.qimao_core import _ImageWriter, _txt_images, QimaoError
+    import pytest
+
+    class _Src:
+        def get_image(self, url):
+            return b""  # 缺图
+
+    w = _ImageWriter(_Src(), str(tmp_path / "imgs"))
+    with pytest.raises(QimaoError):
+        _txt_images("[[WENKU8IMG:https://x/a.jpg]]", w)

@@ -25,6 +25,9 @@ IMG_MARK_RE = re.compile(r"\[\[WENKU8IMG:([^\]]+)\]\]")
 # 文库8图片服务器要求浏览器头，伪装 Edge；与 cover_helper 保持一致
 IMAGE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0")
+# 备用 UA：主 UA 连续失败时轮换，规避单一指纹被限流
+IMAGE_UA_ALT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
 
 
 def extract_image_urls(text: str) -> List[str]:
@@ -49,24 +52,57 @@ def is_image_bytes(raw: bytes) -> bool:
             (raw.startswith(b"RIFF") and raw[8:12] == b"WEBP"))  # WebP
 
 
-def download_image(url: str, timeout: int = 15) -> bytes:
-    """下载一张文库8插图，返回图片字节；失败返回 b''。"""
-    if not str(url or "").startswith("http"):
+def download_image(url: str, timeout: int = 15, attempts: int = 5) -> bytes:
+    """下载一张文库8插图，返回图片字节；全部尝试失败才返回 b''。
+
+    严格实现：多轮重试 + Referer/UA 轮换，单轮拿到真实图片魔数即返回。
+    返回的 b'' 代表「这张图确实没下下来」，由调用方决定是否判下载失败——
+    本函数绝不静默吞掉错误，也不把 403/404 的错误页当图片返回。
+    """
+    url = str(url or "").strip()
+    if not url.startswith("http"):
         return b""
     try:
-        import requests
         from urllib.parse import urlparse
         host = urlparse(url).netloc or "www.wenku8.cc"
-        headers = {
-            "User-Agent": IMAGE_UA,
-            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-            "Referer": f"https://{host}/",
-        }
-        resp = requests.get(url, timeout=timeout, headers=headers)
-        raw = resp.content or b""
-        return raw if is_image_bytes(raw) else b""
     except Exception:  # noqa: BLE001
-        return b""
+        host = "www.wenku8.cc"
+    import time as _time
+    for attempt in range(max(1, int(attempts))):
+        try:
+            import requests
+            # 轮换 Referer：图片域根 / 官网根目录 / 正文页目录，覆盖不同防盗链策略
+            referers = [
+                f"https://{host}/",
+                "https://www.wenku8.cc/",
+                "https://www.wenku8.com/",
+            ]
+            headers = {
+                "User-Agent": IMAGE_UA if attempt % 2 == 0 else IMAGE_UA_ALT,
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Referer": referers[attempt % len(referers)],
+            }
+            resp = requests.get(url, timeout=timeout, headers=headers)
+            raw = resp.content or b""
+            if is_image_bytes(raw):
+                return raw
+        except Exception:  # noqa: BLE001
+            pass
+        if attempt < max(1, int(attempts)) - 1:
+            _time.sleep(0.3 * (attempt + 1))  # 递增退避，避免瞬时打爆图床
+    return b""
+
+
+def image_ext(data: bytes) -> str:
+    """按图片字节判定扩展名（供 TXT 落地命名复用，与 EPUB 内嵌一致）。"""
+    if data.startswith(b"\x89PNG"):
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if len(data) >= 12 and data[8:12] == b"WEBP":
+        return "webp"
+    return "jpg"
 
 
 def sanitize_vol_name(s: Any) -> str:
