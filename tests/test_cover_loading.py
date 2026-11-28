@@ -116,3 +116,75 @@ def test_detail_pane_has_cover_label():
     assert "_show_detail_cover" in src
     # 详情页要调用封面展示逻辑
     assert "self._show_detail_cover(" in src
+
+
+def test_cover_cloak_fallback_when_bare_request_blocked(monkeypatch):
+    """裸请求被图床按指纹拦掉时，httpcloak 指纹兜底救回真图（用户本机场景）。"""
+    import io as _io
+    from PIL import Image as _Image
+    from gui import cover_helper as CH
+
+    buf = _io.BytesIO()
+    _Image.new("RGB", (217, 310), (120, 80, 160)).save(buf, "JPEG")
+    real = buf.getvalue()
+
+    class _Resp:
+        content = b"<html><h1>Just a moment...</h1></html>"
+
+    monkeypatch.setattr("requests.get", lambda url, **kw: _Resp())
+    called = {"cloak": 0}
+
+    def fake_cloak(url, timeout, referer=""):
+        called["cloak"] += 1
+        return real
+
+    monkeypatch.setattr(CH, "_fetch_cover_cloak", fake_cloak)
+    raw = CH.fetch_cover_bytes("https://img.wenku8.com/image/2/2580/2580s.jpg")
+    assert raw == real
+    assert called["cloak"] == 1
+
+
+def test_cover_bare_success_no_cloak_overhead(monkeypatch):
+    """裸请求直接拿到真图时不调用指纹层（正常路径零开销）。"""
+    import io as _io
+    from PIL import Image as _Image
+    from gui import cover_helper as CH
+
+    buf = _io.BytesIO()
+    _Image.new("RGB", (217, 310), (120, 80, 160)).save(buf, "JPEG")
+    real = buf.getvalue()
+
+    class _Resp:
+        content = real
+
+    monkeypatch.setattr("requests.get", lambda url, **kw: _Resp())
+
+    def boom(*a, **k):
+        raise AssertionError("裸请求成功时不应调用指纹层")
+
+    monkeypatch.setattr(CH, "_fetch_cover_cloak", boom)
+    assert CH.fetch_cover_bytes("https://img.wenku8.com/image/2/2580/2580s.jpg") == real
+
+
+def test_fetch_cover_smart_uses_cache_only_no_network(monkeypatch):
+    """UI 热路径只读本地缓存的大图，不联网抓 Bangumi（连不上也不阻塞）。"""
+    from gui import cover_helper as CH
+
+    monkeypatch.setattr(
+        "gui.wenku8_core.wenku8_official_cover.cached_official_cover",
+        lambda aid: b"",
+    )
+    called = {"n": 0}
+
+    def fake_fetch_official(*a, **k):
+        called["n"] += 1
+        return b""
+
+    # 若 UI 路径还调用联网入口，这里会被触发
+    monkeypatch.setattr(
+        "gui.wenku8_core.wenku8_official_cover.fetch_official_cover",
+        fake_fetch_official,
+    )
+    monkeypatch.setattr(CH, "fetch_cover_bytes", lambda url, timeout=10: b"")
+    CH.fetch_cover_smart("https://img.wenku8.com/image/2/2580/2580s.jpg", "天使")
+    assert called["n"] == 0, "UI 热路径不应联网抓 Bangumi"

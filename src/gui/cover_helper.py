@@ -55,11 +55,54 @@ def _is_image_bytes(content: bytes) -> bool:
     )
 
 
+def _fetch_cover_cloak(url: str, timeout: int, referer: str = "") -> bytes:
+    """httpcloak 浏览器指纹兜底取封面（每线程一个会话，失败返回 b''）。
+
+    根因修复：img.wenku8.com 等图床会按 TLS/HTTP2 指纹拦截裸 requests，
+    只加 UA/Referer 头不够——沙箱出口能过、用户本机被拦，表现就是"全部书
+    封面变首字占位图"。下载正文/插图链路早已走 httpcloak，唯独封面链路漏了。
+    这里只借用浏览器指纹绕过 CDN 拦截，不碰任何登录态。会话放 threading.local
+    长期复用（httpcloak 非线程安全，绝不能跨线程共享），与下载链路模型一致。
+    仅在裸 requests 失败后才调用，正常情况零开销。
+    """
+    import threading
+    _tls = getattr(_fetch_cover_cloak, "_tls", None)
+    if _tls is None:
+        _tls = threading.local()
+        _fetch_cover_cloak._tls = _tls
+    sess = getattr(_tls, "session", None)
+    for attempt in range(2):
+        try:
+            if sess is None:
+                from .wenku8_core.wenku8_http import CloakSession
+                sess = CloakSession(timeout=timeout)
+                _tls.session = sess
+            resp = sess.get(url, timeout=timeout, headers={
+                "User-Agent": _COVER_UA,
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*:q=0.8",
+                "Referer": referer or "https://www.wenku8.cc/",
+            })
+            raw = resp.content or b""
+            if _is_image_bytes(raw):
+                return raw
+        except Exception:  # noqa: BLE001
+            sess = None
+            try:
+                delattr(_tls, "session")
+            except Exception:  # noqa: BLE001
+                pass
+        if attempt < 1:
+            import time as _time
+            _time.sleep(0.4)
+    return b""
+
+
 def fetch_cover_bytes(url: str, timeout: int = 10) -> bytes:
-    """带浏览器头下载封面字节，含魔数校验；失败返回 b""。
+    """带浏览器头下载封面字节，含魔数校验；失败再走 httpcloak 指纹兜底。
 
     这是所有页面封面加载的统一入口：搜索卡片、详情页、历史/队列/封面墙
-    都复用它，避免各处再写裸 requests.get 导致 403。
+    都复用它。裸 requests 被图床按 TLS 指纹拦截时（用户本机被拦、沙箱能过的
+    典型场景），指纹层救回真实图片，彻底消除"全部书封面变占位图"。
     """
     import requests
     if not url or not url.lower().startswith(("http://", "https://")):
@@ -70,35 +113,42 @@ def fetch_cover_bytes(url: str, timeout: int = 10) -> bytes:
         # 站点 Referer：让 CDN 认为是站内图片请求
         headers["Referer"] = f"https://{host}/"
     except Exception:  # noqa: BLE001
-        pass
+        host = "www.wenku8.cc"
     try:
         resp = requests.get(url, timeout=timeout, headers=headers)
         content = resp.content or b""
-        return content if _is_image_bytes(content) else b""
+        if _is_image_bytes(content):
+            return content
     except Exception:  # noqa: BLE001
-        return b""
+        pass
+    # 指纹兜底：裸请求被 CDN 按 TLS 指纹拦掉时救回（正常情况不走到这里）
+    return _fetch_cover_cloak(url, timeout, headers.get("Referer", ""))
 
 
 def fetch_cover_smart(url: str, title: str = "", timeout: int = 10) -> bytes:
-    """封面统一智能入口：文库8优先官方正版大图，其余书源走原通道。
+    """封面统一智能入口：文库8优先本地缓存的大图，否则走带指纹兜底的小图。
 
     优先级：
     1. 本地已有 EPUB 内嵌封面由调用方处理（本函数只管联网/缓存部分）；
-    2. 文库8图床 URL → 先查/取 Bangumi 官方大图缓存（≈800×1200），
-       失败回退文库8小图（≈217×310，本身就是官方日版封面）；
-    3. 其他书源 → 原样走带浏览器头的直链下载。
+    2. 文库8图床 URL → 只读本地已缓存的 Bangumi 官方大图（≈800×1200，
+       **零网络**）；缓存未命中就直接用文库8小图（≈217×310，本身是官方
+       日版封面），绝不因 Bangumi 连不上而阻塞封面加载；
+    3. 其他书源 → 原样走带浏览器头 + 指纹兜底的直链下载。
 
+    联网抓取 Bangumi 大图只在用户主动运行检测脚本时发生，不进入 UI 热路径——
+    否则国内网络连不上 api.bgm.tv 时每张封面都要白等超时，反而更慢。
     全程吞异常，绝不把网络错误抛到加载线程之外。
     """
     if not url:
         return b""
     try:
         from .wenku8_core.wenku8_official_cover import (
-            extract_aid, fetch_official_cover,
+            cached_official_cover, extract_aid,
         )
         aid = extract_aid(url)
         if "wenku8" in url.lower() and aid:
-            official = fetch_official_cover(aid, title, timeout=timeout)
+            # 只读本地缓存，零网络；不在这里联网抓 Bangumi
+            official = cached_official_cover(aid)
             if official and _is_image_bytes(official):
                 return official
     except Exception:  # noqa: BLE001
