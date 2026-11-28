@@ -33,6 +33,13 @@ from Crypto.Util.Padding import unpad
 # 七猫接口签名（全项目唯一实现，与 SLQimao 内核逐位等价）
 from . import qimao_sign as _qimao_sign
 
+# 诊断日志：失败汇总写入 ~/.qimao_gui/logs/，让「99 章失败」可自证原因。
+# 日志不可用时静默降级为 None，绝不影响下载主流程（含离线单测场景）。
+try:  # noqa: BLE001
+    from .logutil import logger as _diag_logger
+except Exception:  # noqa: BLE001
+    _diag_logger = None
+
 # 字体资源目录（随软件分发的内置字体，OFL 授权；兼容源码运行与 PyInstaller 打包）
 from .resource_path import resource_path as _resource_path
 _FONT_ASSETS_DIR = _resource_path("assets", "fonts")
@@ -1347,10 +1354,52 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                               ignore_errors=True)
             except Exception:  # noqa: BLE001
                 pass
+            # 失败汇总写诊断日志：与 wenku8_reader 里 tag=wenku8.chapter_fail 的逐章明细
+            # 落在同一份按天日志里。下次再看「99 章失败」可直接判定是限流(429/拦截页)、
+            # 空页还是连接中断，不再靠猜——这是终止「越修越乱」循环的关键证据。
+            if _diag_logger is not None:
+                try:
+                    _diag_logger.error(
+                        f"下载失败汇总 title={title!r} "
+                        f"source={getattr(source, 'source_key', '?')} "
+                        f"total={len(catalog)} failed={chapters_failed} "
+                        f"fail_ratio={_fail_ratio:.1%} strict={_strict} "
+                        f"images_failed={len(_image_failures)} "
+                        f"→ 逐章失败明细见同日志 tag=wenku8.chapter_fail",
+                        tag="download.incomplete")
+                except Exception:  # noqa: BLE001 - 日志绝不影响下载
+                    pass
+            # 诊断摘要直接嵌进错误文案：用户截个图就能看清根因（限流/拦截页/空页），
+            # 不必去翻日志文件——这是「不要让用户找文件夹」诉求的落地。
+            # 摘要取自内存环形缓冲里同一次下载的逐章失败明细，纯统计、不改抓取逻辑。
+            _diag_hint = ""
+            if _diag_logger is not None and _strict:
+                try:
+                    _fails = [r for r in _diag_logger.recent(300)
+                              if r.get("tag") == "wenku8.chapter_fail"]
+                    if _fails:
+                        _codes: Dict[str, int] = {}
+                        _blocked = 0
+                        for _r in _fails:
+                            _m = re.search(r"http=(\d+)", _r.get("message", ""))
+                            if _m:
+                                _codes[_m.group(1)] = _codes.get(_m.group(1), 0) + 1
+                            if "block=True" in _r.get("message", ""):
+                                _blocked += 1
+                        _parts = [f"HTTP {c}×{n}" for c, n in
+                                  sorted(_codes.items(), key=lambda x: -x[1])[:3]]
+                        if _blocked:
+                            _parts.append(f"拦截页 {_blocked} 次")
+                        if _parts:
+                            _diag_hint = "近因：" + "、".join(_parts) + "。"
+                except Exception:  # noqa: BLE001 - 摘要只为提示，绝不影响失败抛出
+                    pass
             raise QimaoError(
                 f"下载不完整：{len(catalog)} 章中有 {chapters_failed} 章正文经多轮重试仍未取到"
                 f"（网络波动或站点拦截）。已丢弃残缺文件；"
-                f"若反复失败可降低并发线程数或检查文库8登录态。"
+                f"请在设置里把「文库8并发线程数」降到 2-4 后重试。"
+                + (_diag_hint or "")
+                + "若仍失败，请把 ~/.qimao_gui/logs/ 下当天日志发给开发者。"
             )
         report(100)
 

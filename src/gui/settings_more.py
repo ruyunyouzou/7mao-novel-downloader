@@ -16,7 +16,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QComboBox,
-    QCheckBox, QFrame, QMessageBox, QColorDialog, QDialog, QScrollArea,
+    QCheckBox, QFrame, QMessageBox, QColorDialog, QDialog, QScrollArea, QSpinBox,
 )
 
 from .i18n import tr
@@ -620,6 +620,23 @@ def build_settings_more(win) -> QWidget:
                                    str(win.download_method_combo.currentData() or "builtin")))
     method_row.addWidget(win.download_method_combo)
     dl.addLayout(method_row)
+
+    # 文库8并发线程数（原来只存在于代码里的隐藏 key，用户无法调整；
+    # 遇到「大量章节经多轮重试仍未取到」时降并发是首选自救手段，必须暴露出来）
+    wk_row = QHBoxLayout()
+    wk_row.addWidget(_hint(tr("more.wenku8_workers")))
+    win.wenku8_workers_spin = QSpinBox()
+    win.wenku8_workers_spin.setRange(1, 16)
+    win.wenku8_workers_spin.setToolTip(tr("more.wenku8_workers_tip"))
+    win.wenku8_workers_spin.setValue(int(
+        store.settings_get("wenku8_concurrent_workers", 8) or 8))
+    win.wenku8_workers_spin.valueChanged.connect(
+        lambda v: store.settings_set("wenku8_concurrent_workers", int(v)))
+    wk_row.addWidget(win.wenku8_workers_spin)
+    dl.addLayout(wk_row)
+    wk_tip = _hint(tr("more.wenku8_workers_note"))
+    wk_tip.setWordWrap(True)
+    dl.addWidget(wk_tip)
 
     # 下载完成通知
     win.notify_check = QCheckBox(tr("more.notify"))

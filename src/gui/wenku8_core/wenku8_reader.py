@@ -14,6 +14,11 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+try:  # 诊断日志：失败原因可观测，绝不因日志不可用影响抓取
+    from ..logutil import logger as _diag_logger
+except Exception:  # noqa: BLE001 - 核心层/离线单测可能没有 GUI 包
+    _diag_logger = None
+
 from .wenku8_auth import make_session, get_base_url
 
 BASE = "https://www.wenku8.cc"  # 兼容旧引用；实际请求统一走 _base()
@@ -640,6 +645,20 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
     if node is None:
         node = soup.select_one("div.contentbox") or soup.select_one("div.content")
     if node is None:
+        # 失败可观测：把 URL / HTTP 状态 / 是否拦截页 / 响应长度写进诊断日志。
+        # 这样「99 章失败」能直接从日志判定是限流(429/拦截页)、空页还是其它，
+        # 不再靠猜——这是终止「越修越乱」循环的关键证据。
+        if _diag_logger is not None:
+            try:
+                status = int(getattr(resp, "status_code", 0) or 0) if resp is not None else 0
+                blocked = bool(resp is not None and _looks_like_block_page(resp))
+                size = len(getattr(resp, "content", b"") or b"") if resp is not None else 0
+                _diag_logger.warning(
+                    f"正文未取到 url={url} http={status} block={blocked} "
+                    f"bytes={size} attempts={attempts}",
+                    tag="wenku8.chapter_fail")
+            except Exception:  # noqa: BLE001 - 日志绝不影响抓取
+                pass
         return ""
 
     # 去掉脚本/样式与站点版权声明行
