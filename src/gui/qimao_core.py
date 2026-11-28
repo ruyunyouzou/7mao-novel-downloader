@@ -646,9 +646,6 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
         return html.escape(raw).replace("\n", "<br/>")
 
     from .wenku8_core.wenku8_volumes import IMG_MARK_RE
-    # 文库8严格模式：插图必须全部下载并内嵌，缺图直接抛异常终止出书，
-    # 绝不静默丢掉 <img> 后照常出「没图」的书（用户明确要求所有图都要下载）。
-    strict = str(getattr(source, "source_key", "") or "") == "wenku8"
     parts: List[str] = []
     pos = 0
     for m in IMG_MARK_RE.finditer(raw):
@@ -657,9 +654,6 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
             parts.append(_hl_or_escape(seg, colorize))
         url = str(m.group(1) or "").strip()
         img_bytes = get_image(url) or b""
-        if strict and not img_bytes:
-            image_fail.append(url)
-            raise QimaoError(f"插图未能下载，拒绝生成缺图 EPUB：{url[:120]}")
         counter[0] += 1
         item = _w8_image_item(book, epub, img_bytes, counter[0])
         if item is not None:
@@ -668,7 +662,13 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
                 'style="display:block;margin:1em auto;max-width:100%;"/>'
             )
         else:
+            # 图没下下来：留一个明显占位，读者一眼能看到「这里缺图」，
+            # 而不是静默丢掉让人以为书本来就没图。书照常生成（不阻塞下载成功）。
             image_fail.append(url)
+            parts.append(
+                '<p style="color:#999;font-size:0.8em;text-align:center;'
+                'margin:1.5em 0;">［插图下载失败，可重新下载本书重试］</p>'
+            )
         pos = m.end()
     tail = raw[pos:]
     if tail:
@@ -687,7 +687,8 @@ class _ImageWriter:
     """把文库8插图字节落地到磁盘目录，供 TXT 引用（TXT 无法内嵌图片）。
 
     只在有 get_image 的文库8书源时使用；图片全部来自预取缓存，不在写文件阶段发网络。
-    严格模式：图片字节缺失时直接抛错，绝不退化成「网络链接文字」这种兜底。
+    下载阶段已多轮尽力下载；极少数仍缺的图不阻塞出书——留可见占位并记入 failed，
+    让用户知道哪张图没下来，同时书能正常下载成功。
     """
 
     def __init__(self, source, out_dir: str):
@@ -695,32 +696,44 @@ class _ImageWriter:
         self._dir = out_dir
         self._count = 0
         self._named: dict = {}
+        self.failed: list = []  # 未能落地的插图 URL
         if self._get is not None:
             os.makedirs(self._dir, exist_ok=True)
 
     def write(self, url: str) -> str:
-        """把一张图写入目录，返回相对文件名；缺图抛 QimaoError。"""
+        """把一张图写入目录，返回相对文件名；缺图返回占位文字并记入 failed。"""
         from .wenku8_core.wenku8_volumes import image_ext
         if url in self._named:
             return self._named[url]
         data = self._get(url) if self._get is not None else b""
         if not data:
-            raise QimaoError(f"插图未能下载，无法写入 TXT：{url[:120]}")
+            if url not in self.failed:
+                self.failed.append(url)
+            return "插图下载失败（可重新下载本书重试）"
         self._count += 1
         name = f"插图_{self._count:04d}.{image_ext(data)}"
         try:
             with open(os.path.join(self._dir, name), "wb") as fh:
                 fh.write(data)
-        except Exception as exc:  # noqa: BLE001
-            raise QimaoError(f"插图写入失败：{exc}") from exc
+        except Exception:  # noqa: BLE001
+            if url not in self.failed:
+                self.failed.append(url)
+            return "插图写入失败（可重新下载本书重试）"
         self._named[url] = name
         return name
+
+    def reference(self, url: str) -> str:
+        """返回正文里对这张图的完整文字引用（成功=本地文件名，失败=占位说明）。"""
+        name = self.write(url)
+        if name.startswith("插图下载失败") or name.startswith("插图写入失败"):
+            return f"［{name}］"
+        return f"[插图: {name}]"
 
 
 def _txt_images(text: str, writer: Optional["_ImageWriter"] = None) -> str:
     """把正文里的插图标记转成 TXT 可读引用。
 
-    - 有 writer（文库8）：图片已落地到本地目录，引用本地文件名；
+    - 有 writer（文库8）：图片已落地到本地目录，引用本地文件名；缺图留占位说明；
     - 无 writer：转成原始链接文字（仅非文库8兼容路径，实际不会有该标记）。
     """
     if not text or "[[WENKU8IMG:" not in text:
@@ -728,7 +741,7 @@ def _txt_images(text: str, writer: Optional["_ImageWriter"] = None) -> str:
     from .wenku8_core.wenku8_volumes import IMG_MARK_RE
     if writer is not None:
         return IMG_MARK_RE.sub(
-            lambda m: f"[插图: {writer.write(str(m.group(1) or '').strip())}]", text)
+            lambda m: writer.reference(str(m.group(1) or "").strip()), text)
     return IMG_MARK_RE.sub(lambda m: f"[插图: {m.group(1)}]", text)
 
 

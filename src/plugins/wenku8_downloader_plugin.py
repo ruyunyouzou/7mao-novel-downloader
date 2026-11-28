@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gui.plugin.base import (
     Plugin, PluginMeta, DownloaderBase, DownloadResult, DownloadCancelled,
 )
-from gui.qimao_core import BookSource, build_txt, QimaoError
+from gui.qimao_core import BookSource, build_txt
 
 
 class Wenku8BookSource(BookSource):
@@ -405,16 +405,9 @@ class Wenku8Downloader(DownloaderBase):
                 success=False, message=f"文库8分卷导出失败（预取正文）: {exc}",
             )
 
-        # 插图严格校验：任何一张图没下下来都不出书（用户要求「所有图必须下载」）。
+        # 插图：预取阶段已多轮尽力下载。极少数确实下不下来的图不阻塞出书
+        # （用户要求「书必须能下载成功」），只在结果里计数提示，正文留可见占位。
         missing_imgs = source.missing_images(_texts)
-        if missing_imgs:
-            return DownloadResult(
-                book_id=str(book_id), title=title or f"book_{book_id}",
-                success=False,
-                message=(f"文库8下载失败：有 {len(missing_imgs)} 张插图未能下载，"
-                         f"为保证「所有图都下载」，本次不出书。示例："
-                         f"{missing_imgs[0][:120]}"),
-            )
 
         volumes = group_volumes(catalog)
         chosen = select_volumes(volumes, mode, selected_volumes)
@@ -489,6 +482,8 @@ class Wenku8Downloader(DownloaderBase):
         msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8）"
         if failed:
             msg += f"；{len(failed)} 卷失败（" + "；".join(failed[:2]) + "）"
+        if missing_imgs:
+            msg += f"；注意：{len(missing_imgs)} 张插图未能下载（正文已标注占位）"
         return DownloadResult(
             book_id=str(book_id),
             title=title or str(detail.get("title") or f"book_{book_id}"),
@@ -504,6 +499,7 @@ class Wenku8Downloader(DownloaderBase):
                 "volume_mode": mode,
                 "volumes": written,
                 "volume_failures": failed,
+                "images_failed": len(missing_imgs),
                 "author": str(detail.get("author") or kwargs.get("author", "") or ""),
             },
         )
@@ -572,21 +568,9 @@ class Wenku8Downloader(DownloaderBase):
                 smart_art=bool(smart_art),
                 source=source,
             )
-            # 插图严格校验：build_txt 已经在预取阶段集中下载了所有图；
-            # 这里只要还有图没下下来，就判整本失败并清理已写出的文件，
-            # 绝不静默出「没图/缺图」的书（用户明确要求「所有图必须下载」）。
+            # 插图：预取阶段已多轮尽力下载。极少数确实下不下来的图不阻塞出书
+            # （用户要求「书必须能下载成功」），只在结果里计数提示，正文留可见占位。
             missing_imgs = source.missing_images()
-            if missing_imgs:
-                _fp = result.get("file_path", "")
-                try:
-                    if _fp and os.path.isfile(_fp):
-                        os.remove(_fp)
-                except Exception:  # noqa: BLE001
-                    pass
-                raise QimaoError(
-                    f"有 {len(missing_imgs)} 张插图未能下载，"
-                    f"为保证「所有图都下载」，本次不出书。示例：{missing_imgs[0][:120]}"
-                )
         except DownloadCancelled:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -607,12 +591,15 @@ class Wenku8Downloader(DownloaderBase):
         start, end = result.get("start_chapter", 1), result.get("end_chapter", result["total"])
         scoped = (start > 1 or end < result.get("total_chapters", 0))
         scope_text = f"第{start}-{end}章" if scoped else "全本"
+        _img_note = (f"；注意：{len(missing_imgs)} 张插图未下载（正文已标注占位）"
+                     if missing_imgs else "")
         return DownloadResult(
             book_id=str(book_id),
             title=result["title"],
             success=True,
             file_path=result["file_path"],
-            message=f"已下载{scope_text} {result['chapters']}/{result['total']} 章（{fmt_label}·文库8）",
+            message=(f"已下载{scope_text} {result['chapters']}/{result['total']} 章"
+                     f"（{fmt_label}·文库8）{_img_note}"),
             extra={
                 "chapters": result["chapters"],
                 "total": result["total"],
@@ -621,6 +608,7 @@ class Wenku8Downloader(DownloaderBase):
                 "start_chapter": start,
                 "end_chapter": end,
                 "source": "wenku8",
+                "images_failed": len(missing_imgs),
                 # 作者回填：队列卡片显示 book.author，可能为空；EPUB 内作者
                 # 来自详情。这里把详情作者带出去，由队列完成时回填任务。
                 "author": str(result.get("author") or ""),

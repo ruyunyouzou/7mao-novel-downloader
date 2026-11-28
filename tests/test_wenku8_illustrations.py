@@ -146,22 +146,23 @@ def test_render_body_without_image_support_unchanged():
     assert counter[0] == 0
 
 
-def test_failed_image_raises_in_strict_mode():
-    """严格模式：文库8书源缺图必须抛错，绝不静默出无图书。"""
-    import pytest
+def test_failed_image_leaves_visible_placeholder():
+    """文库8缺图：书照常生成（不抛错），但留可见占位并计入失败清单。"""
     from ebooklib import epub
 
     class _StrictSource(_FakeSource):
-        source_key = "wenku8"  # 触发严格模式
+        source_key = "wenku8"
 
     book = epub.EpubBook()
     counter = [0]
     fails = []
-    with pytest.raises(C.QimaoError):
-        C._render_body(
-            "[[WENKU8IMG:https://img.wenku8.com/missing.jpg]]",
-            _StrictSource(with_images=False), book, epub, False, counter, fails,
-        )
+    out = C._render_body(
+        "[[WENKU8IMG:https://img.wenku8.com/missing.jpg]]",
+        _StrictSource(with_images=False), book, epub, False, counter, fails,
+    )
+    assert fails == ["https://img.wenku8.com/missing.jpg"]
+    assert "<img" not in out
+    assert "插图下载失败" in out  # 可见占位，读者一眼能看到缺图
 
 
 def test_failed_image_non_wenku8_unchanged():
@@ -178,7 +179,7 @@ def test_failed_image_non_wenku8_unchanged():
     assert "<img" not in out
 
 
-# ---------- 严格模式：所有图必须下载/落地，缺图判失败 ----------
+# ---------- 图片下载：多轮重试尽力全下 + 缺图可见占位（不阻塞出书） ----------
 
 def test_download_image_retries_until_success(monkeypatch):
     """单张图首两次失败、第三次成功：必须重试到成功，不静默放弃。"""
@@ -279,15 +280,16 @@ def test_txt_writer_writes_images_to_disk(tmp_path):
     assert (tmp_path / "imgs" / "插图_0001.jpg").exists(), "图片必须真实写入磁盘"
 
 
-def test_txt_writer_missing_image_raises(tmp_path):
-    """TXT 严格模式：图片没下下来必须抛错，不写链接兜底。"""
-    from gui.qimao_core import _ImageWriter, _txt_images, QimaoError
-    import pytest
+def test_txt_writer_missing_image_leaves_placeholder(tmp_path):
+    """TXT 缺图：不抛错、书照常出，但留可见占位并记入 failed。"""
+    from gui.qimao_core import _ImageWriter, _txt_images
 
     class _Src:
         def get_image(self, url):
             return b""  # 缺图
 
     w = _ImageWriter(_Src(), str(tmp_path / "imgs"))
-    with pytest.raises(QimaoError):
-        _txt_images("[[WENKU8IMG:https://x/a.jpg]]", w)
+    out = _txt_images("[[WENKU8IMG:https://x/a.jpg]]", w)
+    assert "插图下载失败" in out
+    assert "https://" not in out  # 不退化成网络链接兜底
+    assert "https://x/a.jpg" in w.failed  # 记入失败清单
