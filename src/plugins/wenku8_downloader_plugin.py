@@ -287,7 +287,7 @@ class Wenku8BookSource(BookSource):
         self._image_missing = [u for u in self.image_urls_in(texts)
                                if u not in self._image_cache]
 
-    def _chapter_text_only(self, chapter: dict, session) -> str:
+    def _chapter_text_only(self, chapter: dict, session, attempts: int = 4) -> str:
         """只抓正文，不碰插图——全书并发预取的快通道。
 
         正文站与图床是不同主机、限流策略完全不同：正文站限流紧、图床基本
@@ -314,6 +314,7 @@ class Wenku8BookSource(BookSource):
                 url or chapter["id"], sess,
                 novel_prefix=self._prefix,
                 book_id=str(chapter.get("bid", "")),
+                attempts=attempts,
             )
         if text and ckey:
             self._text_cache[ckey] = text
@@ -364,11 +365,12 @@ class Wenku8BookSource(BookSource):
 
         state = {"done": 0}
 
-        def _grab(indices, pool):
+        def _grab(indices, pool, attempts=4):
             got = {}
             # 只抓正文；插图不在这里下载，避免正文 worker 被图床拖住。
             fmap = {
-                pool.submit(self._chapter_text_only, catalog[i], session): i
+                pool.submit(self._chapter_text_only, catalog[i], session,
+                            attempts): i
                 for i in indices
             }
             for fut in as_completed(fmap):
@@ -398,7 +400,7 @@ class Wenku8BookSource(BookSource):
         # 全量补齐留在并发阶段：渲染循环里逐章串行重试会让单章最坏等待数百秒，
         # 进度卡在 40%。但补抓过猛会触发站点限流（用户实测 34/70 章失败、
         # 耗时 263s）。改为「少轮次 + 指数退避 + 递减并发」：
-        #   - 单章内部已有 4 次指数退避重试（_get_with_retry），外层不再叠 5 轮；
+        #   - 首轮单章 4 次指数退避，rescue 轮降到 2 次（总上限 10 次而非 16 次）；
         #   - 轮间 1s→2s→4s，给站点限流窗口恢复时间；
         #   - 补抓并发逐轮减半，第一轮失败多说明被限流，主动降速而非加压。
         failed = [i for i in range(total) if not results.get(i)]
@@ -409,7 +411,10 @@ class Wenku8BookSource(BookSource):
             rescue_workers = max(2, workers // (2 ** rescue_round))
             pool2 = ThreadPoolExecutor(max_workers=rescue_workers)
             try:
-                retried = _grab(failed, pool2)
+                # rescue 轮只给 2 次机会：首轮已用 4 次，再叠 4 次×3 轮就是
+                # 单章最多 16 次请求的重试风暴（用户端 1149.8s 的主因）。
+                # 2 次足以接住瞬时抖动，且总请求降到 4+2+2+2=10。
+                retried = _grab(failed, pool2, attempts=2)
             except BaseException:
                 pool2.shutdown(wait=False, cancel_futures=True)
                 img_pool.shutdown(wait=False, cancel_futures=True)

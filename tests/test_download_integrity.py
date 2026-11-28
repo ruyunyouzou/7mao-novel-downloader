@@ -238,7 +238,11 @@ def test_chapter_fetch_uses_bounded_retry_with_validate():
         encoding="utf-8",
     ) as f:
         src = f.read()
-    assert "attempts=4, validate=_has_content" in src
+    # 首轮 attempts 默认 4（函数签名），实际请求使用传入值 + validate，
+    # rescue 轮由插件显式降到 2，避免 4×4=16 次请求的重试风暴。
+    assert "attempts: int = 4" in src
+    assert "attempts=attempts," in src
+    assert "validate=_has_content" in src
     assert "def _looks_like_block_page" in src
 
 

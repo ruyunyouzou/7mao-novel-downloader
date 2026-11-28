@@ -88,7 +88,8 @@ def test_text_cache_reused_across_volumes(monkeypatch):
     """正文只抓一次：预取全书后，逐章抓取函数不再被真实调用。"""
     calls = {"n": 0}
 
-    def fake_chapter_text(url_or_id, session=None, novel_prefix="", book_id=""):
+    def fake_chapter_text(url_or_id, session=None, novel_prefix="",
+                          book_id="", attempts=4):
         calls["n"] += 1
         return "    正文内容"
 

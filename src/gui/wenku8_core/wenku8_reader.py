@@ -149,6 +149,24 @@ def resolve_book_id(raw: str) -> str:
     return ""
 
 
+def _index_prefix(book_id: str) -> str:
+    """从本地索引 cover 的 ``/image/{n}/`` 反推目录前缀（零网络）。
+
+    全站索引 4471 本里有 4464 本的 cover 携带真实分类号，与详情页一致。
+    用它替代开局那次 ``/book/{id}.htm`` 请求——被限流的网络上这一请求
+    每次 3-5s，还会触发拦截退避，是下载开局最纯粹的浪费。
+    """
+    try:
+        from .wenku8_index import search_index_book
+        cover = str((search_index_book(str(book_id).strip()) or {}).get("cover") or "")
+        m = re.search(r"/image/(\d+)/", cover)
+        if m:
+            return f"/novel/{m.group(1)}/{book_id}/"
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
 def _novel_prefix(html: str, book_id: str) -> str:
     """从详情页/目录页推断 novel 路径前缀（如 /novel/4/4343/）。
 
@@ -174,9 +192,38 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
     """
     bid = resolve_book_id(book_id)
     sess = session or make_session()
+
+    # 提速：本地全站索引字段齐全（4471本，含 title/author/tags/intro/cover/length），
+    # 读本地 JSON 零网络。用户慢网络下开局详情页请求每次 3-5s + 拦截退避，
+    # 下载一本书开局原本白发 2 次详情请求（articleinfo + book.htm）。索引齐全
+    # 时直接用，0 网络；只有索引缺失/字段不全才走网页。全书通用，无书号硬编码。
+    local: Dict[str, str] = {}
+    try:
+        from .wenku8_index import search_index_book
+        local = search_index_book(bid) or {}
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 索引字段齐全就直接返回，连 BeautifulSoup 解析都省掉。
+    # tags 在索引里是空格分隔（"校园 欢乐向 青春"），统一成网页同款逗号分隔，
+    # 保证 UI/筛选/测试看到的格式一致。
+    if (local and local.get("title") and local.get("author")
+            and local.get("cover") and local.get("intro")):
+        _idx_tags = str(local.get("tags") or "").strip()
+        if _idx_tags:
+            _idx_tags = ",".join(p for p in re.split(r"[\s,，]+", _idx_tags) if p)
+        return {
+            "title": str(local.get("title") or ""),
+            "author": str(local.get("author") or ""),
+            "intro": str(local.get("intro") or ""),
+            "cover": str(local.get("cover") or ""),
+            "words_num": str(local.get("length") or ""),
+            "tags": _idx_tags,
+        }
+
     html = ""
     # hikari_novel_flutter 等参考项目用 articleinfo.php 取详情并解析标签；
-    # 旧 /book/{id}.htm 保留兜底。任一页面可用即可，全部失败仍能走 App meta。
+    # 旧 /book/{id}.htm 保留兜底。任一页面可用即可，全部失败仍能走索引。
     detail_urls = (
         f"{_base()}/modules/article/articleinfo.php?id={bid}",
         f"{_base()}/book/{bid}.htm",
@@ -305,12 +352,21 @@ def fetch_detail(book_id: str, session=None) -> Dict[str, str]:
 
 
 def fetch_book_meta(book_id: str, session=None) -> Dict[str, str]:
-    """取下载所需元信息：含 novel 路径前缀，供目录/正文拼 URL。"""
+    """取下载所需元信息：含 novel 路径前缀，供目录/正文拼 URL。
+
+    提速：分类号优先从本地索引 cover 反推，零网络。只有索引缺 cover 时才
+    访问 ``/book/{id}.htm``。此前每次下载开局都白发这一请求（慢网络 3-5s
+    + 拦截退避），且与 fetch_detail / fetch_catalog 里的同类请求重复。
+    """
     bid = resolve_book_id(book_id)
     sess = session or make_session()
-    resp = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
-    html = _decode(resp)
-    prefix = _novel_prefix(html, bid)
+    prefix = _index_prefix(bid)
+    if not prefix:
+        try:
+            resp = sess.get(f"{_base()}/book/{bid}.htm", timeout=20)
+            prefix = _novel_prefix(_decode(resp), bid)
+        except Exception:  # noqa: BLE001
+            prefix = ""
     detail = fetch_detail(bid, sess)
     detail["book_id"] = bid
     detail["novel_prefix"] = prefix
@@ -421,16 +477,21 @@ def fetch_catalog(book_id: str, session=None) -> List[Dict]:
     # 改为「整体 3 轮重试」，每轮详情页带异常保护、候选页 attempts 提到 3，
     # 只要任意一轮拿到目录就返回。本地实测真机抖动场景可自愈。
     import time as _time
+    # 索引已给出真实分类号时，目录候选第一个就命中；此时完全没必要先请求
+    # 详情页（慢网络上 /book/{id}.htm 最多 3 次重试 + 退避，是开局最大的浪费）。
+    # 索引缺失时才抓详情页补充候选，保留原有兜底强度。
+    index_prefix = _index_prefix(bid)
     for whole_round in range(3):
         # 详情页：异常不能让整个目录抓取崩掉，失败就进下一轮
         detail_html = ""
-        try:
-            detail_resp = _get_with_retry(
-                sess, f"{_base()}/book/{bid}.htm", timeout=15, attempts=3,
-            )
-            detail_html = _decode(detail_resp) if detail_resp is not None else ""
-        except Exception:  # noqa: BLE001
-            pass
+        if not index_prefix:
+            try:
+                detail_resp = _get_with_retry(
+                    sess, f"{_base()}/book/{bid}.htm", timeout=15, attempts=3,
+                )
+                detail_html = _decode(detail_resp) if detail_resp is not None else ""
+            except Exception:  # noqa: BLE001
+                pass
         for prefix in _catalog_prefix_candidates(detail_html, bid):
             catalog_url = f"{_base()}{prefix}index.htm"
 
@@ -538,12 +599,15 @@ def strip_credit_block(lines: List[str]) -> List[str]:
 
 
 def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
-                       book_id: str = "") -> str:
+                       book_id: str = "", attempts: int = 4) -> str:
     """取单章正文纯文本。
 
     接受绝对 URL、章节 id（需给 novel_prefix）或相对文件名。
     正文容器为 #content；去掉站点声明行、章首录入组「卷首信息」块与空行，
     每行保留 4 空格缩进（与番茄/七猫 chapter_text 输出格式对齐，build_txt 直接复用）。
+
+    :param attempts: 单章内重试上限。首轮默认 4；外层 rescue 轮次显式传 2，
+        避免「内层 4 × 外层 3 轮 = 16 次请求」的重试风暴（用户端 1149.8s 主因）。
     """
     sess = session or make_session()
     raw = str(url_or_id or "").strip()
@@ -568,7 +632,8 @@ def fetch_chapter_text(url_or_id, session=None, novel_prefix: str = "",
         except Exception:  # noqa: BLE001
             return False
 
-    resp = _get_with_retry(sess, url, timeout=20, attempts=4, validate=_has_content)
+    resp = _get_with_retry(sess, url, timeout=20, attempts=attempts,
+                           validate=_has_content)
     html = _decode(resp)
     soup = BeautifulSoup(html, "html.parser")
     node = soup.select_one("#content")
