@@ -28,6 +28,11 @@ IMAGE_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # 备用 UA：主 UA 连续失败时轮换，规避单一指纹被限流
 IMAGE_UA_ALT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36")
+# 简短 UA：调研 open source 项目（fateking27/mojimoon）证实完整浏览器 UA
+# 反而更容易被 Cloudflare 拦，简短 UA / okhttp 更稳，作为轮换的一环。
+IMAGE_UA_SHORT = "Mozilla/5.0"
+IMAGE_UA_OKHTTP = "okhttp/4.12.0"
+_IMAGE_UAS = (IMAGE_UA, IMAGE_UA_SHORT, IMAGE_UA_OKHTTP, IMAGE_UA_ALT)
 
 
 def extract_image_urls(text: str) -> List[str]:
@@ -78,7 +83,9 @@ def download_image(url: str, timeout: int = 15, attempts: int = 5) -> bytes:
                 "https://www.wenku8.com/",
             ]
             headers = {
-                "User-Agent": IMAGE_UA if attempt % 2 == 0 else IMAGE_UA_ALT,
+                # 多 UA 轮换：完整 Edge / 简短 Mozilla / okhttp / 完整 Chrome。
+                # 首轮用完整 UA（真实成功率最高），后续轮换以防被指纹限流。
+                "User-Agent": _IMAGE_UAS[attempt % len(_IMAGE_UAS)],
                 "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                 "Referer": referers[attempt % len(referers)],
@@ -92,6 +99,43 @@ def download_image(url: str, timeout: int = 15, attempts: int = 5) -> bytes:
         if attempt < max(1, int(attempts)) - 1:
             _time.sleep(0.3 * (attempt + 1))  # 递增退避，避免瞬时打爆图床
     return b""
+
+
+def is_portrait(data: bytes) -> bool:
+    """判断图片是否为竖图（高 >= 宽）。库封面/插图封面通常是竖版长图。
+
+    用 PIL 读尺寸；无法解析时保守返回 False（不当封面，交给调用方回退）。
+    """
+    if not data:
+        return False
+    try:
+        from PIL import Image
+        import io
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+        return h >= w
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pick_cover_bytes(urls: Sequence[str], get_bytes) -> bytes:
+    """从图片 URL 列表里挑「第一张竖图」作为卷封面字节。
+
+    参考 Yorag/wenku8-to-epub 与 fateking27/wenku8-downloader：分卷封面取该卷
+    插图页第一张竖版长图（width <= height）；该卷没有竖图时退回第一张成功
+    下载的图片，保证每卷封面都来自本卷插图页而非全书总封面；全部失败才
+    返回 b''。get_bytes(url) 从预取缓存取字节，不发网络。
+    """
+    first = b""
+    for url in urls or []:
+        data = get_bytes(url) if get_bytes is not None else b""
+        if not data:
+            continue
+        if not first:
+            first = data  # 兜底第一张成功的图
+        if is_portrait(data):
+            return data  # 第一张竖图即卷封面
+    return first
 
 
 def image_ext(data: bytes) -> str:

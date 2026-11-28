@@ -146,8 +146,9 @@ def test_render_body_without_image_support_unchanged():
     assert counter[0] == 0
 
 
-def test_failed_image_leaves_visible_placeholder():
-    """文库8缺图：书照常生成（不抛错），但留可见占位并计入失败清单。"""
+def test_failed_image_raises_in_strict_mode():
+    """文库8严格模式：缺图必须抛错，图和书一起成功，绝不静默出缺图书。"""
+    import pytest
     from ebooklib import epub
 
     class _StrictSource(_FakeSource):
@@ -156,13 +157,11 @@ def test_failed_image_leaves_visible_placeholder():
     book = epub.EpubBook()
     counter = [0]
     fails = []
-    out = C._render_body(
-        "[[WENKU8IMG:https://img.wenku8.com/missing.jpg]]",
-        _StrictSource(with_images=False), book, epub, False, counter, fails,
-    )
-    assert fails == ["https://img.wenku8.com/missing.jpg"]
-    assert "<img" not in out
-    assert "插图下载失败" in out  # 可见占位，读者一眼能看到缺图
+    with pytest.raises(C.QimaoError):
+        C._render_body(
+            "[[WENKU8IMG:https://img.wenku8.com/missing.jpg]]",
+            _StrictSource(with_images=False), book, epub, False, counter, fails,
+        )
 
 
 def test_failed_image_non_wenku8_unchanged():
@@ -179,7 +178,7 @@ def test_failed_image_non_wenku8_unchanged():
     assert "<img" not in out
 
 
-# ---------- 图片下载：多轮重试尽力全下 + 缺图可见占位（不阻塞出书） ----------
+# ---------- 图片下载：多轮重试尽力全下 + 缺图判失败（图和书一起成功） ----------
 
 def test_download_image_retries_until_success(monkeypatch):
     """单张图首两次失败、第三次成功：必须重试到成功，不静默放弃。"""
@@ -280,16 +279,79 @@ def test_txt_writer_writes_images_to_disk(tmp_path):
     assert (tmp_path / "imgs" / "插图_0001.jpg").exists(), "图片必须真实写入磁盘"
 
 
-def test_txt_writer_missing_image_leaves_placeholder(tmp_path):
-    """TXT 缺图：不抛错、书照常出，但留可见占位并记入 failed。"""
-    from gui.qimao_core import _ImageWriter, _txt_images
+def test_txt_writer_missing_image_raises(tmp_path):
+    """TXT 严格模式：缺图必须抛错，图和书一起成功，不留占位冒充成功。"""
+    import pytest
+    from gui.qimao_core import _ImageWriter, _txt_images, QimaoError
 
     class _Src:
         def get_image(self, url):
             return b""  # 缺图
 
     w = _ImageWriter(_Src(), str(tmp_path / "imgs"))
-    out = _txt_images("[[WENKU8IMG:https://x/a.jpg]]", w)
-    assert "插图下载失败" in out
-    assert "https://" not in out  # 不退化成网络链接兜底
-    assert "https://x/a.jpg" in w.failed  # 记入失败清单
+    with pytest.raises(QimaoError):
+        _txt_images("[[WENKU8IMG:https://x/a.jpg]]", w)
+
+
+# ---------- 卷封面：取插图章第一张竖图 ----------
+
+def _make_image_bytes(width, height, fmt="JPEG"):
+    import io
+    from PIL import Image
+    img = Image.new("RGB", (width, height), (200, 120, 90))
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def test_is_portrait():
+    from gui.wenku8_core.wenku8_volumes import is_portrait
+    portrait = _make_image_bytes(600, 900)   # 竖版卷封面
+    landscape = _make_image_bytes(900, 600)  # 横版插图
+    assert is_portrait(portrait) is True
+    assert is_portrait(landscape) is False
+    assert is_portrait(b"") is False
+    assert is_portrait(b"<html>403</html>") is False
+
+
+def test_pick_cover_bytes_prefers_first_portrait():
+    """第一张横图跳过，第二张竖图作为卷封面（参考 Yorag 项目）。"""
+    from gui.wenku8_core.wenku8_volumes import pick_cover_bytes
+    landscape = _make_image_bytes(900, 600)
+    portrait = _make_image_bytes(600, 900)
+    portrait2 = _make_image_bytes(500, 800)
+    cache = {
+        "https://x/landscape.jpg": landscape,
+        "https://x/portrait.jpg": portrait,
+        "https://x/portrait2.jpg": portrait2,
+    }
+    picked = pick_cover_bytes(list(cache), lambda u: cache.get(u, b""))
+    assert picked == portrait  # 第一张竖图，不是横图、也不是后面的竖图
+
+
+def test_pick_cover_bytes_falls_back_first_image():
+    """没有竖图时退回第一张成功下载的图片，全失败返回空。"""
+    from gui.wenku8_core.wenku8_volumes import pick_cover_bytes
+    a = _make_image_bytes(900, 600)
+    b = _make_image_bytes(800, 500)
+    cache = {"u1": a, "u2": b}
+    assert pick_cover_bytes(["u1", "u2"], lambda u: cache.get(u, b"")) == a
+    assert pick_cover_bytes(["x", "y"], lambda u: b"") == b""
+
+
+def test_volume_cover_from_illustration_chapter():
+    """书源 volume_cover：只从插图章取图，正文章里的图不算卷封面。"""
+    from plugins.wenku8_downloader_plugin import Wenku8BookSource
+    portrait = _make_image_bytes(600, 900)
+    s = Wenku8BookSource()
+    s._image_cache["https://x/cover.jpg"] = portrait
+    chapters = [
+        {"index": 0, "title": "第一章", "is_illustration": False},
+        {"index": 1, "title": "插图", "is_illustration": True},
+    ]
+    texts = [
+        "正文[[WENKU8IMG:https://x/notcover.jpg]]",   # 正文章，忽略
+        "[[WENKU8IMG:https://x/cover.jpg]]",           # 插图章，取这张
+    ]
+    got = s.volume_cover(chapters, texts)
+    assert got == portrait

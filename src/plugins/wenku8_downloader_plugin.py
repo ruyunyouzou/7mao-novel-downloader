@@ -170,6 +170,30 @@ class Wenku8BookSource(BookSource):
         wanted = self.image_urls_in(texts)
         return [u for u in wanted if not self._image_cache.get(u)]
 
+    def volume_cover(self, volume_chapters, texts) -> bytes:
+        """挑该卷插图章里的第一张竖图作为卷封面字节（仅文库8分卷用）。
+
+        volume_chapters: group_volumes() 里某卷的 chapters（每个带 index）；
+        texts: 全书正文列表，按 chapter['index'] 取对应正文。图片字节来自预取
+        缓存，不发网络。没有竖图时退回插图章第一张成功的图，保证每卷封面
+        来自本卷；整卷插图都失败才返回 b''，由 build_txt 回退详情页总封面。
+        """
+        from gui.wenku8_core.wenku8_volumes import extract_image_urls, pick_cover_bytes
+        urls: list = []
+        seen = set()
+        for ch in volume_chapters or []:
+            idx = int(ch.get("index", 0) or 0)
+            if idx < 0 or idx >= len(texts or []):
+                continue
+            # 只看插图章；正文章里的偶发图不作为卷封面
+            if not ch.get("is_illustration"):
+                continue
+            for u in extract_image_urls(texts[idx]):
+                if u and u not in seen:
+                    seen.add(u)
+                    urls.append(u)
+        return pick_cover_bytes(urls, self.get_image)
+
     def _cache_images(self, text: str, rounds: int = 4) -> None:
         """抓到正文后，把其中的插图 URL 并发下载进缓存。
 
@@ -405,9 +429,18 @@ class Wenku8Downloader(DownloaderBase):
                 success=False, message=f"文库8分卷导出失败（预取正文）: {exc}",
             )
 
-        # 插图：预取阶段已多轮尽力下载。极少数确实下不下来的图不阻塞出书
-        # （用户要求「书必须能下载成功」），只在结果里计数提示，正文留可见占位。
+        # 严格模式：图和书必须一起成功。预取阶段已多轮尽力下载；只要还有图
+        # 没下下来，就判失败，绝不静默出「没图/缺图」的书（用户明确要求）。
         missing_imgs = source.missing_images(_texts)
+        if missing_imgs:
+            return DownloadResult(
+                book_id=str(book_id), title=title or f"book_{book_id}",
+                success=False,
+                message=(f"文库8下载失败：有 {len(missing_imgs)} 张插图未能下载，"
+                         f"图和书必须一起下载成功，本次不出书。示例："
+                         f"{missing_imgs[0][:120]}"),
+                extra={"images_failed": len(missing_imgs)},
+            )
 
         volumes = group_volumes(catalog)
         chosen = select_volumes(volumes, mode, selected_volumes)
@@ -429,6 +462,8 @@ class Wenku8Downloader(DownloaderBase):
                     progress_cb(min(99, int(_base + (max(0, min(100, _p)) / 100.0) * _span)))
 
             try:
+                # 卷封面：取该卷插图章里的第一张竖图（无则回退详情页总封面）。
+                cover_bytes = source.volume_cover(vol.get("chapters", []), _texts)
                 result = _build_txt(
                     book_id=str(book_id),
                     save_path=save_path,
@@ -439,6 +474,7 @@ class Wenku8Downloader(DownloaderBase):
                     start_chapter=int(vol["start"]),
                     end_chapter=int(vol["end"]),
                     filename_template=volume_filename_template(base_tpl, vol["name"]),
+                    cover_override=cover_bytes,
                     colorize_dialogue=bool(colorize),
                     chapter_font=str(chapter_font or ""),
                     volume_font=str(volume_font or ""),
@@ -482,8 +518,6 @@ class Wenku8Downloader(DownloaderBase):
         msg = f"已按卷导出 {len(written)} 卷，共 {total_chapters} 章（{fmt_label}·文库8）"
         if failed:
             msg += f"；{len(failed)} 卷失败（" + "；".join(failed[:2]) + "）"
-        if missing_imgs:
-            msg += f"；注意：{len(missing_imgs)} 张插图未能下载（正文已标注占位）"
         return DownloadResult(
             book_id=str(book_id),
             title=title or str(detail.get("title") or f"book_{book_id}"),
@@ -568,9 +602,8 @@ class Wenku8Downloader(DownloaderBase):
                 smart_art=bool(smart_art),
                 source=source,
             )
-            # 插图：预取阶段已多轮尽力下载。极少数确实下不下来的图不阻塞出书
-            # （用户要求「书必须能下载成功」），只在结果里计数提示，正文留可见占位。
-            missing_imgs = source.missing_images()
+            # 严格模式：build_txt 渲染时遇到缺图会抛 QimaoError（图和书须一起
+            # 成功），被下方 except 捕获判失败；走到这里说明正文和插图都齐全。
         except DownloadCancelled:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -591,15 +624,13 @@ class Wenku8Downloader(DownloaderBase):
         start, end = result.get("start_chapter", 1), result.get("end_chapter", result["total"])
         scoped = (start > 1 or end < result.get("total_chapters", 0))
         scope_text = f"第{start}-{end}章" if scoped else "全本"
-        _img_note = (f"；注意：{len(missing_imgs)} 张插图未下载（正文已标注占位）"
-                     if missing_imgs else "")
         return DownloadResult(
             book_id=str(book_id),
             title=result["title"],
             success=True,
             file_path=result["file_path"],
             message=(f"已下载{scope_text} {result['chapters']}/{result['total']} 章"
-                     f"（{fmt_label}·文库8）{_img_note}"),
+                     f"（{fmt_label}·文库8，含全部插图）"),
             extra={
                 "chapters": result["chapters"],
                 "total": result["total"],

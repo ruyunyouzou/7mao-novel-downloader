@@ -646,6 +646,9 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
         return html.escape(raw).replace("\n", "<br/>")
 
     from .wenku8_core.wenku8_volumes import IMG_MARK_RE
+    # 文库8严格模式：图和书必须一起成功。缺图直接抛错，绝不留占位后照常出书
+    # （用户明确：「图片和书籍都下载成功，不是图没下全但书成功」）。
+    strict = str(getattr(source, "source_key", "") or "") == "wenku8"
     parts: List[str] = []
     pos = 0
     for m in IMG_MARK_RE.finditer(raw):
@@ -654,6 +657,9 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
             parts.append(_hl_or_escape(seg, colorize))
         url = str(m.group(1) or "").strip()
         img_bytes = get_image(url) or b""
+        if strict and not img_bytes:
+            image_fail.append(url)
+            raise QimaoError(f"插图未能下载，本次不出书（图和书须一起成功）：{url[:120]}")
         counter[0] += 1
         item = _w8_image_item(book, epub, img_bytes, counter[0])
         if item is not None:
@@ -662,13 +668,7 @@ def _render_body(raw: str, source, book, epub, colorize: bool,
                 'style="display:block;margin:1em auto;max-width:100%;"/>'
             )
         else:
-            # 图没下下来：留一个明显占位，读者一眼能看到「这里缺图」，
-            # 而不是静默丢掉让人以为书本来就没图。书照常生成（不阻塞下载成功）。
             image_fail.append(url)
-            parts.append(
-                '<p style="color:#999;font-size:0.8em;text-align:center;'
-                'margin:1.5em 0;">［插图下载失败，可重新下载本书重试］</p>'
-            )
         pos = m.end()
     tail = raw[pos:]
     if tail:
@@ -687,8 +687,7 @@ class _ImageWriter:
     """把文库8插图字节落地到磁盘目录，供 TXT 引用（TXT 无法内嵌图片）。
 
     只在有 get_image 的文库8书源时使用；图片全部来自预取缓存，不在写文件阶段发网络。
-    下载阶段已多轮尽力下载；极少数仍缺的图不阻塞出书——留可见占位并记入 failed，
-    让用户知道哪张图没下来，同时书能正常下载成功。
+    严格模式：图和书必须一起成功——缺图直接抛错，不留占位文字冒充成功。
     """
 
     def __init__(self, source, out_dir: str):
@@ -696,38 +695,30 @@ class _ImageWriter:
         self._dir = out_dir
         self._count = 0
         self._named: dict = {}
-        self.failed: list = []  # 未能落地的插图 URL
         if self._get is not None:
             os.makedirs(self._dir, exist_ok=True)
 
     def write(self, url: str) -> str:
-        """把一张图写入目录，返回相对文件名；缺图返回占位文字并记入 failed。"""
+        """把一张图写入目录，返回相对文件名；缺图抛 QimaoError。"""
         from .wenku8_core.wenku8_volumes import image_ext
         if url in self._named:
             return self._named[url]
         data = self._get(url) if self._get is not None else b""
         if not data:
-            if url not in self.failed:
-                self.failed.append(url)
-            return "插图下载失败（可重新下载本书重试）"
+            raise QimaoError(f"插图未能下载，本次不出书（图和书须一起成功）：{url[:120]}")
         self._count += 1
         name = f"插图_{self._count:04d}.{image_ext(data)}"
         try:
             with open(os.path.join(self._dir, name), "wb") as fh:
                 fh.write(data)
-        except Exception:  # noqa: BLE001
-            if url not in self.failed:
-                self.failed.append(url)
-            return "插图写入失败（可重新下载本书重试）"
+        except Exception as exc:  # noqa: BLE001
+            raise QimaoError(f"插图写入失败：{exc}") from exc
         self._named[url] = name
         return name
 
     def reference(self, url: str) -> str:
-        """返回正文里对这张图的完整文字引用（成功=本地文件名，失败=占位说明）。"""
-        name = self.write(url)
-        if name.startswith("插图下载失败") or name.startswith("插图写入失败"):
-            return f"［{name}］"
-        return f"[插图: {name}]"
+        """返回正文里对这张图的文字引用（本地文件名）。"""
+        return f"[插图: {self.write(url)}]"
 
 
 def _txt_images(text: str, writer: Optional["_ImageWriter"] = None) -> str:
@@ -758,7 +749,8 @@ def build_txt(book_id: str, save_path: str, fmt: str,
               hero_fixed: str = "", hero_library: str = "genshin",
               chapter_tail: Optional[bool] = None, tail_mode: Optional[str] = None,
               tail_fixed: str = "", smart_art: Optional[bool] = None,
-              source: Optional[BookSource] = None) -> Dict:
+              source: Optional[BookSource] = None,
+              cover_override: bytes = b"") -> Dict:
     """
     完整下载一本书并写出文件。
 
@@ -944,12 +936,22 @@ def build_txt(book_id: str, save_path: str, fmt: str,
             # HTML 页），此前用裸 session.get 下载得到错误页被 set_cover 抛异常
             # 吞掉 → EPUB 无封面。这里带浏览器 UA + 站点 Referer 下载，并校验
             # 图片魔数，拒绝错误页；http 明文一律升级为 https（两站均支持）。
+            # cover_override：分卷导出时传入「该卷插图章里的卷封面」字节，
+            # 每卷用自己那一卷的封面（而非全书共用详情页总封面）。仅文库8分卷用。
+            cover_img = b""
+            if cover_override and (
+                cover_override.startswith(b"\xff\xd8\xff") or
+                cover_override.startswith(b"\x89PNG") or
+                cover_override[:6] in (b"GIF87a", b"GIF89a") or
+                (len(cover_override) >= 12 and cover_override[8:12] == b"WEBP")
+            ):
+                cover_img = cover_override
             cover_src = detail.get("cover")
-            if cover_src:
+            if not cover_img and cover_src:
                 try:
                     if os.path.isfile(str(cover_src)):
                         with open(cover_src, "rb") as _f:
-                            img = _f.read()
+                            cover_img = _f.read()
                     else:
                         url = str(cover_src)
                         if url.startswith("http://"):
@@ -969,11 +971,11 @@ def build_txt(book_id: str, save_path: str, fmt: str,
                             raw.startswith(b"GIF87a") or raw.startswith(b"GIF89a") or
                             raw.startswith(b"RIFF")  # WebP
                         )
-                        img = raw if magic else b""
-                    if img:
-                        book.set_cover("cover.jpg", img)
+                        cover_img = raw if magic else b""
                 except Exception:  # noqa: BLE001
                     pass
+            if cover_img:
+                book.set_cover("cover.jpg", cover_img)
             # 对话着色：在下载时把人物对话固化为带颜色的 span，写进 EPUB 文件本身。
             # 固定用浅色色板（深色字），因为绝大多数 EPUB 阅读器是白底，兼容性最好。
             # 这与阅读器的事后渲染开关是两回事：这里改的是落盘文件，任何阅读器打开都带色。
